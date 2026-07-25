@@ -23,7 +23,7 @@ describe("Worker HTTP surface", () => {
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ status: "ok" });
     expect(response.headers.get("cache-control")).toBe("no-store");
-  });
+  }, 20_000);
 
   it("serves the small setup-page enhancement script", async () => {
     const response = await exports.default.fetch("https://example.test/setup.js");

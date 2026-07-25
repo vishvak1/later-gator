@@ -130,6 +130,42 @@ describe("RaindropClient contract", () => {
     ]);
   });
 
+  it("accepts Raindrop's null parent marker for a root collection", async () => {
+    const request = vi.fn<typeof fetch>((input) => {
+      const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
+      return Promise.resolve(
+        Response.json({
+          result: true,
+          items: url.endsWith("/childrens")
+            ? []
+            : [
+                {
+                  _id: 11,
+                  title: "Root",
+                  count: 200,
+                  parent: null,
+                  user: { $id: 42 },
+                  access: { level: 4 },
+                },
+              ],
+        }),
+      );
+    });
+
+    await expect(
+      new RaindropClient("redacted-test-token", request).listCollections(),
+    ).resolves.toEqual([
+      {
+        id: 11,
+        title: "Root",
+        count: 200,
+        parentId: null,
+        userId: 42,
+        accessLevel: 4,
+      },
+    ]);
+  });
+
   it("uses URLSearchParams and bounded page sizes when listing bookmarks", async () => {
     const request = vi.fn<typeof fetch>((input) => {
       const url = new URL(

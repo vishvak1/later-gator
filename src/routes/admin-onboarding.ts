@@ -3,7 +3,9 @@ import {
   continueOnboarding,
   OnboardingAccountMismatchError,
   startOnboarding,
+  type OnboardingAccountCheck,
 } from "../application/onboarding";
+import { diagnoseRaindropConnection } from "../application/raindrop-connection-diagnostic";
 import { EncryptedCredentialStore } from "../adapters/encrypted-credential-store";
 import { KvStateStore } from "../adapters/kv-state-store";
 import { OnboardingStateStore, emptyOnboardingState } from "../adapters/onboarding-state-store";
@@ -23,7 +25,13 @@ export async function onboardingCheck(request: Request, env: Env): Promise<Respo
 
   const raindrop = await createRaindrop(env);
   if (raindrop instanceof Response) return raindrop;
-  const check = await checkOnboardingAccount(raindrop);
+  let check: OnboardingAccountCheck;
+  try {
+    check = await checkOnboardingAccount(raindrop);
+  } catch (error) {
+    const diagnostic = diagnoseRaindropConnection(error);
+    return textError(`${diagnostic.summary}\n\n${diagnostic.message}`, 502);
+  }
   const csrfToken = escapeHtml(authorized.csrfToken);
   const actionItems = check.actions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");
   const warning =

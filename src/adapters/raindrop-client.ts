@@ -17,7 +17,7 @@ const CollectionSchema = z.looseObject({
   _id: z.number().int().positive(),
   title: z.string(),
   count: z.number().int().nonnegative(),
-  parent: z.looseObject({ $id: z.number().int().positive() }).optional(),
+  parent: z.looseObject({ $id: z.number().int().positive() }).nullish(),
   user: z.looseObject({ $id: z.number().int().positive() }),
   access: z.looseObject({ level: z.number().int() }),
 });

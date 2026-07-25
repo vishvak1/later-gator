@@ -22,6 +22,7 @@ import { FOLDER_NAMES } from "../domain/seed";
 import { requireSetupMutation } from "./setup-auth";
 import { RaindropClient } from "../adapters/raindrop-client";
 import { getOrCreateMcpSecret } from "../application/mcp-secret";
+import { setupHtmlHeaders } from "./security-headers";
 
 const MAX_LOGIN_BYTES = 4_096;
 
@@ -724,13 +725,8 @@ export function setupScript(): Response {
 function htmlResponse(body: string, status = 200): Response {
   return new Response(body, {
     status,
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      "content-security-policy":
-        "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-      "referrer-policy": "no-referrer",
-      "x-content-type-options": "nosniff",
-    },
+    headers: setupHtmlHeaders(
+      "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    ),
   });
 }

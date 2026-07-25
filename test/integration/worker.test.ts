@@ -35,9 +35,21 @@ describe("Worker HTTP surface", () => {
   it("returns the setup login page without a session", async () => {
     const response = await exports.default.fetch("https://example.test/setup");
     expect(response.status).toBe(200);
+    expect(response.headers.get("referrer-policy")).toBe("same-origin");
     const html = await response.text();
     expect(html).toContain("Setup password");
     expect(html).toContain('minlength="10"');
+  });
+
+  it("keeps cross-origin login submissions blocked", async () => {
+    const body = new URLSearchParams({ secret: "local-test-installation-secret" });
+    const response = await exports.default.fetch("https://example.test/setup/login", {
+      method: "POST",
+      body,
+      redirect: "manual",
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get("set-cookie")).toBeNull();
   });
 
   it("rejects an invalid installation secret", async () => {

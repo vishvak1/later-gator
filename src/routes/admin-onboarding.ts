@@ -11,6 +11,7 @@ import { RaindropClient } from "../adapters/raindrop-client";
 import { InstallationStateSchema } from "../domain/schemas";
 import { readBoundedUrlEncodedForm, RequestBodyError } from "./request-body";
 import { getInstallationSecret, requireSetupMutation } from "./setup-auth";
+import { setupHtmlHeaders } from "./security-headers";
 
 const MAX_REQUEST_BYTES = 8_192;
 
@@ -214,14 +215,9 @@ function textError(message: string, status = 400): Response {
 
 function htmlResponse(body: string): Response {
   return new Response(body, {
-    headers: {
-      "content-type": "text/html; charset=utf-8",
-      "cache-control": "no-store",
-      "content-security-policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-      "referrer-policy": "no-referrer",
-      "x-content-type-options": "nosniff",
-    },
+    headers: setupHtmlHeaders(
+      "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+    ),
   });
 }
 

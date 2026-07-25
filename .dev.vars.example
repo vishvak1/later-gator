@@ -1,0 +1,5 @@
+# Bootstrap secrets. Never commit real values.
+MCP_PATH_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+INSTALLATION_SECRET=replace-with-a-different-strong-random-installation-password
+
+# Raindrop, OpenAI, and Anthropic credentials are entered in /setup.

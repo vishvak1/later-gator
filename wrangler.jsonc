@@ -1,0 +1,40 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "later-gator",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-22",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  },
+  "vars": {
+    "ENVIRONMENT": "development",
+    "LLM_PROVIDER": "workers-ai",
+    "LLM_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "SEED_VERSION": "v1",
+    "DISPATCH_LIMIT": "10",
+    "ITEM_MAX_ATTEMPTS": "3",
+    "WORKERS_AI_DAILY_SOFT_LIMIT": "9000",
+    "TIMEZONE": "Asia/Kolkata"
+  },
+  "kv_namespaces": [{ "binding": "STATE" }],
+  "ai": { "binding": "AI" },
+  "send_email": [{ "name": "EMAIL" }],
+  "queues": {
+    "producers": [
+      { "binding": "ORGANIZE_QUEUE", "queue": "later-gator-organize" }
+    ],
+    "consumers": [
+      {
+        "queue": "later-gator-organize",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3,
+        "max_concurrency": 1
+      }
+    ]
+  },
+  "triggers": { "crons": ["*/15 * * * *"] }
+}

@@ -34,11 +34,8 @@
       "EMAIL": {
         "description": "Sends intervention-required alerts after the owner configures a Cloudflare Email Sending domain and verifies the chosen destination."
       },
-      "MCP_PATH_SECRET": {
-        "description": "A unique, cryptographically random 64-character bootstrap secret for the private MCP endpoint."
-      },
       "INSTALLATION_SECRET": {
-        "description": "A strong, unique password for the private setup page and the root material used to encrypt credentials entered there."
+        "description": "Choose one private password containing at least 10 characters. You will use it to open Later Gator setup; Later Gator generates the machine connection secret automatically."
       }
     }
   },

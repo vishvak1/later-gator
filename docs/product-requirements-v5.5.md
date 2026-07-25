@@ -1,9 +1,9 @@
-# Later Gator — Product Requirements Document v5.4
+# Later Gator — Product Requirements Document v5.5
 
 **Product:** Raindrop AI Automation  
 **Status:** Implementation-ready, subject to final live integration checks  
-**Supersedes:** PRD v5.3  
-**Revision focus:** In-app credential management and simplified Raindrop onboarding  
+**Supersedes:** PRD v5.4  
+**Revision focus:** One-password deployment, automatic MCP security, and guided visual onboarding  
 
 ---
 
@@ -22,6 +22,8 @@ It automatically organizes bookmarks saved to Raindrop's Unsorted collection and
 - Provider and Raindrop credentials are entered and managed in the authenticated Later Gator setup/settings page.
 - Cloudflare Workers AI is the zero-extra-key default, not a lock-in requirement.
 - Installation should be achievable from the repository README without cloning the repository or using Wrangler locally.
+- Deployment asks the user for one setup password of at least 10 characters. Later Gator generates, encrypts, rotates, and uses the longer machine-to-machine MCP secret without asking the user to create or manage it.
+- The setup surface presents a visually guided sequence rather than exposing all administrative controls as an undifferentiated form.
 
 ---
 
@@ -512,7 +514,7 @@ The Worker must return structured JSON instead of throwing a user-facing error a
 
 ### 11.4 MCP security
 
-Use a long random secret in the MCP URL path. Store it as a rotatable Cloudflare secret. An invalid path returns a bare 401 without account or pipeline details.
+Use a long random secret in the MCP URL path. Later Gator generates it on the owner's first authenticated setup visit, encrypts it in KV, and replaces it when the owner selects **Generate a new connection address**. The user copies the complete MCP address and never creates, types, or manages the machine secret itself. An invalid path returns a bare 401 without account or pipeline details.
 
 ---
 
@@ -692,7 +694,7 @@ Later Gator is single-tenant. Each user deploys it into their own Cloudflare acc
 - The README starts with a Deploy to Cloudflare button.
 - Cloudflare copies the public repository into the user's GitHub or GitLab account, builds it with Workers Builds, and deploys it to the user's Cloudflare account.
 - `wrangler.jsonc` declares the KV namespace, Workers AI binding, organization Queue producer/consumer, Cron Trigger, and non-secret defaults so supported resources are provisioned and bound automatically.
-- `.dev.vars.example` declares only bootstrap deployment secrets such as the installation secret; Raindrop and external-provider keys are entered in the authenticated application.
+- `.dev.vars.example` declares the single bootstrap deployment secret, `INSTALLATION_SECRET`, with a 10-character minimum; Raindrop and external-provider keys are entered in the authenticated application and the MCP connection secret is generated automatically.
 - `package.json` supplies clear Cloudflare binding descriptions for bootstrap bindings and configuration.
 - After deployment, the README directs the user to the Worker-hosted setup page for credential entry, installation validation, onboarding, backfill, MCP URL creation, and model-provider status.
 - Normal installation requires no local clone, package installation, terminal, or Wrangler login.

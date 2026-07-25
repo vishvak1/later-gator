@@ -8,8 +8,6 @@ export default defineConfig({
       miniflare: {
         bindings: {
           INSTALLATION_SECRET: "local-test-installation-secret",
-          MCP_PATH_SECRET:
-            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
         },
       },
     }),

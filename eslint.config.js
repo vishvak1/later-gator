@@ -6,7 +6,13 @@ export default tseslint.config(
   ...tseslint.configs.strictTypeChecked,
   ...tseslint.configs.stylisticTypeChecked,
   {
-    ignores: ["dist/**", "node_modules/**", "worker-configuration.d.ts", "eslint.config.js"],
+    ignores: [
+      ".wrangler/**",
+      "dist/**",
+      "node_modules/**",
+      "worker-configuration.d.ts",
+      "eslint.config.js",
+    ],
   },
   {
     languageOptions: {

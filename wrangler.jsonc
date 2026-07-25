@@ -10,7 +10,7 @@
     "head_sampling_rate": 0.1
   },
   "vars": {
-    "ENVIRONMENT": "development",
+    "ENVIRONMENT": "production",
     "LLM_PROVIDER": "workers-ai",
     "LLM_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "SEED_VERSION": "v1",

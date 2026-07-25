@@ -13,7 +13,7 @@ You need:
 - A free GitHub account.
 - A free Cloudflare account.
 - A Raindrop account and its test token.
-- A password manager or another safe place to save two passwords.
+- One private setup password containing at least 10 characters.
 
 The source Later Gator repository must be public for Cloudflare's deployment button to work.
 
@@ -33,14 +33,14 @@ You can enter an OpenAI or Anthropic key in Later Gator during setup or later. A
 1. Press **Deploy to Cloudflare** at the top of this page.
 2. Sign in to GitHub and Cloudflare when asked.
 3. Choose the GitHub repository name and Cloudflare Worker name, or accept the suggested names.
-4. Create and safely save the two requested passwords:
-   - **INSTALLATION_SECRET:** your private password for the Later Gator setup page. Use at least 16 characters.
-   - **MCP_PATH_SECRET:** a separate random password containing exactly 64 letters and numbers. This protects the future ChatGPT or Claude connection.
+4. Create and safely save **INSTALLATION_SECRET**, your private password for the Later Gator setup page. It must contain at least 10 characters.
 5. Press Cloudflare's deploy button and wait for deployment to finish.
 6. Open the Worker address Cloudflare gives you and add `/setup` to the end.
 7. Sign in using the **INSTALLATION_SECRET** you saved.
 
 Cloudflare copies this public project into your GitHub account and connects future updates to that copy. It also creates Later Gator's private storage, Workers AI connection, processing queue, and schedule automatically. You do not need to fork the project first.
+
+Later Gator generates its long machine connection secret automatically after you sign in. You never need to create, remember, or type it.
 
 ## Complete the setup page
 
@@ -79,7 +79,8 @@ It does not delete the bookmarks. Shared folders are left alone. The Unsorted pi
 - New bookmarks left in Unsorted are discovered approximately every 15 minutes.
 - **Backfill** works through a larger existing Unsorted pile without requiring the page to stay open.
 - **Need for Review** holds bookmarks that require your attention.
-- The same `/setup` page lets you pause or resume automation, change the AI provider, adjust instructions, review status, and obtain the private MCP address for ChatGPT or Claude.
+- The same `/setup` page lets you pause or resume automation, change the AI provider, adjust instructions, review status, and copy the private connection address for ChatGPT or Claude.
+- **Generate a new connection address** replaces the machine secret automatically; you never manage the secret itself.
 - If a free Cloudflare allowance is reached, Later Gator waits for the allowance to reset and continues later. It does not purchase an upgrade automatically.
 
 ## Common problems
@@ -99,4 +100,4 @@ Pause Later Gator first, then delete its Worker, queue, and KV storage from your
 
 ## Project documents
 
-The user journey and product rules are in the [Product Requirements](docs/product-requirements-v5.4.md). The implementation and safety design are in the [Technical Design](docs/technical-design-v1.4.md). Maintainer security and development commands are in [SECURITY.md](SECURITY.md).
+The user journey and product rules are in the [Product Requirements](docs/product-requirements-v5.5.md). The implementation and safety design are in the [Technical Design](docs/technical-design-v1.5.md). Maintainer security and development commands are in [SECURITY.md](SECURITY.md).

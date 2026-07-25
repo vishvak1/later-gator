@@ -3,7 +3,7 @@ import { z } from "zod";
 const SESSION_TTL_SECONDS = 30 * 60;
 const COOKIE_NAME = "later_gator_setup";
 const InstallationSecretSchema = z.object({
-  INSTALLATION_SECRET: z.string().min(16),
+  INSTALLATION_SECRET: z.string().min(10),
 });
 
 export interface SetupSession {

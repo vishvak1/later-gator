@@ -13,15 +13,7 @@ import {
 import { resumePipeline } from "../application/pipeline-control";
 import { parseRuntimeConfig } from "../config";
 import { FolderNameSchema, type ProviderChoice } from "../domain/schemas";
-import {
-  getInstallationSecret,
-  readSetupSession,
-  secretsEqual,
-} from "./setup-auth";
-
-const McpSecretEnvironmentSchema = z.object({
-  MCP_PATH_SECRET: z.string().length(64),
-});
+import { getInstallationSecret, readSetupSession, secretsEqual } from "./setup-auth";
 const DateSchema = z.iso.date();
 const SearchInputSchema = z
   .object({
@@ -52,7 +44,6 @@ export async function handleMcp(
   context: ExecutionContext,
   suppliedSecret: string,
 ): Promise<Response> {
-  const configuredSecret = McpSecretEnvironmentSchema.safeParse(env);
   const credentialStore = new EncryptedCredentialStore(
     env.STATE,
     getInstallationSecret(env),
@@ -63,9 +54,7 @@ export async function handleMcp(
   } catch {
     return new Response(null, { status: 401 });
   }
-  const activeSecret = rotatedSecret ?? (
-    configuredSecret.success ? configuredSecret.data.MCP_PATH_SECRET : null
-  );
+  const activeSecret = rotatedSecret;
   if (
     activeSecret === null ||
     !(await secretsEqual(suppliedSecret, activeSecret))

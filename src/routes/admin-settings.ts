@@ -9,6 +9,7 @@ import { RaindropClient } from "../adapters/raindrop-client";
 import { dispatchUnsorted } from "../application/dispatch";
 import { resumePipeline } from "../application/pipeline-control";
 import { resyncRegistryIfDue } from "../application/registry-resync";
+import { generateMcpSecret } from "../application/mcp-secret";
 import { parseRuntimeConfig } from "../config";
 import type { ProviderChoice } from "../domain/schemas";
 import { readBoundedUrlEncodedForm, RequestBodyError } from "./request-body";
@@ -192,8 +193,7 @@ export async function rotateMcpSecret(request: Request, env: Env): Promise<Respo
   const auth = await requireSetupMutation(request, env, form.get("csrfToken"));
   if (auth instanceof Response) return auth;
   if (form.get("confirmation") !== "ROTATE") return textError("Type ROTATE to confirm.");
-  const bytes = crypto.getRandomValues(new Uint8Array(32));
-  const secret = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const secret = generateMcpSecret();
   await new EncryptedCredentialStore(
     env.STATE,
     getInstallationSecret(env),

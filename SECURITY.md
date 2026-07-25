@@ -6,4 +6,4 @@ As of 2026-07-25, the production audit reports no high or critical findings. It 
 
 The full development audit can additionally report findings through the local Cloudflare test toolchain. Do not process untrusted files with that toolchain. This note records the current assessment; it is not blanket acceptance of future advisories.
 
-Production deployment remains subject to the Technical Design v1.4 gate requiring no unaccepted high-severity findings.
+Production deployment remains subject to the Technical Design v1.5 gate requiring no unaccepted high-severity findings.

@@ -21,6 +21,7 @@ import { OperationalStateStore } from "../adapters/operational-state-store";
 import { FOLDER_NAMES } from "../domain/seed";
 import { requireSetupMutation } from "./setup-auth";
 import { RaindropClient } from "../adapters/raindrop-client";
+import { getOrCreateMcpSecret } from "../application/mcp-secret";
 
 const MAX_LOGIN_BYTES = 4_096;
 
@@ -66,10 +67,16 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
     readRaindropSnapshot(credentialStore),
   ]);
   const csrfToken = escapeHtml(session.csrfToken);
-  const mcpSecret =
-    (await readRotatedMcpSecret(credentialStore)) ?? readMcpSecret(env);
-  const mcpUrl =
-    mcpSecret === null ? null : `${new URL(request.url).origin}/mcp/${mcpSecret}`;
+  const mcpSecret = await getOrCreateMcpSecret(credentialStore);
+  const mcpUrl = `${new URL(request.url).origin}/mcp/${mcpSecret}`;
+  const setupStep =
+    onboardingState.status === "complete"
+      ? 4
+      : installationState !== null
+        ? 3
+        : status.raindrop.configured
+          ? 2
+          : 1;
 
   return htmlResponse(`<!doctype html>
 <html lang="en">
@@ -78,40 +85,199 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Later Gator setup</title>
   <style>
-    :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-    body { margin: 0; padding: 2rem; }
-    main { margin: 0 auto; max-width: 48rem; }
-    section { border: 1px solid #8886; border-radius: .75rem; margin: 1rem 0; padding: 1rem; }
+    :root {
+      color-scheme: light;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --ink: #18342b;
+      --muted: #61756d;
+      --line: #dce7e1;
+      --paper: #ffffff;
+      --canvas: #f2f7f3;
+      --gator: #177a52;
+      --gator-dark: #0f5b3c;
+      --lime: #dff36a;
+      --amber: #a65a17;
+      --danger: #9f3737;
+      --shadow: 0 18px 44px rgba(27, 66, 51, .09);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--canvas); color: var(--ink); }
+    a { color: var(--gator-dark); }
+    .topbar {
+      align-items: center;
+      background: rgba(255, 255, 255, .92);
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      padding: .9rem clamp(1rem, 4vw, 3rem);
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .brand { align-items: center; display: flex; gap: .75rem; font-weight: 800; letter-spacing: -.02em; }
+    .brand-mark {
+      align-items: center;
+      background: var(--gator);
+      border-radius: .8rem;
+      color: white;
+      display: inline-flex;
+      font-size: .85rem;
+      height: 2.25rem;
+      justify-content: center;
+      width: 2.25rem;
+    }
+    main { margin: 0 auto; max-width: 72rem; padding: clamp(1rem, 4vw, 3rem); }
+    .hero {
+      background: linear-gradient(135deg, #123f30 0%, #1b7653 72%, #82a93d 140%);
+      border: 0;
+      border-radius: 1.5rem;
+      box-shadow: var(--shadow);
+      color: white;
+      margin: 0 0 1.25rem;
+      overflow: hidden;
+      padding: clamp(1.5rem, 5vw, 3rem);
+      position: relative;
+    }
+    .hero::after {
+      background: var(--lime);
+      border-radius: 50%;
+      content: "";
+      height: 12rem;
+      opacity: .16;
+      position: absolute;
+      right: -3rem;
+      top: -5rem;
+      width: 12rem;
+    }
+    .eyebrow { font-size: .78rem; font-weight: 800; letter-spacing: .12em; margin: 0 0 .5rem; text-transform: uppercase; }
+    h1 { font-size: clamp(2rem, 5vw, 3.4rem); letter-spacing: -.05em; line-height: 1; margin: 0; }
+    h2 { font-size: 1.15rem; letter-spacing: -.02em; margin: 0 0 .45rem; }
+    p { line-height: 1.55; }
+    .hero-copy { color: #e8f4ee; max-width: 42rem; }
+    .steps { display: grid; gap: .6rem; grid-template-columns: repeat(4, 1fr); margin-top: 1.75rem; position: relative; z-index: 1; }
+    .step {
+      background: rgba(255, 255, 255, .1);
+      border: 1px solid rgba(255, 255, 255, .18);
+      border-radius: .9rem;
+      color: #dcebe4;
+      font-size: .82rem;
+      font-weight: 700;
+      padding: .75rem;
+    }
+    .step.done { background: rgba(223, 243, 106, .18); color: white; }
+    .step.current { background: var(--lime); border-color: var(--lime); color: #153329; }
+    .step-number { display: block; font-size: .7rem; margin-bottom: .2rem; opacity: .72; }
+    .summary {
+      display: grid;
+      gap: 1rem;
+      grid-template-columns: repeat(3, 1fr);
+      margin-bottom: 1.25rem;
+    }
+    .summary-card { background: var(--paper); border: 1px solid var(--line); border-radius: 1rem; padding: 1rem 1.1rem; }
+    .summary-label { color: var(--muted); display: block; font-size: .75rem; font-weight: 800; letter-spacing: .08em; margin-bottom: .35rem; text-transform: uppercase; }
+    .summary-value { font-size: 1rem; font-weight: 800; }
+    .setup-grid, .settings-grid { display: grid; gap: 1rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    section, details.card {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 1.15rem;
+      box-shadow: 0 8px 24px rgba(27, 66, 51, .04);
+      margin: 0 0 1rem;
+      padding: 1.25rem;
+    }
+    .full { grid-column: 1 / -1; }
+    .section-kicker { color: var(--gator); font-size: .72rem; font-weight: 900; letter-spacing: .1em; margin: 0 0 .4rem; text-transform: uppercase; }
     form { display: grid; gap: .75rem; margin-top: 1rem; }
-    label { display: grid; gap: .35rem; }
-    input, select, button { font: inherit; padding: .65rem; }
-    .status { font-weight: 700; }
-    .configured { color: #16803b; }
-    .missing { color: #a1420b; }
-    .danger { border-color: #a1420b; }
+    label { color: var(--ink); display: grid; font-size: .9rem; font-weight: 700; gap: .4rem; }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea {
+      background: #fbfdfb;
+      border: 1px solid #cbdad2;
+      border-radius: .7rem;
+      color: var(--ink);
+      min-width: 0;
+      padding: .72rem .8rem;
+      width: 100%;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--gator); box-shadow: 0 0 0 3px rgba(23, 122, 82, .12); outline: 0; }
+    button, .button {
+      background: var(--gator);
+      border: 0;
+      border-radius: .7rem;
+      color: white;
+      cursor: pointer;
+      font-weight: 800;
+      justify-self: start;
+      padding: .72rem 1rem;
+    }
+    button:hover, .button:hover { background: var(--gator-dark); }
+    .secondary { background: #e9f2ed; color: var(--gator-dark); }
+    .status { border-radius: 999px; display: inline-block; font-size: .76rem; font-weight: 800; padding: .32rem .6rem; }
+    .configured { background: #e0f4e7; color: #11613d; }
+    .missing { background: #fff0df; color: var(--amber); }
+    .danger { background: #fffafa; border-color: #efcccc; }
+    .danger button { background: var(--danger); }
+    .helper { color: var(--muted); font-size: .88rem; margin: .35rem 0; }
+    .connection-row { align-items: center; display: flex; gap: .6rem; }
+    .connection-row input { flex: 1; }
+    details.card > summary { cursor: pointer; font-weight: 800; list-style: none; }
+    details.card > summary::after { color: var(--gator); content: "+"; float: right; font-size: 1.3rem; }
+    details.card[open] > summary::after { content: "−"; }
+    .settings-title { margin: 2rem 0 1rem; }
+    .setup-hidden { display: none; }
+    pre { background: #153329; border-radius: .7rem; color: #eff8f2; overflow: auto; padding: .8rem; white-space: pre-wrap; }
+    ul { padding-left: 1.25rem; }
+    @media (max-width: 760px) {
+      .summary, .setup-grid, .settings-grid { grid-template-columns: 1fr; }
+      .steps { grid-template-columns: repeat(2, 1fr); }
+      .full { grid-column: auto; }
+      .steps { gap: .4rem; }
+      .topbar { position: static; }
+    }
   </style>
+  <script src="/setup.js" defer></script>
 </head>
 <body>
+<header class="topbar">
+  <div class="brand"><span class="brand-mark">LG</span> Later Gator</div>
+  <form method="post" action="/setup/logout"><input type="hidden" name="csrfToken" value="${csrfToken}"><button class="secondary" type="submit">Sign out</button></form>
+</header>
 <main>
-  <h1>Later Gator setup</h1>
-  <p>Enter credentials here. Stored values are encrypted and are never displayed back.</p>
-  <p><strong>${pipeline.paused ? "Paused" : pipeline.deferredUntil === null ? "Running" : "Waiting"}</strong> — ${pipelineMessage(pipeline.paused, pipeline.pauseReason, pipeline.deferredUntil)}</p>
-  <p>Connected account: ${raindropSnapshot === null ? "unavailable" : `${escapeHtml(raindropSnapshot.name)} (ID ${raindropSnapshot.id.toString()})`}. Pending Unsorted: ${raindropSnapshot?.pending?.toString() ?? "unavailable"}.</p>
-  <form method="post" action="/setup/logout"><input type="hidden" name="csrfToken" value="${csrfToken}"><button type="submit">Sign out</button></form>
+  <section class="hero">
+    <p class="eyebrow">${onboardingState.status === "complete" ? "Your bookmark control room" : "Private setup · about five minutes"}</p>
+    <h1>${onboardingState.status === "complete" ? "Everything is under control." : "Let’s organize your Raindrop."}</h1>
+    <p class="hero-copy">${onboardingState.status === "complete" ? "Review activity, change how Later Gator works, or connect it to your AI assistant." : "Follow the four steps below. Nothing changes in Raindrop until you review the account and press Start onboarding."}</p>
+    <div class="steps" aria-label="Setup progress">
+      ${progressStep(1, setupStep, "Connect", "Raindrop")}
+      ${progressStep(2, setupStep, "Check", "AI and installation")}
+      ${progressStep(3, setupStep, "Onboard", "Review and confirm")}
+      ${progressStep(4, setupStep, "Organize", "Automatic")}
+    </div>
+  </section>
 
+  <div class="summary">
+    <div class="summary-card"><span class="summary-label">Raindrop account</span><span class="summary-value">${raindropSnapshot === null ? "Not connected" : escapeHtml(raindropSnapshot.name)}</span></div>
+    <div class="summary-card"><span class="summary-label">Unsorted bookmarks</span><span class="summary-value">${raindropSnapshot?.pending?.toString() ?? "—"}</span></div>
+    <div class="summary-card"><span class="summary-label">Automation</span><span class="summary-value">${pipeline.paused ? "Needs attention" : pipeline.deferredUntil === null ? "Ready" : "Waiting safely"}</span></div>
+  </div>
+
+  <div class="setup-grid">
   <section>
+    <p class="section-kicker">Step 1</p>
     <h2>Raindrop</h2>
     ${statusLabel(status.raindrop.configured)}
+    <p class="helper">Use the token from the test account you want to organize. Saving it does not change any bookmarks.</p>
     <form method="post" action="/admin/credentials/raindrop">
       <input type="hidden" name="csrfToken" value="${csrfToken}">
-      <label>Enter or replace Raindrop token
+      <label>${status.raindrop.configured ? "Replace Raindrop token" : "Raindrop test token"}
         <input name="credential" type="password" minlength="8" maxlength="4096" required autocomplete="new-password">
       </label>
-      <button type="submit">Save Raindrop token</button>
+      <button type="submit">${status.raindrop.configured ? "Replace connection" : "Connect Raindrop"}</button>
     </form>
   </section>
 
-  <section>
+  <details class="card">
+    <summary>Personal instructions <span class="helper">Optional</span></summary>
     <h2>Instructions</h2>
     <p>Revision ${providerState.active.promptRevision.toString()}. Changes apply to the next bookmark.</p>
     <form method="post" action="/admin/settings/prompt">
@@ -133,13 +299,16 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
       <label>Type RESTORE <input name="confirmation" required></label>
       <button type="submit">Restore shipped prompt</button>
     </form>
-  </section>
+  </details>
 
   <section>
+    <p class="section-kicker">Step 2</p>
     <h2>Organization provider</h2>
-    <p>Active: <strong>${escapeHtml(providerState.active.provider)}</strong> using <code>${escapeHtml(providerState.active.model)}</code>.</p>
-    <p>Testing uses only a synthetic “Later Gator” response—never bookmark content.</p>
+    <p>Active: <strong>${providerName(providerState.active.provider)}</strong></p>
+    <p class="helper">Cloudflare Workers AI is free to start and needs no external key. The test uses no bookmark content.</p>
     <p>OpenAI: ${statusLabel(status.openai.configured)}<br>Anthropic: ${statusLabel(status.anthropic.configured)}</p>
+    <details>
+      <summary>Use OpenAI or Anthropic instead</summary>
     <form method="post" action="/admin/credentials/provider">
       <input type="hidden" name="csrfToken" value="${csrfToken}">
       <label>Provider
@@ -153,6 +322,7 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
       </label>
       <button type="submit">Save provider key</button>
     </form>
+    </details>
     <form method="post" action="/admin/provider/test">
       <input type="hidden" name="csrfToken" value="${csrfToken}">
       <label>Provider to test
@@ -168,6 +338,8 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
       <button type="submit">Test candidate</button>
     </form>
     ${candidatePanel(providerState.candidate, providerState.candidateTestSucceeded, csrfToken)}
+    <details>
+      <summary>Manage saved external-provider keys</summary>
     <form class="danger" method="post" action="/admin/credentials/provider/remove">
       <input type="hidden" name="csrfToken" value="${csrfToken}">
       <label>Remove stored key for
@@ -181,11 +353,16 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
       </label>
       <button type="submit">Remove provider key</button>
     </form>
+    </details>
   </section>
 
   <section>
+    <p class="section-kicker">Step 2</p>
     <h2>Email alerts</h2>
-    <p>Status: <strong>${escapeHtml(emailState.status)}</strong>. A successful test requires a Cloudflare Email Sending domain and a verified destination.</p>
+    <p>Status: <strong>${emailStatusName(emailState.status)}</strong></p>
+    <p class="helper">Email is optional for testing. It is only used when Later Gator needs your help.</p>
+    <details>
+      <summary>I have a Cloudflare email domain</summary>
     <form method="post" action="/admin/email/test">
       <input type="hidden" name="csrfToken" value="${csrfToken}">
       <label>Sender on your Cloudflare Email Sending domain
@@ -196,17 +373,19 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
       </label>
       <button type="submit">Send test email</button>
     </form>
-    <form class="danger" method="post" action="/admin/email/unavailable">
+    </details>
+    <form method="post" action="/admin/email/unavailable">
       <input type="hidden" name="csrfToken" value="${csrfToken}">
       <label>
         <input name="acknowledgement" type="checkbox" value="alerts_disabled" required>
         Continue without automatic intervention alerts
       </label>
-      <button type="submit">Record email unavailable</button>
+      <button class="secondary" type="submit">Continue without email alerts</button>
     </form>
   </section>
 
   <section>
+    <p class="section-kicker">Step 2</p>
     <h2>Installation validation</h2>
     ${installationSummary(installationState)}
     <p>This checks bindings, the saved Raindrop token, the active provider, and the recorded email state. It does not change Raindrop.</p>
@@ -216,14 +395,15 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
     </form>
   </section>
 
-  <section>
-    <h2>Next</h2>
+  <section class="full">
+    <p class="section-kicker">Step 3</p>
+    <h2>Review and start onboarding</h2>
     <p>Onboarding status: <strong>${escapeHtml(onboardingState.status)}</strong>${onboardingState.currentStep === null ? "" : ` — ${escapeHtml(onboardingState.currentStep)}`}.</p>
     ${
       onboardingState.status === "not_started"
         ? `<form method="post" action="/admin/onboarding/check">
       <input type="hidden" name="csrfToken" value="${csrfToken}">
-      <button type="submit">Check fresh or existing account</button>
+      <button type="submit">Review my Raindrop account</button>
     </form>`
         : onboardingState.status === "in_progress"
           ? `<form method="post" action="/admin/onboarding/continue">
@@ -233,15 +413,31 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
     </form>`
           : "<p>Onboarding is complete. Routine organization can now run.</p>"
     }
-    <form class="danger" method="post" action="/admin/onboarding/reset">
+    ${
+      onboardingState.status === "complete"
+        ? `<form class="danger" method="post" action="/admin/onboarding/reset">
       <input type="hidden" name="csrfToken" value="${csrfToken}">
       <label>Reset lifecycle state only
         <input name="confirmation" required placeholder="Type RESET">
       </label>
       <button type="submit">Reset onboarding state</button>
-    </form>
+    </form>`
+        : ""
+    }
   </section>
+  </div>
 
+  ${
+    onboardingState.status === "complete"
+      ? ""
+      : `<section class="full">
+    <p class="section-kicker">After onboarding</p>
+    <h2>Your controls will appear here</h2>
+    <p class="helper">Once setup is complete, this page becomes your control room for backfill, pause and resume, AI choices, activity, and the one-click ChatGPT or Claude connection address.</p>
+  </section>`
+  }
+  <h2 class="settings-title ${onboardingState.status === "complete" ? "" : "setup-hidden"}">Controls and settings</h2>
+  <div class="settings-grid ${onboardingState.status === "complete" ? "" : "setup-hidden"}">
   <section>
     <h2>Automation</h2>
     <p>Mode: <strong>${escapeHtml(pipeline.mode)}</strong>. Leased items: ${Object.keys(dispatch.leases).length.toString()}. Last discovery: ${escapeHtml(dispatch.lastDiscoveryAt ?? "not yet")}.</p>
@@ -262,15 +458,11 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
 
   <section>
     <h2>Search and MCP</h2>
-    ${
-      mcpUrl === null
-        ? "<p>MCP path secret is missing or invalid. Configure a random 64-character secret.</p>"
-        : `<p>Private MCP URL:</p><input readonly value="${escapeHtml(mcpUrl)}" aria-label="MCP URL">
-    <pre>ChatGPT / Claude remote MCP URL: ${escapeHtml(mcpUrl)}</pre>`
-    }
+    <p class="helper">Later Gator created this private connection address automatically. You never need to manage its machine secret.</p>
+    <div class="connection-row"><input id="mcp-url" readonly value="${escapeHtml(mcpUrl)}" aria-label="MCP connection address"><button type="button" data-copy-target="mcp-url">Copy connection address</button></div>
     <p>The MCP server exposes context, search, pipeline status, and validated resume only.</p>
     <p><a href="/admin/mcp/context" target="_blank" rel="noreferrer">Test safe MCP context</a></p>
-    <form method="post" action="/admin/mcp/rotate"><input type="hidden" name="csrfToken" value="${csrfToken}"><label>Type ROTATE <input name="confirmation" required></label><button type="submit">Rotate MCP path secret</button></form>
+    <form method="post" action="/admin/mcp/rotate"><input type="hidden" name="csrfToken" value="${csrfToken}"><input type="hidden" name="confirmation" value="ROTATE"><button class="secondary" type="submit">Generate a new connection address</button></form>
   </section>
 
   <section>
@@ -290,6 +482,7 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
     <h2>Maintenance and uninstall</h2>
     <p>Replace credentials above, rerun the account check after a lifecycle reset, or rebuild the registry here. To uninstall, disable Cron and Queue triggers, remove the Worker, Queue, and KV namespace in Cloudflare, then revoke the Later Gator Raindrop token and any provider keys.</p>
   </section>
+  </div>
 </main>
 </body>
 </html>`);
@@ -297,7 +490,13 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
 
 export async function login(request: Request, env: Env): Promise<Response> {
   const requestOrigin = request.headers.get("origin");
-  if (requestOrigin !== new URL(request.url).origin) return new Response(null, { status: 403 });
+  const requestUrl = new URL(request.url);
+  const isLocalDevelopment =
+    (requestUrl.hostname === "localhost" || requestUrl.hostname === "127.0.0.1") &&
+    parseRuntimeConfig(env).ENVIRONMENT === "development";
+  if (requestOrigin !== requestUrl.origin && !isLocalDevelopment) {
+    return new Response(null, { status: 403 });
+  }
 
   let body: URLSearchParams;
   try {
@@ -390,21 +589,6 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;");
 }
 
-function readMcpSecret(env: Env): string | null {
-  const value: unknown = (env as Env & { MCP_PATH_SECRET?: unknown }).MCP_PATH_SECRET;
-  return typeof value === "string" && value.length === 64 ? value : null;
-}
-
-async function readRotatedMcpSecret(
-  store: EncryptedCredentialStore,
-): Promise<string | null> {
-  try {
-    return await store.get("mcpPath");
-  } catch {
-    return null;
-  }
-}
-
 async function readRaindropSnapshot(
   store: EncryptedCredentialStore,
 ): Promise<{ id: number; name: string; pending: number | null } | null> {
@@ -422,16 +606,6 @@ async function readRaindropSnapshot(
   }
 }
 
-function pipelineMessage(
-  paused: boolean,
-  reason: string | null,
-  deferredUntil: string | null,
-): string {
-  if (paused) return `Action required: ${reason ?? "check configuration"}.`;
-  if (deferredUntil !== null) return `Work resumes after ${deferredUntil}.`;
-  return "Bookmarks saved to Unsorted are eligible for organization.";
-}
-
 function topTags(
   tags: Record<string, { count: number }>,
 ): string {
@@ -442,10 +616,109 @@ function topTags(
     .join(", ");
 }
 
+function progressStep(
+  index: number,
+  current: number,
+  label: string,
+  description: string,
+): string {
+  const state = index < current ? "done" : index === current ? "current" : "";
+  return `<div class="step ${state}"><span class="step-number">0${index.toString()}</span>${escapeHtml(label)}<br><span>${escapeHtml(description)}</span></div>`;
+}
+
+function providerName(provider: ProviderChoice["provider"]): string {
+  if (provider === "workers-ai") return "Cloudflare Workers AI";
+  return provider === "openai" ? "OpenAI" : "Anthropic";
+}
+
+function emailStatusName(status: string): string {
+  if (status === "ready") return "Ready";
+  if (status === "unavailable") return "Continuing without email";
+  return "Not decided yet";
+}
+
 function loginPage(): Response {
   return htmlResponse(`<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Later Gator login</title></head>
-<body><main><h1>Later Gator setup</h1><form method="post" action="/setup/login"><label>Installation secret <input name="secret" type="password" required autocomplete="current-password"></label><button type="submit">Sign in</button></form></main></body></html>`);
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Later Gator login</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    * { box-sizing: border-box; }
+    body {
+      align-items: center;
+      background: radial-gradient(circle at 80% 10%, #dff36a 0, #dff36a 9rem, transparent 9.1rem), linear-gradient(145deg, #eef6f0, #f8faf7);
+      color: #18342b;
+      display: grid;
+      margin: 0;
+      min-height: 100vh;
+      padding: 1.25rem;
+    }
+    main { margin: auto; max-width: 28rem; width: 100%; }
+    .mark { align-items: center; background: #177a52; border-radius: 1rem; color: white; display: flex; font-weight: 900; height: 3rem; justify-content: center; margin-bottom: 1.2rem; width: 3rem; }
+    .card { background: white; border: 1px solid #dce7e1; border-radius: 1.4rem; box-shadow: 0 24px 60px rgba(27, 66, 51, .12); padding: clamp(1.5rem, 6vw, 2.5rem); }
+    .eyebrow { color: #177a52; font-size: .76rem; font-weight: 900; letter-spacing: .12em; margin: 0 0 .5rem; text-transform: uppercase; }
+    h1 { font-size: 2.2rem; letter-spacing: -.05em; line-height: 1; margin: 0; }
+    p { color: #61756d; line-height: 1.55; }
+    form { display: grid; gap: .8rem; margin-top: 1.5rem; }
+    label { display: grid; font-size: .9rem; font-weight: 800; gap: .4rem; }
+    input { border: 1px solid #cbdad2; border-radius: .75rem; font: inherit; padding: .85rem; width: 100%; }
+    input:focus { border-color: #177a52; box-shadow: 0 0 0 3px rgba(23, 122, 82, .12); outline: 0; }
+    button { background: #177a52; border: 0; border-radius: .75rem; color: white; cursor: pointer; font: inherit; font-weight: 900; padding: .85rem; }
+    .note { font-size: .82rem; margin-bottom: 0; }
+  </style>
+</head>
+<body>
+<main>
+  <div class="card">
+    <div class="mark">LG</div>
+    <p class="eyebrow">Your private bookmark assistant</p>
+    <h1>Welcome to Later Gator.</h1>
+    <p>Enter the setup password you chose during Cloudflare deployment.</p>
+    <form method="post" action="/setup/login">
+      <label>Setup password
+        <input name="secret" type="password" minlength="10" required autocomplete="current-password" autofocus>
+      </label>
+      <button type="submit">Open Later Gator</button>
+    </form>
+    <p class="note">Your password stays between this browser and your Cloudflare Worker.</p>
+  </div>
+</main>
+</body>
+</html>`);
+}
+
+export function setupScript(): Response {
+  return new Response(
+    `document.addEventListener("click", async (event) => {
+  const button = event.target instanceof Element
+    ? event.target.closest("[data-copy-target]")
+    : null;
+  if (!(button instanceof HTMLButtonElement)) return;
+  const targetId = button.dataset.copyTarget;
+  const target = targetId === undefined ? null : document.getElementById(targetId);
+  if (!(target instanceof HTMLInputElement)) return;
+  try {
+    await navigator.clipboard.writeText(target.value);
+    const original = button.textContent;
+    button.textContent = "Copied";
+    window.setTimeout(() => { button.textContent = original; }, 1800);
+  } catch {
+    target.focus();
+    target.select();
+    button.textContent = "Press Command-C";
+  }
+});`,
+    {
+      headers: {
+        "content-type": "text/javascript; charset=utf-8",
+        "cache-control": "public, max-age=3600",
+        "x-content-type-options": "nosniff",
+      },
+    },
+  );
 }
 
 function htmlResponse(body: string, status = 200): Response {
@@ -455,7 +728,7 @@ function htmlResponse(body: string, status = 200): Response {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
       "content-security-policy":
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        "default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
       "referrer-policy": "no-referrer",
       "x-content-type-options": "nosniff",
     },

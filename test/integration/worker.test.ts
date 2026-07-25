@@ -25,10 +25,19 @@ describe("Worker HTTP surface", () => {
     expect(response.headers.get("cache-control")).toBe("no-store");
   });
 
+  it("serves the small setup-page enhancement script", async () => {
+    const response = await exports.default.fetch("https://example.test/setup.js");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/javascript");
+    expect(await response.text()).toContain("navigator.clipboard.writeText");
+  });
+
   it("returns the setup login page without a session", async () => {
     const response = await exports.default.fetch("https://example.test/setup");
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("Installation secret");
+    const html = await response.text();
+    expect(html).toContain("Setup password");
+    expect(html).toContain('minlength="10"');
   });
 
   it("rejects an invalid installation secret", async () => {
@@ -60,7 +69,10 @@ describe("Worker HTTP surface", () => {
     const authenticated = await exports.default.fetch("https://example.test/setup", {
       headers: { cookie: cookie ?? "" },
     });
-    expect(await authenticated.text()).toContain("Enter credentials here");
+    const html = await authenticated.text();
+    expect(html).toContain("Let’s organize your Raindrop.");
+    expect(html).toContain("Copy connection address");
+    expect(/\/mcp\/[a-f0-9]{64}/u.test(html)).toBe(true);
   });
 
   it("rejects credential changes without a valid session and CSRF token", async () => {
@@ -140,7 +152,12 @@ describe("Worker HTTP surface", () => {
       },
     );
     expect(response.status).toBe(403);
-    await expect(env.STATE.get("credentials:v1")).resolves.toBeNull();
+    const persisted = await env.STATE.get<{
+      raindrop: unknown;
+      mcpPath: unknown;
+    }>("credentials:v1", "json");
+    expect(persisted?.raindrop).toBeNull();
+    expect(persisted?.mcpPath).not.toBeNull();
   });
 
   it("does not activate a provider candidate that has not passed its test", async () => {
@@ -212,6 +229,13 @@ describe("Worker HTTP surface", () => {
 
   it("rotates the MCP path secret through the authenticated settings page", async () => {
     const { cookie, csrfToken } = await authenticatedSetup();
+    const originalPage = await exports.default.fetch("https://example.test/setup", {
+      headers: { cookie },
+    });
+    const originalHtml = await originalPage.text();
+    const oldSecret = /\/mcp\/([a-f0-9]{64})/u.exec(originalHtml)?.[1];
+    expect(oldSecret).toHaveLength(64);
+
     const rotated = await exports.default.fetch(
       "https://example.test/admin/mcp/rotate",
       {
@@ -228,11 +252,10 @@ describe("Worker HTTP surface", () => {
     const html = await page.text();
     const secret = /\/mcp\/([a-f0-9]{64})/u.exec(html)?.[1];
     expect(secret).toHaveLength(64);
+    expect(secret).not.toBe(oldSecret);
 
-    const oldSecret =
-      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
     const oldResponse = await exports.default.fetch(
-      `https://example.test/mcp/${oldSecret}`,
+      `https://example.test/mcp/${oldSecret ?? ""}`,
       { method: "POST" },
     );
     expect(oldResponse.status).toBe(401);

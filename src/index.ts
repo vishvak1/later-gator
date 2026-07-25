@@ -20,7 +20,7 @@ import {
   onboardingReset,
   onboardingStart,
 } from "./routes/admin-onboarding";
-import { login, logout, setupPage } from "./routes/setup-page";
+import { login, logout, setupPage, setupScript } from "./routes/setup-page";
 import { adminMcpContext, handleMcp } from "./routes/mcp";
 import {
   continueBackfill,
@@ -48,6 +48,7 @@ const worker: ExportedHandler<Env> = {
       return handleMcp(request, env, context, mcpMatch[1] ?? "");
     }
     if (request.method === "GET" && url.pathname === "/setup") return setupPage(request, env);
+    if (request.method === "GET" && url.pathname === "/setup.js") return setupScript();
     if (request.method === "POST" && url.pathname === "/setup/login") return login(request, env);
     if (request.method === "POST" && url.pathname === "/setup/logout") return logout(request, env);
     if (request.method === "GET" && url.pathname === "/admin/credentials/status") {

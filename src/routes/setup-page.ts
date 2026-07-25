@@ -20,7 +20,10 @@ import { AdminStateStore } from "../adapters/admin-state-store";
 import { OperationalStateStore } from "../adapters/operational-state-store";
 import { FOLDER_NAMES } from "../domain/seed";
 import { requireSetupMutation } from "./setup-auth";
-import { RaindropClient } from "../adapters/raindrop-client";
+import {
+  RaindropClient,
+  type RaindropUser,
+} from "../adapters/raindrop-client";
 import { getOrCreateMcpSecret } from "../application/mcp-secret";
 import {
   diagnoseRaindropConnection,
@@ -604,35 +607,54 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;");
 }
 
-async function readRaindropSnapshot(
+export async function readRaindropSnapshot(
   store: EncryptedCredentialStore,
+  request: typeof fetch = fetch,
 ): Promise<RaindropSnapshot> {
+  let token: string | null;
   try {
-    const token = await store.get("raindrop");
-    if (token === null) return { status: "not_configured" };
-    const client = new RaindropClient(token);
-    const [user, page] = await Promise.all([
-      client.getCurrentUser(),
-      client.listRaindrops(-1, { page: 0, perPage: 1 }),
-    ]);
+    token = await store.get("raindrop");
+  } catch (error) {
+    return { status: "error", diagnostic: diagnoseRaindropConnection(error) };
+  }
+  if (token === null) return { status: "not_configured" };
+
+  const client = new RaindropClient(token, request);
+  let user: RaindropUser;
+  try {
+    user = await client.getCurrentUser();
+  } catch (error) {
+    return { status: "error", diagnostic: diagnoseRaindropConnection(error) };
+  }
+
+  try {
+    const page = await client.listRaindrops(-1, { page: 0, perPage: 1 });
     return {
       status: "connected",
       id: user.id,
       name: user.fullName,
       pending: page.totalCount,
+      pendingDiagnostic: null,
     };
   } catch (error) {
-    return { status: "error", diagnostic: diagnoseRaindropConnection(error) };
+    return {
+      status: "connected",
+      id: user.id,
+      name: user.fullName,
+      pending: null,
+      pendingDiagnostic: diagnoseRaindropConnection(error),
+    };
   }
 }
 
-type RaindropSnapshot =
+export type RaindropSnapshot =
   | { status: "not_configured" }
   | {
       status: "connected";
       id: number;
       name: string;
       pending: number | null;
+      pendingDiagnostic: RaindropConnectionDiagnostic | null;
     }
   | { status: "error"; diagnostic: RaindropConnectionDiagnostic };
 
@@ -643,8 +665,16 @@ function raindropSummary(snapshot: RaindropSnapshot): string {
 }
 
 function raindropDiagnosticPanel(snapshot: RaindropSnapshot): string {
-  if (snapshot.status !== "error") return "";
-  return `<div class="connection-problem" role="alert"><strong>${escapeHtml(snapshot.diagnostic.summary)}</strong>${escapeHtml(snapshot.diagnostic.message)}</div>`;
+  if (snapshot.status === "error") {
+    return `<div class="connection-problem" role="alert"><strong>${escapeHtml(snapshot.diagnostic.summary)}</strong>${escapeHtml(snapshot.diagnostic.message)}</div>`;
+  }
+  if (
+    snapshot.status === "connected" &&
+    snapshot.pendingDiagnostic !== null
+  ) {
+    return `<div class="connection-problem" role="status"><strong>Account connected; bookmark count unavailable</strong>Later Gator connected to ${escapeHtml(snapshot.name)}, but could not read the Unsorted bookmark count. ${escapeHtml(snapshot.pendingDiagnostic.message)}</div>`;
+  }
+  return "";
 }
 
 function topTags(

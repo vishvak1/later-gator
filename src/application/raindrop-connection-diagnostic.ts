@@ -2,6 +2,7 @@ import { z } from "zod";
 import { CredentialDecryptionError } from "../adapters/encrypted-credential-store";
 import {
   RaindropHttpError,
+  RaindropNetworkError,
   RaindropResponseError,
 } from "../adapters/raindrop-client";
 
@@ -68,6 +69,14 @@ export function diagnoseRaindropConnection(
       summary: "Unexpected Raindrop reply",
       message:
         "Raindrop replied, but Later Gator could not understand the response. Your token and bookmarks were not changed.",
+    };
+  }
+
+  if (error instanceof RaindropNetworkError) {
+    return {
+      code: "unreachable",
+      summary: "Could not reach Raindrop",
+      message: `Cloudflare could not complete the secure connection to Raindrop after ${error.attempts.toString()} attempts. Your saved token and bookmarks were not changed.`,
     };
   }
 

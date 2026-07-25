@@ -4,6 +4,7 @@ import { readBoundedJsonResponse } from "./bounded-json-response";
 const BASE_URL = "https://api.raindrop.io/rest/v1/";
 const MAX_RESPONSE_BYTES = 512_000;
 const MAX_PAGE_SIZE = 50;
+const MAX_READ_ATTEMPTS = 3;
 
 const UserEnvelopeSchema = z.looseObject({
   result: z.literal(true),
@@ -121,6 +122,14 @@ export class RaindropResponseError extends Error {
 
   constructor() {
     super("Raindrop returned an unreadable response");
+  }
+}
+
+export class RaindropNetworkError extends Error {
+  override readonly name = "RaindropNetworkError";
+
+  constructor(readonly attempts: number) {
+    super(`Raindrop network request failed after ${attempts.toString()} attempts`);
   }
 }
 
@@ -296,7 +305,7 @@ export class RaindropClient {
     headers.set("authorization", `Bearer ${this.token}`);
     if (init.body !== undefined) headers.set("content-type", "application/json");
 
-    const response = await this.request(
+    const response = await this.send(
       typeof pathOrUrl === "string" ? this.url(pathOrUrl) : pathOrUrl,
       { ...init, headers },
     );
@@ -309,6 +318,24 @@ export class RaindropClient {
     }
     if (!response.ok) throw new RaindropHttpError(response.status, retryAt(response));
     return payload;
+  }
+
+  private async send(url: URL, init: RequestInit): Promise<Response> {
+    const method = (init.method ?? "GET").toUpperCase();
+    const maxAttempts = method === "GET" ? MAX_READ_ATTEMPTS : 1;
+    const request = this.request;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      try {
+        return await request(url, init);
+      } catch {
+        if (attempt === maxAttempts) {
+          throw new RaindropNetworkError(attempt);
+        }
+      }
+    }
+
+    throw new RaindropNetworkError(maxAttempts);
   }
 }
 

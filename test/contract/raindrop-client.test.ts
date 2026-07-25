@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   RaindropClient,
+  RaindropNetworkError,
   RaindropResponseError,
 } from "../../src/adapters/raindrop-client";
 
@@ -20,6 +21,54 @@ describe("RaindropClient contract", () => {
 
     const client = new RaindropClient("redacted-test-token", request);
     await expect(client.getCurrentUser()).resolves.toEqual({ id: 42, fullName: "Test User" });
+  });
+
+  it("invokes the request function without binding it to the client instance", async () => {
+    const request = vi.fn(function (
+      this: unknown,
+    ): Promise<Response> {
+      expect(this).toBeUndefined();
+      return Promise.resolve(
+        Response.json({
+          result: true,
+          user: { _id: 42, fullName: "Test User" },
+        }),
+      );
+    });
+
+    await expect(
+      new RaindropClient("redacted-test-token", request).getCurrentUser(),
+    ).resolves.toEqual({ id: 42, fullName: "Test User" });
+  });
+
+  it("retries read-only network failures before succeeding", async () => {
+    const request = vi
+      .fn<typeof fetch>()
+      .mockRejectedValueOnce(new TypeError("Network connection lost"))
+      .mockResolvedValueOnce(
+        Response.json({
+          result: true,
+          user: { _id: 42, fullName: "Test User" },
+        }),
+      );
+
+    await expect(
+      new RaindropClient("redacted-test-token", request).getCurrentUser(),
+    ).resolves.toEqual({ id: 42, fullName: "Test User" });
+    expect(request).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops retrying a read-only network failure after three attempts", async () => {
+    const request = vi
+      .fn<typeof fetch>()
+      .mockRejectedValue(new TypeError("Network connection lost"));
+
+    await expect(
+      new RaindropClient("redacted-test-token", request).getCurrentUser(),
+    ).rejects.toMatchObject(
+      new RaindropNetworkError(3),
+    );
+    expect(request).toHaveBeenCalledTimes(3);
   });
 
   it("rejects an unsuccessful Raindrop envelope", async () => {

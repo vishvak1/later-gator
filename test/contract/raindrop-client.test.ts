@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { RaindropClient } from "../../src/adapters/raindrop-client";
+import {
+  RaindropClient,
+  RaindropResponseError,
+} from "../../src/adapters/raindrop-client";
 
 describe("RaindropClient contract", () => {
   it("projects the authenticated-user envelope and sends auth only to Raindrop", async () => {
@@ -30,7 +33,9 @@ describe("RaindropClient contract", () => {
       Promise.resolve(new Response("{}", { headers: { "content-length": "512001" } })),
     );
     const client = new RaindropClient("redacted-test-token", request);
-    await expect(client.getCurrentUser()).rejects.toThrow("too large");
+    await expect(client.getCurrentUser()).rejects.toBeInstanceOf(
+      RaindropResponseError,
+    );
   });
 
   it("lists root and child collections and projects only onboarding fields", async () => {

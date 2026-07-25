@@ -5,6 +5,7 @@ import { createOrganizationProvider } from "../adapters/organization-provider";
 import { ProviderConfigStore } from "../adapters/provider-config-store";
 import { RaindropClient } from "../adapters/raindrop-client";
 import { parseRuntimeConfig } from "../config";
+import { diagnoseRaindropConnection } from "./raindrop-connection-diagnostic";
 import {
   InstallationStateSchema,
   type InstallationState,
@@ -34,7 +35,14 @@ export async function validateInstallation(
   await validateKvBinding(env);
 
   const credentialStore = new EncryptedCredentialStore(env.STATE, installationSecret);
-  const raindropToken = await credentialStore.get("raindrop");
+  let raindropToken: string | null;
+  try {
+    raindropToken = await credentialStore.get("raindrop");
+  } catch (error) {
+    throw new InstallationValidationError(
+      diagnoseRaindropConnection(error).message,
+    );
+  }
   if (raindropToken === null) {
     throw new InstallationValidationError("Raindrop token is missing");
   }
@@ -43,8 +51,10 @@ export async function validateInstallation(
   try {
     const user = await new RaindropClient(raindropToken, dependencies.request).getCurrentUser();
     raindropUserId = user.id;
-  } catch {
-    throw new InstallationValidationError("Raindrop connection test failed");
+  } catch (error) {
+    throw new InstallationValidationError(
+      diagnoseRaindropConnection(error).message,
+    );
   }
 
   const providerStore = new ProviderConfigStore(env.STATE, initialChoice(config));

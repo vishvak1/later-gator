@@ -116,6 +116,14 @@ export class RaindropHttpError extends Error {
   }
 }
 
+export class RaindropResponseError extends Error {
+  override readonly name = "RaindropResponseError";
+
+  constructor() {
+    super("Raindrop returned an unreadable response");
+  }
+}
+
 export class RaindropClient {
   constructor(
     private readonly token: string,
@@ -295,10 +303,9 @@ export class RaindropClient {
     let payload: unknown;
     try {
       payload = await readBoundedJsonResponse(response, MAX_RESPONSE_BYTES);
-    } catch (error) {
+    } catch {
       if (!response.ok) throw new RaindropHttpError(response.status, retryAt(response));
-      if (error instanceof Error && error.message === "Response is too large") throw error;
-      throw new Error("Raindrop returned unreadable JSON", { cause: error });
+      throw new RaindropResponseError();
     }
     if (!response.ok) throw new RaindropHttpError(response.status, retryAt(response));
     return payload;

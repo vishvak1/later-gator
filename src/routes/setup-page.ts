@@ -22,6 +22,10 @@ import { FOLDER_NAMES } from "../domain/seed";
 import { requireSetupMutation } from "./setup-auth";
 import { RaindropClient } from "../adapters/raindrop-client";
 import { getOrCreateMcpSecret } from "../application/mcp-secret";
+import {
+  diagnoseRaindropConnection,
+  type RaindropConnectionDiagnostic,
+} from "../application/raindrop-connection-diagnostic";
 import { setupHtmlHeaders } from "./security-headers";
 
 const MAX_LOGIN_BYTES = 4_096;
@@ -216,6 +220,15 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
     .status { border-radius: 999px; display: inline-block; font-size: .76rem; font-weight: 800; padding: .32rem .6rem; }
     .configured { background: #e0f4e7; color: #11613d; }
     .missing { background: #fff0df; color: var(--amber); }
+    .connection-problem {
+      background: #fff8ed;
+      border: 1px solid #f1d2aa;
+      border-radius: .8rem;
+      color: #71400f;
+      margin: .8rem 0 0;
+      padding: .75rem .85rem;
+    }
+    .connection-problem strong { display: block; margin-bottom: .2rem; }
     .danger { background: #fffafa; border-color: #efcccc; }
     .danger button { background: var(--danger); }
     .helper { color: var(--muted); font-size: .88rem; margin: .35rem 0; }
@@ -257,8 +270,8 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
   </section>
 
   <div class="summary">
-    <div class="summary-card"><span class="summary-label">Raindrop account</span><span class="summary-value">${raindropSnapshot === null ? "Not connected" : escapeHtml(raindropSnapshot.name)}</span></div>
-    <div class="summary-card"><span class="summary-label">Unsorted bookmarks</span><span class="summary-value">${raindropSnapshot?.pending?.toString() ?? "—"}</span></div>
+    <div class="summary-card"><span class="summary-label">Raindrop account</span><span class="summary-value">${raindropSummary(raindropSnapshot)}</span></div>
+    <div class="summary-card"><span class="summary-label">Unsorted bookmarks</span><span class="summary-value">${raindropSnapshot.status === "connected" ? raindropSnapshot.pending?.toString() ?? "—" : "—"}</span></div>
     <div class="summary-card"><span class="summary-label">Automation</span><span class="summary-value">${pipeline.paused ? "Needs attention" : pipeline.deferredUntil === null ? "Ready" : "Waiting safely"}</span></div>
   </div>
 
@@ -268,6 +281,7 @@ export async function setupPage(request: Request, env: Env): Promise<Response> {
     <h2>Raindrop</h2>
     ${statusLabel(status.raindrop.configured)}
     <p class="helper">Use the token from the test account you want to organize. Saving it does not change any bookmarks.</p>
+    ${raindropDiagnosticPanel(raindropSnapshot)}
     <form method="post" action="/admin/credentials/raindrop">
       <input type="hidden" name="csrfToken" value="${csrfToken}">
       <label>${status.raindrop.configured ? "Replace Raindrop token" : "Raindrop test token"}
@@ -592,19 +606,45 @@ function escapeHtml(value: string): string {
 
 async function readRaindropSnapshot(
   store: EncryptedCredentialStore,
-): Promise<{ id: number; name: string; pending: number | null } | null> {
+): Promise<RaindropSnapshot> {
   try {
     const token = await store.get("raindrop");
-    if (token === null) return null;
+    if (token === null) return { status: "not_configured" };
     const client = new RaindropClient(token);
     const [user, page] = await Promise.all([
       client.getCurrentUser(),
       client.listRaindrops(-1, { page: 0, perPage: 1 }),
     ]);
-    return { id: user.id, name: user.fullName, pending: page.totalCount };
-  } catch {
-    return null;
+    return {
+      status: "connected",
+      id: user.id,
+      name: user.fullName,
+      pending: page.totalCount,
+    };
+  } catch (error) {
+    return { status: "error", diagnostic: diagnoseRaindropConnection(error) };
   }
+}
+
+type RaindropSnapshot =
+  | { status: "not_configured" }
+  | {
+      status: "connected";
+      id: number;
+      name: string;
+      pending: number | null;
+    }
+  | { status: "error"; diagnostic: RaindropConnectionDiagnostic };
+
+function raindropSummary(snapshot: RaindropSnapshot): string {
+  if (snapshot.status === "connected") return escapeHtml(snapshot.name);
+  if (snapshot.status === "error") return escapeHtml(snapshot.diagnostic.summary);
+  return "Not connected";
+}
+
+function raindropDiagnosticPanel(snapshot: RaindropSnapshot): string {
+  if (snapshot.status !== "error") return "";
+  return `<div class="connection-problem" role="alert"><strong>${escapeHtml(snapshot.diagnostic.summary)}</strong>${escapeHtml(snapshot.diagnostic.message)}</div>`;
 }
 
 function topTags(

@@ -19,23 +19,32 @@ const result = {
   description: "Useful.",
   folder: "Articles",
   confidence: "high",
-  notes: null,
+  notes: "",
 };
 
 describe("organization provider contracts", () => {
   it("validates Workers AI JSON-mode output at runtime", async () => {
-    const run = vi.fn(() => Promise.resolve({ response: result }));
+    const run = vi.fn(
+      (model: string, request: Record<string, unknown>): Promise<unknown> => {
+        expect(model).toBe("test-model");
+        expect(request).toMatchObject({
+          response_format: { type: "json_schema" },
+        });
+        expect(JSON.stringify(request)).toContain(
+          '"notes":{"type":"string","maxLength":1000}',
+        );
+        expect(JSON.stringify(request)).not.toContain(
+          '"type":["string","null"]',
+        );
+        return Promise.resolve({ response: result });
+      },
+    );
     const organizer = new WorkersAiOrganizer(
       run,
       "test-model",
     );
     await expect(organizer.organize(input)).resolves.toEqual(result);
-    expect(run).toHaveBeenCalledWith(
-      "test-model",
-      expect.objectContaining({
-        response_format: { type: "json_object" },
-      }),
-    );
+    expect(run).toHaveBeenCalledOnce();
   });
 
   it("rejects malformed Workers AI output", async () => {

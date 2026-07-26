@@ -161,7 +161,13 @@ export async function organizeBookmark(
 
   let note = ensurePreservationBlock(bookmark.note, bookmark.link, bookmark.excerpt);
   if (result.confidence === "low") {
-    note = appendReviewReason(note, result.notes ?? "Low model confidence");
+    const reviewReason = result.notes?.trim();
+    note = appendReviewReason(
+      note,
+      reviewReason === undefined || reviewReason.length === 0
+        ? "Low model confidence"
+        : reviewReason,
+    );
   }
   if (note.length > 10_000) {
     return recordItemFailure(

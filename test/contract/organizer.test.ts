@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   AnthropicOrganizer,
   OpenAiOrganizer,
@@ -24,11 +24,18 @@ const result = {
 
 describe("organization provider contracts", () => {
   it("validates Workers AI JSON-mode output at runtime", async () => {
+    const run = vi.fn(() => Promise.resolve({ response: result }));
     const organizer = new WorkersAiOrganizer(
-      () => Promise.resolve({ response: result }),
+      run,
       "test-model",
     );
     await expect(organizer.organize(input)).resolves.toEqual(result);
+    expect(run).toHaveBeenCalledWith(
+      "test-model",
+      expect.objectContaining({
+        response_format: { type: "json_object" },
+      }),
+    );
   });
 
   it("rejects malformed Workers AI output", async () => {

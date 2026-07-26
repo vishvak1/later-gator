@@ -161,6 +161,49 @@ describe("bookmark organization", () => {
     });
     expect(raindrop.updates).toHaveLength(0);
   });
+
+  it("does not spend the Workers AI soft budget on a failed provider request", async () => {
+    const raindrop = new FakeRaindrop(bookmark());
+    const transientOrganizer: Organizer = {
+      organize: () =>
+        Promise.reject(
+          new OrganizerError("transient", "workers_ai_failure", "Workers AI failed"),
+        ),
+    };
+    const now = new Date("2026-07-25T12:00:00.000Z");
+
+    await expect(
+      organizeBookmark(
+        env.STATE,
+        raindrop,
+        transientOrganizer,
+        provider("workers-ai"),
+        101,
+        3,
+        1_000,
+        now,
+      ),
+    ).resolves.toEqual({ outcome: "transient", reason: "workers_ai_failure" });
+    await expect(
+      new OperationalStateStore(env.STATE).getAiUsage("2026-07-25"),
+    ).resolves.toMatchObject({ estimatedNeurons: 0, calls: 0 });
+
+    await expect(
+      organizeBookmark(
+        env.STATE,
+        raindrop,
+        fixedOrganizer(),
+        provider("workers-ai"),
+        101,
+        3,
+        1_000,
+        now,
+      ),
+    ).resolves.toEqual({ outcome: "processed" });
+    await expect(
+      new OperationalStateStore(env.STATE).getAiUsage("2026-07-25"),
+    ).resolves.toMatchObject({ calls: 1 });
+  });
 });
 
 class FakeRaindrop implements OrganizeRaindropGateway {

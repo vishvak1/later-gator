@@ -129,8 +129,7 @@ export class WorkersAiOrganizer implements Organizer {
       response = await this.run(this.model, {
         messages: [{ role: "user", content: prompt }],
         response_format: {
-          type: "json_schema",
-          json_schema: ORGANIZATION_JSON_SCHEMA,
+          type: "json_object",
         },
         max_tokens: 700,
         temperature: 0.1,
@@ -233,7 +232,8 @@ function buildPrompt(input: OrganizationInput): string {
         "Example: GitHub repository -> Code; tags describe its technology and topic.",
         "Example: arXiv paper -> Papers; do not use the folder name as a tag.",
         "Example: low confidence -> keep the best tags and mark confidence low.",
-        "Return only the requested structured result.",
+        'Return only one JSON object with exactly these fields: {"tags":["topic"],"description":"concise description","folder":"Social Posts | Articles | Videos & Talks | Code | Docs & Reference | Papers | Websites & Apps","confidence":"high | medium | low","notes":null}.',
+        "Use null for notes unless a low-confidence decision needs a short explanation.",
       ].join("\n"),
     `Title: ${input.title.slice(0, 1_000)}`,
     `Excerpt: ${input.excerpt.slice(0, 10_000)}`,

@@ -236,7 +236,7 @@ async function organizeWithSchemaRetry(
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     if (provider.active.provider === "workers-ai") {
-      await reserveWorkersAiCall(
+      await assertWorkersAiBudget(
         namespace,
         workersAiDailySoftLimit,
         estimatedNeurons,
@@ -244,12 +244,23 @@ async function organizeWithSchemaRetry(
       );
     }
     try {
-      return await organizer.organize({
+      const result = await organizer.organize({
         ...input,
         correction:
           attempt === 0 ? null : "The prior output failed schema validation. Correct every field.",
       });
+      if (provider.active.provider === "workers-ai") {
+        await recordWorkersAiCall(namespace, estimatedNeurons, now);
+      }
+      return result;
     } catch (error) {
+      if (
+        provider.active.provider === "workers-ai" &&
+        error instanceof OrganizerError &&
+        error.kind === "schema"
+      ) {
+        await recordWorkersAiCall(namespace, estimatedNeurons, now);
+      }
       if (!(error instanceof OrganizerError) || error.kind !== "schema" || attempt === 1) {
         throw error;
       }
@@ -258,7 +269,7 @@ async function organizeWithSchemaRetry(
   throw new OrganizerError("schema", "invalid_schema", "Invalid organization result");
 }
 
-async function reserveWorkersAiCall(
+async function assertWorkersAiBudget(
   namespace: KVNamespace,
   softLimit: number,
   estimatedNeurons: number,
@@ -273,6 +284,16 @@ async function reserveWorkersAiCall(
     ).toISOString();
     throw new BudgetDeferredError(reset);
   }
+}
+
+async function recordWorkersAiCall(
+  namespace: KVNamespace,
+  estimatedNeurons: number,
+  now: Date,
+): Promise<void> {
+  const utcDate = now.toISOString().slice(0, 10);
+  const store = new OperationalStateStore(namespace);
+  const usage = await store.getAiUsage(utcDate);
   await store.putAiUsage({
     ...usage,
     estimatedNeurons: usage.estimatedNeurons + estimatedNeurons,

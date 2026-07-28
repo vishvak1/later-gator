@@ -6,13 +6,15 @@
   "engines": {
     "node": "^22.18.0 || >=24.11.0"
   },
-  "description": "Single-tenant Raindrop organization and retrieval Worker",
+  "description": "Private, single-user AI bookmark manager on Cloudflare",
   "scripts": {
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "build": "wrangler deploy --dry-run --outdir dist",
     "check": "npm run types:check && npm run lint && npm run test",
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev --test-scheduled",
+    "deploy": "npm run db:migrate:remote && wrangler deploy",
+    "dev": "wrangler dev",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
     "lint": "eslint .",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -22,20 +24,23 @@
   },
   "cloudflare": {
     "bindings": {
-      "STATE": {
-        "description": "Stores small, versioned lifecycle and operational documents. It never stores bookmark content."
+      "DB": {
+        "description": "Stores the authoritative Later Gator bookmark library and application state."
+      },
+      "THUMBNAILS": {
+        "description": "Stores private normalized bookmark thumbnails outside the database."
+      },
+      "IMAGES": {
+        "description": "Normalizes remote thumbnail candidates before private R2 storage."
       },
       "AI": {
         "description": "Runs organization inference when Cloudflare Workers AI is selected."
       },
-      "ORGANIZE_QUEUE": {
-        "description": "Carries bookmark IDs only and invokes one sequential organization job at a time."
+      "BACKGROUND_QUEUE": {
+        "description": "Carries opaque job IDs only and invokes one sequential background job at a time."
       },
-      "EMAIL": {
-        "description": "Sends intervention-required alerts after the owner configures a Cloudflare Email Sending domain and verifies the chosen destination."
-      },
-      "INSTALLATION_SECRET": {
-        "description": "Choose one private password containing at least 10 characters. You will use it to open Later Gator setup; Later Gator generates the machine connection secret automatically."
+      "BOOTSTRAP_PASSWORD": {
+        "description": "Later Gator password. Choose at least 10 characters; this field is intentionally blank by default."
       }
     }
   },

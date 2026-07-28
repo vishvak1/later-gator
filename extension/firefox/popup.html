@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Later Gator</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <header><span class="gator">🐊</span><div><strong>Later Gator</strong><small>Save bookmark</small></div></header>
+  <section id="connectionPanel" hidden>
+    <h1>Connect</h1><label>Deployment URL<input id="deploymentUrl" type="url" placeholder="https://later-gator.example.workers.dev"></label><label>Extension token<input id="captureToken" type="password"></label><button id="connectButton">Connect</button>
+  </section>
+  <form id="captureForm">
+    <img id="preview" alt="" hidden>
+    <h1 id="pageTitle">Current page</h1><p id="pageDescription"></p>
+    <label>Note<textarea id="note"></textarea></label>
+    <label>Folder<select id="folder"></select></label>
+    <label>Tags<input id="tags" placeholder="Add tags…"></label>
+    <label>Source URL<input id="sourceUrl" type="url" required></label>
+    <label>Linked to<input id="linkedUrl" type="url" placeholder="Optional related bookmark"></label>
+    <label class="check"><input id="favorite" type="checkbox"> Favorite</label>
+    <p id="status" role="status"></p>
+    <footer><button id="reconnectButton" type="button" class="secondary">Connection</button><button id="saveButton" type="submit">Save</button></footer>
+  </form>
+  <script src="popup.js"></script>
+</body>
+</html>

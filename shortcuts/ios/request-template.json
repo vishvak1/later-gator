@@ -1,0 +1,21 @@
+{
+  "name": "Save to Later Gator",
+  "shareSheetInput": "URL",
+  "request": {
+    "method": "POST",
+    "url": "ASK_EACH_TIME_LATER_GATOR_ENDPOINT",
+    "headers": {
+      "Authorization": "Bearer ASK_EACH_TIME_IOS_TOKEN",
+      "Content-Type": "application/json"
+    },
+    "json": {
+      "requestId": "GENERATE_UUID",
+      "url": "SHORTCUT_INPUT"
+    }
+  },
+  "successMessages": {
+    "saved": "Saved to Later Gator",
+    "already_saved": "Already saved in Later Gator"
+  },
+  "failureMessage": "Failed to save to Later Gator"
+}

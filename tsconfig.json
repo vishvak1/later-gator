@@ -14,7 +14,16 @@
     "useDefineForClassFields": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
-    "types": ["./worker-configuration.d.ts"]
+    "types": [
+      "./worker-configuration.d.ts",
+      "@cloudflare/vitest-pool-workers/types"
+    ]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest.config.ts", "worker-configuration.d.ts"]
+  "include": [
+    "src/index.ts",
+    "src/v6/**/*.ts",
+    "test/v6/**/*.ts",
+    "vitest.config.ts",
+    "worker-configuration.d.ts"
+  ]
 }

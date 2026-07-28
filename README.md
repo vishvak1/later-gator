@@ -2,102 +2,113 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/vishvak1/later-gator)
 
-Later Gator gradually organizes the bookmarks in your Raindrop.io **Unsorted** collection. It runs privately inside your own Cloudflare account and keeps Raindrop as the only home for your bookmarks.
+Later Gator is a private, single-user bookmark manager that runs in your own
+Cloudflare account. It stores the library in D1, stores normalized thumbnails
+privately in R2, and can organize new bookmarks with Cloudflare Workers AI,
+OpenAI, or Anthropic.
 
-No terminal, coding, local installation, OpenAI key, or credit card is required for the normal setup.
+Raindrop is optional and is used only as a CSV import source. Later Gator never
+connects to, changes, or deletes data in your Raindrop account.
 
-## Before you start
+## Install
 
-You need:
+1. Press **Deploy to Cloudflare**.
+2. Sign in to GitHub and Cloudflare and approve the requested resources.
+3. In the blank **Later Gator password** field, choose a password of at least
+   10 characters and save it somewhere safe.
+4. Finish the deployment and open the Worker URL.
+5. Sign in. Later Gator automatically sends an unfinished installation to
+   `/setup`; after setup it sends you to `/dashboard`.
 
-- A free GitHub account.
-- A free Cloudflare account.
-- A Raindrop account and its test token.
-- One private setup password containing at least 10 characters.
+Cloudflare provisions the Worker, D1 database, private R2 thumbnail bucket,
+Workers AI binding, image transformation binding, and sequential background
+Queue. There is no scheduled Cron trigger.
 
-The source Later Gator repository must be public for Cloudflare's deployment button to work.
+## Setup
 
-Start with a separate Raindrop test account. Do not test the first release on your main bookmark library.
+The guided setup asks for:
 
-> [!WARNING]
-> Existing-account onboarding deliberately removes the account's old folder and tag organization. Later Gator does not create or check backups. Export anything you want to keep before you confirm onboarding.
+- 5–20 topics most relevant to you.
+- Your career and what you aspire to become.
+- Optional personal instructions for the organizing AI.
+- An optional Raindrop CSV import.
+- Optional read-only MCP configuration.
 
-## Which AI will be used?
+For a Raindrop import, Later Gator offers two choices:
 
-Cloudflare Workers AI is selected by default. It needs no OpenAI, Anthropic, or other AI-provider key.
+- **Reorganize:** remove imported tags and descriptions, place the bookmarks in
+  Unsorted, and let AI classify them.
+- **Preserve:** retain imported tags and descriptions, merge tags into the
+  Later Gator vocabulary, place the bookmarks in Imports, and ask AI only to
+  choose permanent folders.
 
-You can enter an OpenAI or Anthropic key in Later Gator during setup or later. Adding or switching an AI provider never repeats onboarding and only affects bookmarks processed afterward.
+The import is previewed before it is committed. Imported CSV files are not kept
+after staging; bookmark data becomes part of the D1 library and thumbnail
+candidates are normalized into private R2 objects.
 
-## Install Later Gator
+## Library behavior
 
-1. Press **Deploy to Cloudflare** at the top of this page.
-2. Sign in to GitHub and Cloudflare when asked.
-3. Choose the GitHub repository name and Cloudflare Worker name, or accept the suggested names.
-4. Create and safely save **INSTALLATION_SECRET**, your private password for the Later Gator setup page. It must contain at least 10 characters.
-5. Press Cloudflare's deploy button and wait for deployment to finish.
-6. Open the Worker address Cloudflare gives you and add `/setup` to the end.
-7. Sign in using the **INSTALLATION_SECRET** you saved.
+- Permanent folders cannot be renamed or deleted.
+- Tags can be retired globally without deleting bookmarks and can later be
+  restored.
+- Bookmark creation, editing, relationships, filtering, date ranges, sorting,
+  Trash, restore, and permanent deletion are supported.
+- View mode is the default. Entering edit mode pauses AI writes; leaving edit
+  mode safely resumes eligible work.
+- New AI work is created immediately when a bookmark is saved. The Queue carries
+  only opaque job IDs and processes one job at a time.
+- Every AI proposal is schema-validated and applied only if the bookmark
+  revision still matches. User edits therefore win over stale AI work.
 
-Cloudflare copies this public project into your GitHub account and connects future updates to that copy. It also creates Later Gator's private storage, Workers AI connection, processing queue, and schedule automatically. You do not need to fork the project first.
+## Capture and connections
 
-Later Gator generates its long machine connection secret automatically after you sign in. You never need to create, remember, or type it.
+Settings can create separately scoped credentials for:
 
-## Complete the setup page
+- The included Chrome extension in `extension/chrome`.
+- The included Firefox extension in `extension/firefox`.
+- An iOS Share Sheet Shortcut that accepts only a URL and reports Saved or
+  Failed.
+- A read-only MCP URL for supported AI clients.
 
-Do these actions in order:
+Generated credentials are shown once. They can be revoked or rotated without
+changing the Later Gator password.
 
-1. **Connect Raindrop:** enter and save the test token belonging to the Raindrop account you want Later Gator to organize.
-2. **Test the AI:** keep Cloudflare Workers AI selected and run the model test. No external AI key is needed.
-3. **Choose email status:** configure alert email if you already have the required Cloudflare email domain, or choose **Continue without automatic intervention alerts**.
-4. **Validate installation:** this checks the connection and changes nothing in Raindrop.
-5. **Check the Raindrop account:** Later Gator reads only the bookmark and folder counts and tells you whether the account is fresh or existing.
-6. **Review the warning and press Start onboarding:** this is the first action that changes Raindrop.
-7. If the page offers **Continue onboarding**, keep pressing it until onboarding reports complete. The process is safe to resume after closing or refreshing the page.
-8. Start the faster backfill if you want the existing Unsorted pile organized sooner, or leave Later Gator to work gradually.
+## AI providers and usage
 
-Saving a token, testing AI, opening ChatGPT or Claude, or waiting for the schedule never starts onboarding. Only the explicit onboarding button does that.
+Cloudflare Workers AI is the default. OpenAI and Anthropic credentials can be
+tested and switched from Settings; credentials are encrypted before D1 storage.
+Provider changes affect pending and future jobs without changing the library.
 
-## What happens when you press Start onboarding?
+Later Gator does not record OpenAI or Anthropic usage. It also does not invent a
+local token or neuron estimate for Workers AI. Settings links to Cloudflare's
+account dashboard, which is the source for account-wide Workers AI usage.
 
-### Fresh Raindrop account
+## Local development
 
-If the account has no bookmarks and no user-created folders, Later Gator only creates its standard folders and starting tag vocabulary.
+Use Node.js 22.18+ (or 24.11+) and install dependencies with `npm install`.
 
-### Existing Raindrop account
+```sh
+npm run db:migrate:local
+npm run dev
+npm run check
+npm run build
+```
 
-Later Gator:
+`npm run build` is a dry-run production bundle and does not deploy. Production
+deployment and migrations are deliberate release actions.
 
-1. Moves all bookmarks from your own folders into **Unsorted**.
-2. Removes the bookmarks' existing tags.
-3. Deletes your now-empty folders.
-4. Creates the Later Gator folders and starting tags.
+## Documentation
 
-It does not delete the bookmarks. Shared folders are left alone. The Unsorted pile is then organized gradually as Cloudflare's free allowances permit.
+- [Product Requirements v6](docs/product-requirements-v6.md)
+- [Technical Design v2](docs/technical-design-v2.md)
+- [Developer Guide v2](docs/later-gator-developer-guide-v2.md)
+- [Security status](SECURITY.md)
 
-## After onboarding
-
-- New bookmarks left in Unsorted are discovered approximately every 15 minutes.
-- **Backfill** works through a larger existing Unsorted pile without requiring the page to stay open.
-- **Need for Review** holds bookmarks that require your attention.
-- The same `/setup` page lets you pause or resume automation, change the AI provider, adjust instructions, review status, and copy the private connection address for ChatGPT or Claude.
-- **Generate a new connection address** replaces the machine secret automatically; you never manage the secret itself.
-- If a free Cloudflare allowance is reached, Later Gator waits for the allowance to reset and continues later. It does not purchase an upgrade automatically.
-
-## Common problems
-
-| What you see | What to do |
-|---|---|
-| Setup password rejected | Use the exact `INSTALLATION_SECRET` created during Cloudflare deployment. |
-| Raindrop connection rejected | Confirm the token came from the intended Raindrop account and paste it again. |
-| Email cannot be configured | Select **Continue without automatic intervention alerts**. Bookmark organization can still be tested. |
-| Onboarding is not available | Save the Raindrop token, pass the AI test, record the email choice, and run installation validation first. |
-| Processing temporarily stops | Check `/setup`. Free-limit and provider delays normally wait and retry automatically. |
-| Wrong Raindrop account is shown | Stop. Replace the token before running installation validation or onboarding. |
+The older v5 documents remain in `docs/` as migration history, not as the active
+product specification.
 
 ## Uninstall
 
-Pause Later Gator first, then delete its Worker, queue, and KV storage from your Cloudflare dashboard. Deleting Later Gator does not delete bookmarks already organized in Raindrop and does not recreate the old folder or tag structure.
-
-## Project documents
-
-The user journey and product rules are in the [Product Requirements](docs/product-requirements-v5.5.md). The implementation and safety design are in the [Technical Design](docs/technical-design-v1.5.md). Maintainer security and development commands are in [SECURITY.md](SECURITY.md).
+Export the library first if you want to keep it. Then delete the Worker, D1
+database, thumbnail R2 bucket, and Queue from the Cloudflare dashboard. Removing
+Later Gator does not change the original Raindrop account or CSV export.

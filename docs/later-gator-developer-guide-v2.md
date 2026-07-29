@@ -22,7 +22,7 @@ flowchart LR
     IOS["iOS Shortcut"] --> W
     MCP["MCP client"] --> W
     W <--> D1["D1: authoritative library"]
-    W <--> R2["R2: private thumbnails"]
+    W <--> KV["Workers KV: private thumbnails"]
     W --> Q["Queue: job ID notification"]
     Q --> W
     W --> AI["Selected AI provider"]
@@ -31,7 +31,7 @@ flowchart LR
 The most important rules are:
 
 1. D1 is the system of record.
-2. R2 contains only thumbnail binaries.
+2. Workers KV contains only thumbnail binaries.
 3. Queue messages contain only a job ID.
 4. AI never writes without rechecking the bookmark revision.
 5. Raindrop is only a CSV import source.
@@ -91,11 +91,11 @@ D1 owns:
 - Capture and MCP credential hashes.
 - Thumbnail metadata.
 
-### R2
+### Workers KV
 
-R2 owns:
+Workers KV owns:
 
-- One normalized thumbnail object per bookmark when available.
+- One optimized thumbnail value per bookmark when available.
 
 It does not own:
 
@@ -170,7 +170,7 @@ Cloudflare provisions:
 
 - Worker and static assets.
 - D1.
-- R2.
+- Workers KV.
 - Queue.
 - Workers AI.
 
@@ -569,14 +569,14 @@ Remote images are untrusted:
 
 ### Storage
 
-- Normalize to a small web format.
-- Write private object to R2.
+- Normalize to an uncropped WebP bounded by 960 × 1,600 pixels and 500 KiB.
+- Write the private bytes under an immutable Workers KV key.
 - Store object key and metadata in D1.
 - Serve through an authenticated Worker route.
 
-R2 is never made public.
+Workers KV is never made public.
 
-If R2 is unavailable or full, save the bookmark without a thumbnail.
+If Workers KV is unavailable or full, save the bookmark without a thumbnail.
 
 ---
 
@@ -838,12 +838,12 @@ Use generated `Env` types. Never hand-write a partial binding interface.
 Use local Wrangler persistence for:
 
 - D1.
-- R2.
+- Workers KV.
 - Queue.
 
 Provider calls should default to fakes or recorded redacted fixtures. Live provider tests require explicit opt-in.
 
-Never point local development at production D1 or R2 by default.
+Never point local development at production D1 or Workers KV by default.
 
 ---
 
@@ -903,7 +903,7 @@ Provider activation happens only after the candidate passes.
 
 - Treat remote URLs and bytes as hostile.
 - Do not store the remote URL as the serving URL.
-- Do not make R2 public.
+- Do not make Workers KV public.
 - Put object before referencing it in D1.
 - Clean up orphaned objects.
 - Keep thumbnail failure independent of bookmark success.
@@ -974,7 +974,7 @@ High-risk changes also require fault injection:
 
 - Bookmark commit versus Queue send.
 - AI response versus user edit.
-- R2 put versus D1 thumbnail reference.
+- Workers KV put versus D1 thumbnail reference.
 - Import chunk interruption.
 - Password rewrap.
 - Provider activation.
@@ -1001,7 +1001,7 @@ Measure:
 
 - D1 rows read and written.
 - D1 storage.
-- R2 bytes and operations.
+- Workers KV bytes and operations.
 - Queue operations.
 - Workers requests.
 - Provider-reported AI tokens.
@@ -1010,7 +1010,7 @@ Measure:
 
 Graceful degradation:
 
-- No R2 capacity → save without thumbnail.
+- No Workers KV capacity → save without thumbnail.
 - No AI capacity → keep library usable and job waiting.
 - Queue send failure → save bookmark and expose pending dispatch.
 - D1 mutation limit → protect existing data and explain read-only behavior.
@@ -1054,7 +1054,7 @@ Check safe outcome codes:
 - too large
 - unsupported type
 - transformation failed
-- R2 limit/unavailable
+- Workers KV limit/unavailable
 
 Do not inspect or log the full source URL in production.
 
@@ -1118,7 +1118,7 @@ A feature is complete when:
 - [Product Requirements v6.0](product-requirements-v6.md)
 - [Technical Design v2.0](technical-design-v2.md)
 - [Cloudflare D1 documentation](https://developers.cloudflare.com/d1/)
-- [Cloudflare R2 documentation](https://developers.cloudflare.com/r2/)
+- [Cloudflare Workers KV documentation](https://developers.cloudflare.com/kv/)
 - [Cloudflare Queues documentation](https://developers.cloudflare.com/queues/)
 - [Cloudflare Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/)
 - [Cloudflare stateless MCP handler](https://developers.cloudflare.com/agents/model-context-protocol/apis/handler-api/)

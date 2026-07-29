@@ -382,6 +382,69 @@ describe("v6 Worker foundation", () => {
       .first();
     expect(saved).toMatchObject({ organization_policy: "none", ai_state: "complete" });
 
+    const thumbnailId = crypto.randomUUID();
+    const thumbnailKey = `thumbnails/${created.bookmark.id}/${thumbnailId}.webp`;
+    const thumbnailBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46]);
+    const now = new Date().toISOString();
+    await env.THUMBNAILS.put(thumbnailKey, thumbnailBytes);
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `INSERT INTO thumbnails (
+            id, bookmark_id, object_key, media_type, width, height, byte_size,
+            source_type, etag, state, created_at, updated_at
+          ) VALUES (?, ?, ?, 'image/webp', 960, 1280, ?, 'user', ?, 'ready', ?, ?)`,
+        )
+        .bind(
+          thumbnailId,
+          created.bookmark.id,
+          thumbnailKey,
+          thumbnailBytes.byteLength,
+          '"sha256-test"',
+          now,
+          now,
+        ),
+      env.DB
+        .prepare("UPDATE bookmarks SET thumbnail_id = ? WHERE id = ?")
+        .bind(thumbnailId, created.bookmark.id),
+    ]);
+
+    const listedResponse = await exports.default.fetch(
+      "https://later-gator.test/api/bookmarks?sort=added_at&direction=desc",
+      { headers: { cookie: client.cookie } },
+    );
+    const listed = await listedResponse.json<{
+      bookmarks: {
+        id: string;
+        thumbnail_width: number | null;
+        thumbnail_height: number | null;
+      }[];
+    }>();
+    expect(listed.bookmarks.find((bookmark) => bookmark.id === created.bookmark.id)).toMatchObject({
+      thumbnail_width: 960,
+      thumbnail_height: 1280,
+    });
+
+    const preview = await exports.default.fetch(
+      `https://later-gator.test/api/thumbnails/${created.bookmark.id}`,
+      { headers: { cookie: client.cookie } },
+    );
+    expect(preview.status).toBe(200);
+    expect(preview.headers.get("content-type")).toBe("image/webp");
+    expect(preview.headers.get("etag")).toBe('"sha256-test"');
+    expect(new Uint8Array(await preview.arrayBuffer())).toEqual(thumbnailBytes);
+
+    const unchangedPreview = await exports.default.fetch(
+      `https://later-gator.test/api/thumbnails/${created.bookmark.id}`,
+      {
+        headers: {
+          cookie: client.cookie,
+          "if-none-match": '"sha256-test"',
+        },
+      },
+    );
+    expect(unchangedPreview.status).toBe(304);
+
     const related = await exports.default.fetch(
       `https://later-gator.test/api/bookmarks/${created.bookmark.id}/relationships`,
       {
@@ -426,5 +489,6 @@ describe("v6 Worker foundation", () => {
     expect(
       await env.DB.prepare("SELECT id FROM bookmarks WHERE id = ?").bind(created.bookmark.id).first(),
     ).toBeNull();
+    expect(await env.THUMBNAILS.get(thumbnailKey, "arrayBuffer")).toBeNull();
   });
 });

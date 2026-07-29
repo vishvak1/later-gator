@@ -40,6 +40,8 @@ export interface BookmarkRow {
   deleted_at: string | null;
   revision: number;
   thumbnail_id: string | null;
+  thumbnail_width: number | null;
+  thumbnail_height: number | null;
 }
 
 export interface CreatedBookmark {
@@ -78,9 +80,11 @@ async function getProvider(db: D1Database): Promise<ProviderRow> {
 export async function getBookmark(db: D1Database, id: string): Promise<BookmarkRow | null> {
   return db
     .prepare(
-      `SELECT b.*, f.name AS folder_name
+      `SELECT b.*, f.name AS folder_name,
+              t.width AS thumbnail_width, t.height AS thumbnail_height
          FROM bookmarks b
          JOIN folders f ON f.id = b.folder_id
+         LEFT JOIN thumbnails t ON t.id = b.thumbnail_id AND t.state = 'ready'
         WHERE b.id = ?`,
     )
     .bind(id)
@@ -351,9 +355,11 @@ export async function listBookmarks(
   const sortColumn = SORT_COLUMNS[query.sort];
   const direction = query.direction === "asc" ? "ASC" : "DESC";
   const statement = db.prepare(
-    `SELECT b.*, f.name AS folder_name
+    `SELECT b.*, f.name AS folder_name,
+            t.width AS thumbnail_width, t.height AS thumbnail_height
        FROM bookmarks b
        JOIN folders f ON f.id = b.folder_id
+       LEFT JOIN thumbnails t ON t.id = b.thumbnail_id AND t.state = 'ready'
       WHERE ${predicates.join(" AND ")}
       ORDER BY ${sortColumn} ${direction}, b.id ${direction}
       LIMIT ?`,

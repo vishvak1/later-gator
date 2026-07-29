@@ -4,7 +4,7 @@
 
 Later Gator is a private, single-user bookmark manager that runs in your own
 Cloudflare account. It stores the library in D1, stores normalized thumbnails
-privately in R2, and can organize new bookmarks with Cloudflare Workers AI,
+privately in Workers KV, and can organize new bookmarks with Cloudflare Workers AI,
 OpenAI, or Anthropic.
 
 Raindrop is optional and is used only as a CSV import source. Later Gator never
@@ -20,7 +20,7 @@ connects to, changes, or deletes data in your Raindrop account.
 5. Sign in. Later Gator automatically sends an unfinished installation to
    `/setup`; after setup it sends you to `/dashboard`.
 
-Cloudflare provisions the Worker, D1 database, private R2 thumbnail bucket,
+Cloudflare provisions the Worker, D1 database, private Workers KV thumbnail namespace,
 Workers AI binding, image transformation binding, and sequential background
 Queue. There is no scheduled Cron trigger.
 
@@ -44,7 +44,9 @@ For a Raindrop import, Later Gator offers two choices:
 
 The import is previewed before it is committed. Imported CSV files are not kept
 after staging; bookmark data becomes part of the D1 library and thumbnail
-candidates are normalized into private R2 objects.
+candidates are converted to bounded, uncropped WebP previews and stored as private
+Workers KV values. The dashboard preserves their natural aspect ratios in a masonry
+layout.
 
 ## Library behavior
 
@@ -110,5 +112,5 @@ product specification.
 ## Uninstall
 
 Export the library first if you want to keep it. Then delete the Worker, D1
-database, thumbnail R2 bucket, and Queue from the Cloudflare dashboard. Removing
+database, thumbnail Workers KV namespace, and Queue from the Cloudflare dashboard. Removing
 Later Gator does not change the original Raindrop account or CSV export.

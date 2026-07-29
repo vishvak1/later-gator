@@ -1,6 +1,6 @@
 # Security status
 
-Later Gator v6 treats D1 as the authoritative bookmark library and R2 as private
+Later Gator v6 treats D1 as the authoritative bookmark library and Workers KV as private
 thumbnail storage. Dashboard mutations require an authenticated HTTP-only
 session, same-origin validation, and CSRF. Browser, iOS, and MCP connections use
 separate revocable credentials with the minimum required scopes.

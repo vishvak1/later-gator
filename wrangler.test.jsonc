@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "later-gator-test",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-28",
+  "compatibility_date": "2026-07-29",
   "compatibility_flags": ["nodejs_compat"],
   "vars": {
     "ENVIRONMENT": "test",
@@ -17,10 +17,10 @@
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [
+  "kv_namespaces": [
     {
       "binding": "THUMBNAILS",
-      "bucket_name": "later-gator-test-thumbnails"
+      "id": "local-test-thumbnails"
     }
   ],
   "ai": { "binding": "AI" },

@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "later-gator",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-28",
+  "compatibility_date": "2026-07-29",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "observability": {
@@ -23,10 +23,9 @@
       "migrations_dir": "migrations"
     }
   ],
-  "r2_buckets": [
+  "kv_namespaces": [
     {
-      "binding": "THUMBNAILS",
-      "bucket_name": "later-gator-thumbnails"
+      "binding": "THUMBNAILS"
     }
   ],
   "images": { "binding": "IMAGES" },

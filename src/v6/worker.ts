@@ -894,24 +894,38 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     if (bookmarkId === undefined) return apiError(404, "not_found", "Thumbnail not found.");
     const thumbnail = await env.DB
       .prepare(
-        `SELECT t.object_key, t.media_type, t.etag
+        `SELECT t.object_key, t.media_type, t.etag, t.byte_size
            FROM thumbnails t
            JOIN bookmarks b ON b.id = t.bookmark_id
           WHERE t.bookmark_id = ? AND t.state = 'ready' AND b.deleted_at IS NULL`,
       )
       .bind(bookmarkId)
-      .first<{ object_key: string; media_type: string; etag: string | null }>();
+      .first<{
+        object_key: string;
+        media_type: string;
+        etag: string | null;
+        byte_size: number;
+      }>();
     if (thumbnail === null) return apiError(404, "not_found", "Thumbnail not found.");
-    const object = await env.THUMBNAILS.get(thumbnail.object_key);
-    if (object === null) return apiError(404, "not_found", "Thumbnail not found.");
     const headers = new Headers({
       "content-type": thumbnail.media_type,
       "cache-control": "private, max-age=3600",
-      "content-length": object.size.toString(),
+      "content-length": thumbnail.byte_size.toString(),
       "x-content-type-options": "nosniff",
     });
-    headers.set("etag", thumbnail.etag ?? object.httpEtag);
-    return new Response(object.body, { headers });
+    if (thumbnail.etag !== null) {
+      headers.set("etag", thumbnail.etag);
+      if (request.headers.get("if-none-match") === thumbnail.etag) {
+        headers.delete("content-length");
+        return new Response(null, { status: 304, headers });
+      }
+    }
+    const object = await env.THUMBNAILS.get(thumbnail.object_key, {
+      type: "arrayBuffer",
+      cacheTtl: 3600,
+    });
+    if (object === null) return apiError(404, "not_found", "Thumbnail not found.");
+    return new Response(object, { headers });
   }
 
   return apiError(404, "not_found", "Route not found.");

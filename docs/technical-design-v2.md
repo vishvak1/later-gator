@@ -23,7 +23,7 @@ of the retired Raindrop-backed application:
 
 - Later Gator becomes the bookmark system of record.
 - D1 stores the bookmark library and application state.
-- R2 stores private thumbnail binaries.
+- Workers KV stores private thumbnail binaries.
 - Raindrop becomes an optional CSV import source only.
 - The 15-minute Raindrop discovery Cron, tag registry resynchronization, dispatch leases, and lease revisions are removed.
 - A simplified Queue remains as a durable background-delivery mechanism so work continues after the browser closes.
@@ -43,7 +43,7 @@ The v5.5/v1.5 implementation used this architecture:
 - The setup page is an administration surface rather than a bookmark dashboard.
 
 The active `src/index.ts` now selects `src/v6`, which replaces those behaviors
-with D1, R2, immediate job creation, revision-safe Queue work, CSV-only Raindrop
+with D1, Workers KV, immediate job creation, revision-safe Queue work, CSV-only Raindrop
 import, and D1-backed MCP tools. Legacy source remains only as excluded migration
 history. Production deployment is still subject to the release gates in this
 document.
@@ -64,7 +64,7 @@ Cloudflare resources:
 | Resource | Binding | Responsibility |
 |---|---|---|
 | D1 | `DB` | Bookmarks, tags, folders, relationships, setup, jobs, imports, sessions, and encrypted settings |
-| R2 | `THUMBNAILS` | Private normalized thumbnail objects |
+| Workers KV | `THUMBNAILS` | Private optimized thumbnail values |
 | Queue | `BACKGROUND_QUEUE` | Durable ID-only notification that a stored bookmark job is ready |
 | Workers AI | `AI` | Default organization provider |
 | Browser Rendering | `BROWSER` | Optional bounded screenshot fallback; disabled by default |
@@ -86,7 +86,7 @@ Not required:
 - Workflows.
 - Durable Objects.
 - A vector database.
-- Public R2 access.
+- Public Workers KV access.
 - Email.
 
 ### 3.1 Why the Queue remains
@@ -114,7 +114,7 @@ This provides sequential AI work, delivery retries, and continuation after the d
 |---|---|---|
 | Application topology | One Worker and static asset bundle | Simplifies one-click deployment and same-origin security |
 | Bookmark database | D1 | Relational integrity, indexed filtering, FTS search, transactions, and portable SQL export |
-| Thumbnail storage | Private R2 | Keeps image bytes outside D1 and uses the larger object-storage allowance |
+| Thumbnail storage | Private Workers KV | Keeps bounded preview bytes outside D1 without requiring an R2 subscription |
 | Background work | One Queue, one message per bookmark job | Durable continuation without polling or lease machinery |
 | Sequential AI | Queue consumer concurrency one | Preserves deterministic vocabulary updates |
 | Application coordination | D1 state and optimistic bookmark revisions | Protects user edits without leases |
@@ -137,7 +137,7 @@ flowchart LR
     MCP["MCP client"] --> WORKER
 
     WORKER <--> DB["D1 database"]
-    WORKER <--> R2["Private R2 thumbnails"]
+    WORKER <--> KV["Private Workers KV thumbnails"]
     WORKER --> Q["Background Queue"]
     Q --> WORKER
     WORKER --> AI["Workers AI"]
@@ -152,7 +152,7 @@ flowchart LR
 - The dashboard is the administrator surface and uses a secure same-origin session plus CSRF protection.
 - Extension and Shortcut requests are untrusted clients with narrow bearer credentials.
 - MCP requests use a separately rotatable machine credential.
-- D1 and R2 are private application storage, but all read values are still schema-validated at adapter boundaries.
+- D1 and Workers KV are private application storage, but all read values are still schema-validated at adapter boundaries.
 - CSV cells, bookmark URLs, remote pages, image bytes, AI responses, and provider errors are untrusted.
 - The browser frontend never receives stored provider secrets, password-derived keys, raw capture-token hashes, or MCP-token hashes.
 
@@ -183,7 +183,7 @@ later-gator/
 │   │   └── schemas.ts
 │   ├── adapters/
 │   │   ├── d1/
-│   │   ├── r2-thumbnail-store.ts
+│   │   ├── kv-thumbnail-store.ts
 │   │   ├── background-queue.ts
 │   │   ├── workers-ai-provider.ts
 │   │   ├── openai-provider.ts
@@ -257,10 +257,9 @@ Illustrative target configuration:
       "database_name": "later-gator"
     }
   ],
-  "r2_buckets": [
+  "kv_namespaces": [
     {
-      "binding": "THUMBNAILS",
-      "bucket_name": "later-gator-thumbnails"
+      "binding": "THUMBNAILS"
     }
   ],
   "queues": {
@@ -301,7 +300,7 @@ The template provisions:
 - Worker.
 - Static assets.
 - D1 database.
-- R2 bucket.
+- Workers KV namespace.
 - Queue and consumer.
 - Workers AI binding.
 - Optional Browser Rendering binding only if enabled by the release.
@@ -868,7 +867,7 @@ For each job ID:
 9. If organization policy requires AI, invoke exactly one provider.
 10. Validate and normalize the result.
 11. Apply bookmark, tags, folder, usage event, thumbnail metadata, and job completion in guarded D1 operations.
-12. Store normalized thumbnail bytes in R2 before referencing them from the bookmark.
+12. Store normalized thumbnail bytes in Workers KV before referencing them from the bookmark.
 13. Acknowledge the Queue message.
 
 Duplicate Queue delivery is harmless because only an eligible non-terminal job can transition to `running`.
@@ -883,7 +882,7 @@ Examples:
 - Provider 429.
 - Provider 5xx.
 - Temporary Workers AI exhaustion.
-- Temporary R2 failure.
+- Temporary Workers KV failure.
 
 Behavior:
 
@@ -922,7 +921,7 @@ Examples:
 - Authentication vault cannot be unwrapped.
 - Required fixed folder row missing.
 - Schema version unsupported.
-- D1 or R2 binding missing.
+- D1 or Workers KV binding missing.
 
 Behavior:
 
@@ -1081,15 +1080,13 @@ No registry resynchronization exists because the join table is the authoritative
 
 ### 16.1 Target representation
 
-Provisional v6 defaults:
+Implemented v6 defaults:
 
-- Maximum dimensions: 640 × 360.
-- Maximum stored size: 150 KiB.
-- Preferred format: WebP.
-- Fallback formats: JPEG or PNG when conversion support requires it.
+- Bounding box: 960 px wide × 1,600 px high.
+- Source aspect ratio is preserved and the source is never enlarged or cropped.
+- Maximum stored size: 500 KiB.
+- Output format: WebP, quality 78 with one quality-60 retry when necessary.
 - Exactly one active thumbnail per bookmark.
-
-These defaults must be confirmed through representative visual and storage tests before implementation freeze.
 
 ### 16.2 Candidate order
 
@@ -1098,7 +1095,7 @@ These defaults must be confirmed through representative visual and storage tests
 3. Server-resolved Open Graph or equivalent image.
 4. Browser Rendering screenshot when explicitly enabled and within allowance.
 5. Favicon.
-6. Application placeholder; not stored in R2.
+6. Application placeholder; not stored in Workers KV.
 
 ### 16.3 Safe retrieval
 
@@ -1116,7 +1113,7 @@ For every remote fetch:
 
 The extension supplies candidates, not trusted image bytes.
 
-### 16.4 R2 object lifecycle
+### 16.4 Workers KV value lifecycle
 
 Object key:
 
@@ -1127,28 +1124,27 @@ thumbnails/<bookmark-id>/<thumbnail-id>.<extension>
 Write order:
 
 1. Normalize image.
-2. Put R2 object with private metadata.
+2. Put the immutable WebP bytes under a new Workers KV key.
 3. Commit thumbnail row and bookmark reference in D1.
-4. Delete the previous object after the new reference commits.
+4. Delete the previous KV value after the new reference commits.
 
 If D1 commit fails, delete the newly written orphan best-effort and emit a cleanup event.
 
 Permanent bookmark deletion:
 
-1. Delete relationship/tag/database dependants transactionally.
-2. Delete bookmark and thumbnail row.
-3. Delete R2 object.
-4. If R2 deletion fails, record a redacted orphan-cleanup task.
+1. Resolve the private KV key from D1.
+2. Delete the Workers KV value; if deletion fails, leave the bookmark in Trash and report failure.
+3. Delete the bookmark; foreign-key cascades remove thumbnail, relationship, and tag-association rows.
 
 ### 16.5 Private delivery
 
-R2 has no public bucket URL.
+Workers KV has no public value URL.
 
 `GET /api/thumbnails/:bookmarkId`:
 
 - Requires dashboard session or an explicitly supported scoped client.
 - Looks up the object key in D1.
-- Streams the R2 object.
+- Reads the bounded KV value with an edge-cache TTL and returns it from the authenticated route.
 - Sets `Content-Type`, `ETag`, `X-Content-Type-Options: nosniff`, and private cache headers.
 - Supports conditional requests.
 
@@ -1175,7 +1171,7 @@ The server:
 
 Preview creates an expiring `import_session` and validated `import_rows`.
 
-It does not create bookmarks, Queue messages, tags, thumbnails, or R2 objects.
+It does not create bookmarks, Queue messages, tags, thumbnails, or Workers KV values.
 
 Preview counts and samples are derived from staged rows. Unknown columns are reported. Non-empty unsupported highlights require acknowledgement.
 
@@ -1385,7 +1381,7 @@ MCP is read-only in v6. Tool handlers cannot:
 - Explicit result size limits.
 - Stable cursors.
 - No hidden prompt content.
-- No provider keys, capture credentials, sessions, internal job errors, or thumbnail object keys.
+- No provider keys, capture credentials, sessions, internal job errors, or thumbnail storage keys.
 
 ---
 
@@ -1474,7 +1470,7 @@ Allowed:
 - Safe outcome/error code.
 - Attempt count.
 - Duration.
-- D1/R2/Queue operation category.
+- D1/Workers KV/Queue operation category.
 
 Prohibited:
 
@@ -1548,7 +1544,7 @@ Rate-limit state may use D1 for the single-user scale. Cloudflare-native rate li
 - Permanent delete requires explicit confirmation.
 - Global tag deletion displays affected count.
 - Credential revocation is immediate.
-- R2 deletion failure never resurrects a database bookmark.
+- Workers KV deletion failure never resurrects a database bookmark.
 
 ---
 
@@ -1557,7 +1553,7 @@ Rate-limit state may use D1 for the single-user scale. Cloudflare-native rate li
 At the design review date:
 
 - D1 Free: 5 million rows read/day, 100,000 rows written/day, 5 GB total account storage, and 500 MB per database.
-- R2 Standard: 10 GB-month storage, 1 million Class A operations/month, 10 million Class B operations/month, and free egress.
+- Workers KV on Workers Free: 1 GB stored data, 100,000 reads/day, and 1,000 writes, deletes, and list operations/day.
 - Queues Free: 10,000 operations/day; free-message retention is 24 hours.
 - Workers AI: 10,000 neurons/day at no charge, resetting at 00:00 UTC.
 - Cloudflare Images Free: 5,000 unique transformations/month.
@@ -1568,7 +1564,7 @@ These values are external constraints, not durable constants. Revalidate before 
 ### 25.1 Capacity behavior
 
 - D1 write exhaustion blocks new mutations but preserves reads where available.
-- R2 exhaustion degrades to bookmark-without-thumbnail.
+- Workers KV exhaustion degrades to bookmark-without-thumbnail.
 - Queue send failure saves the bookmark with visible automation-pending state.
 - Workers AI exhaustion waits until reset or lets the user switch provider.
 - Browser Run exhaustion skips screenshot fallback.
@@ -1583,7 +1579,7 @@ Test at 1,000, 10,000, and maximum target library sizes:
 - Rows written per bookmark/import.
 - FTS behavior.
 - Queue operations per bookmark.
-- R2 object count and bytes.
+- Workers KV key count and stored bytes.
 - Average/max thumbnail size.
 - AI tokens and neurons per bookmark.
 - Extension and Shortcut request volume.
@@ -1609,7 +1605,7 @@ Test at 1,000, 10,000, and maximum target library sizes:
 ### 26.2 Contract tests
 
 - D1 repositories against migrations.
-- R2 put/get/delete and conditional delivery.
+- Workers KV put/get/delete and conditional delivery.
 - Queue duplicate and retry behavior.
 - Workers AI output and usage envelopes.
 - OpenAI Responses structured output and usage.
@@ -1645,7 +1641,7 @@ Inject failure after every external boundary:
 - Before/after D1 bookmark commit.
 - Before/after Queue send.
 - Before/after AI response.
-- Before/after R2 put.
+- Before/after Workers KV put.
 - Before/after thumbnail D1 reference.
 - During import chunk.
 - During password rewrap.
@@ -1693,7 +1689,7 @@ The v6 rewrite should proceed behind a branch and deployment boundary.
 - Record current routes, bindings, and behavior.
 - Do not deploy migration work to a real Raindrop library.
 
-### Phase 1 — D1/R2 foundation
+### Phase 1 — D1/Workers KV foundation
 
 - Add target bindings and migrations.
 - Implement repositories, password vault, sessions, fixed folders, and health checks.
@@ -1713,7 +1709,7 @@ The v6 rewrite should proceed behind a branch and deployment boundary.
 ### Phase 4 — Import and thumbnails
 
 - Implement CSV preview/commit.
-- Implement R2 thumbnail pipeline and private delivery.
+- Implement Workers KV thumbnail pipeline and private delivery.
 
 ### Phase 5 — Capture surfaces
 
@@ -1746,11 +1742,11 @@ Old KV operational state is not bookmark content and must not be treated as a li
 
 ### 28.1 Environments
 
-- Local: local D1/R2/Queue simulation and fake providers.
-- Preview: separate D1, R2, Queue, credentials, and hostname.
+- Local: local D1/Workers KV/Queue simulation and fake providers.
+- Preview: separate D1, Workers KV, Queue, credentials, and hostname.
 - Production: user-owned bindings provisioned by deployment template.
 
-Never share databases, buckets, queues, or secrets between preview and production.
+Never share databases, KV namespaces, queues, or secrets between preview and production.
 
 ### 28.2 Deployment gate
 
@@ -1779,7 +1775,7 @@ Before a destructive migration:
 
 - Export the user library.
 - Verify D1 backup/time-travel availability.
-- Confirm R2 object compatibility.
+- Confirm Workers KV value and operation-limit compatibility.
 - Document the forward recovery.
 
 ---
@@ -1791,7 +1787,7 @@ Before a destructive migration:
 - Sequential processing favors consistency over throughput.
 - D1 FTS favors simple private search over semantic search.
 - A password-derived wrapping key makes password security important; the application cannot recover a forgotten password or decrypt provider keys without it.
-- Private thumbnail delivery costs Worker/R2 requests but avoids public object URLs.
+- Private thumbnail delivery costs Worker/Workers KV requests but avoids public object URLs.
 - Browser screenshots are disabled by default to protect free-tier Browser Run allowance.
 - The iOS Shortcut uses guided credential setup instead of pretending the Worker can issue a universally signed Shortcut package.
 
@@ -1802,14 +1798,12 @@ Before a destructive migration:
 1. Final initial-tag maximum; design default is 20.
 2. Whether career and aspiration allow **Prefer not to say**.
 3. Final CSV maximum; design default is 10 MiB.
-4. Final thumbnail dimensions/bytes; design default is 640 × 360 and 150 KiB.
-5. Whether Cloudflare Images transformations or an in-Worker image path is used for normalization.
-6. Whether Browser Rendering screenshot fallback ships disabled or is omitted from v6.0.
-7. Chrome/Firefox store publication sequence.
-8. Final OpenAI, Anthropic, and Workers AI default model allowlists.
-9. Final session idle and absolute expiry.
-10. Whether a dead-letter queue is worth the extra deployment resource.
-11. Final portable export formats.
+4. Whether Browser Rendering screenshot fallback ships disabled or is omitted from v6.0.
+5. Chrome/Firefox store publication sequence.
+6. Final OpenAI, Anthropic, and Workers AI default model allowlists.
+7. Final session idle and absolute expiry.
+8. Whether a dead-letter queue is worth the extra deployment resource.
+9. Final portable export formats.
 
 No unresolved item authorizes silently changing the PRD.
 
@@ -1821,7 +1815,7 @@ Implementation may begin when:
 
 - PRD v6.0 is accepted.
 - The decisions in section 30 that affect schema or user flows are resolved.
-- Deploy-to-Cloudflare provisioning for D1, R2, and Queue is verified.
+- Deploy-to-Cloudflare provisioning for D1, Workers KV, and Queue is verified.
 - Default provider models are verified as available and structured-output capable.
 - Thumbnail normalization approach is proven in Workers.
 - Extension distribution approach is selected.
@@ -1839,8 +1833,8 @@ Cloudflare:
 - [D1 migrations](https://developers.cloudflare.com/d1/reference/migrations/)
 - [D1 pricing](https://developers.cloudflare.com/d1/platform/pricing/)
 - [D1 per-database limits](https://developers.cloudflare.com/d1/platform/release-notes/)
-- [R2 Workers API](https://developers.cloudflare.com/r2/api/workers/workers-api-reference/)
-- [R2 pricing](https://developers.cloudflare.com/r2/pricing/)
+- [Workers KV binding API](https://developers.cloudflare.com/kv/api/)
+- [Workers KV pricing](https://developers.cloudflare.com/kv/platform/pricing/)
 - [Queues configuration](https://developers.cloudflare.com/queues/configuration/configure-queues/)
 - [Queues retries and delays](https://developers.cloudflare.com/queues/configuration/batching-retries/)
 - [Queues pricing](https://developers.cloudflare.com/queues/platform/pricing/)

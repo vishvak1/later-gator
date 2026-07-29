@@ -107,7 +107,7 @@ Raindrop is supported only as an optional source of a user-uploaded CSV import. 
 - Bookmark records.
 - Titles, URLs, descriptions, notes, tags, and folder placement.
 - Favorite state, thumbnail metadata, and bookmark-to-bookmark relationships.
-- Private thumbnail objects stored outside the bookmark database.
+- Private thumbnail values stored outside the bookmark database.
 - Bookmark lifecycle and AI-processing state.
 - Import history and row-level import outcomes.
 - Personalization and organization instructions.
@@ -570,9 +570,11 @@ Requirements:
 
 - The bookmark save succeeds even when thumbnail retrieval or generation fails.
 - Imported or remotely fetched images are copied into the user's Later Gator storage; dashboard cards do not depend indefinitely on third-party image URLs.
-- Thumbnails are normalized to a small web-friendly representation before permanent storage.
-- Thumbnail binaries are stored in private Cloudflare object storage, not as database blobs.
-- The bookmark database stores only the thumbnail object key, media type, dimensions, byte size, source type, and timestamps.
+- Thumbnails are normalized to a bounded, web-friendly representation before permanent storage.
+- Thumbnail binaries are stored as private Workers KV values, not as database blobs.
+- A preview preserves the source image's natural aspect ratio and is never center-cropped into a fixed card ratio.
+- Dashboard cards use a responsive masonry layout so portrait, landscape, and document-shaped previews remain legible.
+- The bookmark database stores only the thumbnail storage key, media type, dimensions, byte size, source type, and timestamps.
 - The dashboard serves thumbnails only to an authenticated application request or another explicitly authorized Later Gator client.
 - Changing a bookmark URL marks its existing automatically generated thumbnail as stale and offers regeneration.
 - A user-uploaded replacement thumbnail is not overwritten automatically.
@@ -580,7 +582,11 @@ Requirements:
 - Permanently deleting the bookmark also deletes its stored thumbnail.
 - Removing or regenerating a thumbnail must not alter the bookmark's title, description, tags, note, folder, favorite state, or relationships.
 
-Cloudflare R2 Standard is the product assumption for thumbnail binaries. At the current review date, its free tier includes 10 GB-month of storage, separate from D1's per-database limit. The later technical design must validate private delivery, transformations, operation counts, cleanup, and failure behavior.
+Cloudflare Workers KV is the product assumption for thumbnail binaries. At the
+current review date, Workers Free includes 1 GB of KV storage, 100,000 reads per
+day, and 1,000 writes, deletes, and list operations per day. Later Gator caps each
+stored preview at 500 KiB, keeps bookmark metadata in D1, and must degrade to a
+bookmark without a preview when image processing or KV storage fails.
 
 ### 7.10 Linked bookmarks
 
@@ -846,7 +852,7 @@ Observed field coverage:
 | `folder` | 659 across 5 unique values | Show in preview/report but do not recreate the folder |
 | `tags` | 383 | Remove under Option A or normalize and retain under Option B |
 | `created` | 659 | Import as source creation date when valid |
-| `cover` | 607 | Treat as a candidate thumbnail source and copy into Later Gator-owned object storage when valid |
+| `cover` | 607 | Treat as a candidate thumbnail source and copy into Later Gator-owned Workers KV storage when valid |
 | `highlights` | 0 | Unsupported in v6.0; warn and report rather than silently discarding if a future import contains data |
 | `favorite` | 659 | Map to Later Gator favorite state |
 
@@ -1383,12 +1389,12 @@ The target assumes:
 
 ### 16.2 Current verified external envelope
 
-At the 2026-07-28 review:
+At the 2026-07-29 review:
 
 - Cloudflare D1 Free documents 5 million rows read per day, 100,000 rows written per day, and 5 GB total account storage.
 - Cloudflare documentation also retains a 500 MB per-database limit for Workers Free accounts.
-- Cloudflare R2 Standard currently includes 10 GB-month of free object storage, 1 million Class A operations per month, 10 million Class B operations per month, and free egress.
-- Cloudflare Images Free currently includes 5,000 unique transformations per month and can transform images stored outside Images, including in R2.
+- Workers KV on Workers Free currently includes 1 GB stored data, 100,000 reads per day, and 1,000 writes, deletes, and list operations per day; an individual value may be up to 25 MiB.
+- Cloudflare Images Free currently includes 5,000 unique transformations per month and can transform image streams supplied by the Worker.
 - Browser Run Free currently includes 10 minutes of browser execution per day and three concurrent browsers. Therefore, generated page screenshots are a bounded fallback rather than an unlimited thumbnail source.
 - Workers Free documents 100,000 dynamic requests per day.
 - Static asset requests are free and unlimited.
@@ -1409,7 +1415,7 @@ If a storage or daily database limit is reached:
 - Never silently discard an import or bookmark.
 - Never opt the user into a paid plan automatically.
 
-If the thumbnail object-storage allowance is reached:
+If the Workers KV storage or operation allowance is reached:
 
 - Continue saving bookmark metadata without a thumbnail when database capacity remains.
 - Show that thumbnail capture is unavailable.
@@ -1439,7 +1445,7 @@ Measure:
 - AI usage per bookmark.
 - Export size and duration.
 - Average and maximum thumbnail size.
-- R2 storage and object-operation usage.
+- Workers KV storage and object-operation usage.
 - Thumbnail cache behavior.
 - Browser-extension and iOS capture traffic.
 
@@ -1574,7 +1580,7 @@ Measure:
 - Cloudflare limit errors preserve existing bookmarks.
 - The application never requests or performs an automatic paid-plan upgrade.
 - Thumbnail storage is measured separately from bookmark database storage.
-- R2-limit failure does not prevent bookmark metadata from being saved.
+- Workers KV capacity or operation-limit failure does not prevent bookmark metadata from being saved.
 
 ---
 
@@ -1647,7 +1653,7 @@ Measure:
 25. Rough character-based AI usage estimates are prohibited.
 26. OpenAI and Anthropic have no Later Gator daily token budget.
 27. Free-tier operation is a measured target, not an unlimited-capacity promise.
-28. Bookmark thumbnail binaries are stored in private R2 object storage rather than the bookmark database.
+28. Bookmark thumbnail binaries are stored as private Workers KV values rather than in the bookmark database.
 29. Imported Raindrop `cover` values are candidate thumbnail sources.
 30. Chrome and Firefox extensions are in scope.
 31. The browser-extension popup contains separate Source URL and Linked to fields.
@@ -1674,12 +1680,11 @@ These questions should be resolved before the technical design:
 8. Whether a bookmark manually moved out of Unsorted should automatically be treated as **Save without AI organization**.
 9. The exact portable Later Gator export formats required at launch.
 10. Whether optional email alerts should return in a later release.
-11. Maximum normalized thumbnail dimensions and byte size.
-12. Whether Browser Run page screenshots are enabled by default as a fallback or require an explicit setting.
-13. Whether extension distribution begins through official Chrome/Firefox stores or documented self-installation.
-14. Whether the Linked to relationship needs named relationship types beyond the initial generic related-bookmark connection.
-15. Whether a linked-to URL created by the extension should always enter Unsorted or inherit a manually selected source folder.
-16. Whether the iOS Shortcut installation should use a generated signed import link or guided manual steps.
+11. Whether Browser Run page screenshots are enabled by default as a fallback or require an explicit setting.
+12. Whether extension distribution begins through official Chrome/Firefox stores or documented self-installation.
+13. Whether the Linked to relationship needs named relationship types beyond the initial generic related-bookmark connection.
+14. Whether a linked-to URL created by the extension should always enter Unsorted or inherit a manually selected source folder.
+15. Whether the iOS Shortcut installation should use a generated signed import link or guided manual steps.
 
 ---
 
@@ -1693,8 +1698,8 @@ Cloudflare:
 - [Workers limits](https://developers.cloudflare.com/workers/platform/limits/)
 - [Workers static assets](https://developers.cloudflare.com/workers/static-assets/)
 - [Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/)
-- [R2 pricing and free tier](https://developers.cloudflare.com/r2/pricing/)
-- [R2 platform limits](https://developers.cloudflare.com/r2/platform/limits/)
+- [Workers KV pricing](https://developers.cloudflare.com/kv/platform/pricing/)
+- [Workers KV platform limits](https://developers.cloudflare.com/kv/platform/limits/)
 - [Cloudflare Images transformations pricing](https://developers.cloudflare.com/images/pricing/)
 - [Browser Run pricing](https://developers.cloudflare.com/browser-run/pricing/)
 

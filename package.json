@@ -28,10 +28,10 @@
         "description": "Stores the authoritative Later Gator bookmark library and application state."
       },
       "THUMBNAILS": {
-        "description": "Stores private normalized bookmark thumbnails outside the database."
+        "description": "Stores private optimized bookmark preview bytes outside the D1 database."
       },
       "IMAGES": {
-        "description": "Normalizes remote thumbnail candidates before private R2 storage."
+        "description": "Creates uncropped, aspect-preserving WebP bookmark previews before private Workers KV storage."
       },
       "AI": {
         "description": "Runs organization inference when Cloudflare Workers AI is selected."

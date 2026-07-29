@@ -5,7 +5,7 @@ const optionalText = (maximum: number) =>
   z.union([z.string().trim().max(maximum), z.null()]).optional();
 
 export const loginInputSchema = z.strictObject({
-  password: z.string().min(10).max(1024),
+  password: z.string().min(1).max(1024),
 });
 
 export const completeSetupInputSchema = z.strictObject({

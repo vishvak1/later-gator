@@ -153,7 +153,7 @@ async function login(request: Request, env: Env): Promise<Response> {
       password = parsed.data.password;
     } else {
       password = await parseFormPassword(request);
-      if (password === null || password.length < 10 || password.length > 1024) {
+      if (password === null || password.length === 0 || password.length > 1024) {
         return loginPage("invalid");
       }
     }

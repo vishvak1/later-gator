@@ -10,7 +10,7 @@ async function login(): Promise<AuthenticatedClient> {
   const response = await exports.default.fetch("https://later-gator.test/auth/login", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ password: "local-test-later-gator-password" }),
+    body: JSON.stringify({ password: "test-pass" }),
   });
   expect(response.status).toBe(200);
   const body = await response.json<{ csrfToken: string }>();
@@ -53,7 +53,9 @@ describe("v6 Worker foundation", () => {
   it("serves an unauthenticated login page at the root", async () => {
     const response = await exports.default.fetch("https://later-gator.test/");
     expect(response.status).toBe(200);
-    expect(await response.text()).toContain("Later Gator password");
+    const html = await response.text();
+    expect(html).toContain("Later Gator password");
+    expect(html).not.toContain('minlength="10"');
   });
 
   it("initializes authentication and redirects an unfinished account to setup", async () => {
@@ -81,7 +83,7 @@ describe("v6 Worker foundation", () => {
         {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ password: "local-test-later-gator-password" }),
+          body: JSON.stringify({ password: "test-pass" }),
         },
       );
       expect(response.status).toBe(503);

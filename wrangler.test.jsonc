@@ -7,7 +7,7 @@
   "vars": {
     "ENVIRONMENT": "test",
     "TIMEZONE": "UTC",
-    "BOOTSTRAP_PASSWORD": "local-test-later-gator-password"
+    "BOOTSTRAP_PASSWORD": "test-pass"
   },
   "d1_databases": [
     {

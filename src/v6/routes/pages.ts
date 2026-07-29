@@ -57,7 +57,7 @@ export function loginPage(
         ${errorMessage === null ? "" : `<p class="error" role="alert">${errorMessage}</p>`}
         <form method="post" action="/auth/login">
           <label>Later Gator password
-            <input name="password" type="password" minlength="10" autocomplete="current-password" required autofocus>
+            <input name="password" type="password" autocomplete="current-password" required autofocus>
           </label>
           <button type="submit">Continue</button>
         </form>

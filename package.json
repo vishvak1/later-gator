@@ -40,7 +40,7 @@
         "description": "Carries opaque job IDs only and invokes one sequential background job at a time."
       },
       "BOOTSTRAP_PASSWORD": {
-        "description": "Later Gator password. Choose at least 10 characters; this field is intentionally blank by default."
+        "description": "Later Gator password. Use 16 or more characters when possible (10-character compatibility minimum); this field is intentionally blank by default."
       }
     }
   },

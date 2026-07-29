@@ -7,7 +7,7 @@ const PAGE_HEADERS = {
   "x-content-type-options": "nosniff",
 } satisfies HeadersInit;
 
-function page(title: string, pageName: string, body: string): Response {
+function page(title: string, pageName: string, body: string, status = 200): Response {
   return new Response(
     `<!doctype html>
 <html lang="en">
@@ -22,7 +22,7 @@ ${body}
 <script src="/app.js" defer></script>
 </body>
 </html>`,
-    { headers: PAGE_HEADERS },
+    { status, headers: PAGE_HEADERS },
   );
 }
 
@@ -37,7 +37,15 @@ function navigation(active: "dashboard" | "settings"): string {
   </header>`;
 }
 
-export function loginPage(error = false): Response {
+export function loginPage(
+  error: "invalid" | "unavailable" | null = null,
+): Response {
+  const errorMessage =
+    error === "invalid"
+      ? "That password was not accepted."
+      : error === "unavailable"
+        ? "Secure authentication is temporarily unavailable. Please try again after updating Later Gator."
+        : null;
   return page(
     "Sign in",
     "login",
@@ -46,7 +54,7 @@ export function loginPage(error = false): Response {
         <div class="logo">🐊</div>
         <h1>Later Gator</h1>
         <p class="muted">Your private, AI-organized bookmark library.</p>
-        ${error ? '<p class="error" role="alert">That password was not accepted.</p>' : ""}
+        ${errorMessage === null ? "" : `<p class="error" role="alert">${errorMessage}</p>`}
         <form method="post" action="/auth/login">
           <label>Later Gator password
             <input name="password" type="password" minlength="10" autocomplete="current-password" required autofocus>
@@ -55,6 +63,7 @@ export function loginPage(error = false): Response {
         </form>
       </section>
     </main>`,
+    error === "unavailable" ? 503 : 200,
   );
 }
 

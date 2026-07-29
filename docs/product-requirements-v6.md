@@ -153,7 +153,7 @@ Requirements:
 - The field is blank by default.
 - It is displayed as a password field.
 - It is required.
-- It contains at least 10 characters.
+- It contains at least 10 characters; setup recommends 16 or more characters.
 - It is described in user language, not as `INSTALLATION_SECRET`.
 - The underlying deployment secret may retain an implementation-specific binding name, but that name is not the primary user-facing label.
 

@@ -192,13 +192,18 @@ The user never needs to append `/setup`.
 The deployment password is a bootstrap input. On first valid login, the application:
 
 1. Generates a random data-encryption key.
-2. Derives a wrapping key from the password.
+2. Derives a wrapping key with PBKDF2-SHA256 at the hosted Workers maximum of 100,000 iterations.
 3. Encrypts the data-encryption key.
 4. Stores the wrapped key and KDF parameters in D1.
 
 Provider keys are encrypted with the data-encryption key.
 
 Changing the password rewraps the same data-encryption key and revokes sessions. It does not have to decrypt and rewrite every provider credential.
+
+Both dashboard-key wrapping and background provider-credential encryption use
+the same hosted-compatible iteration constant. If a stored KDF configuration is
+unsupported, login fails closed with a controlled 503 response; it must never
+fall through to Cloudflare Error 1101.
 
 There is no application-side forgotten-password recovery that can decrypt provider keys. The user must protect the Later Gator password and keep a library export.
 

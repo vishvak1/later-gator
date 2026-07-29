@@ -58,12 +58,41 @@ describe("v6 Worker foundation", () => {
 
   it("initializes authentication and redirects an unfinished account to setup", async () => {
     const client = await login();
+    const authConfig = await env.DB
+      .prepare("SELECT kdf_iterations FROM auth_config WHERE id = 1")
+      .first<{ kdf_iterations: number }>();
+    expect(authConfig).toEqual({ kdf_iterations: 100_000 });
     const response = await exports.default.fetch("https://later-gator.test/", {
       headers: { cookie: client.cookie },
       redirect: "manual",
     });
     expect(response.status).toBe(303);
     expect(response.headers.get("location")).toBe("https://later-gator.test/setup");
+  });
+
+  it("returns a controlled error for an unsupported stored KDF configuration", async () => {
+    await login();
+    await env.DB
+      .prepare("UPDATE auth_config SET kdf_iterations = 100001 WHERE id = 1")
+      .run();
+    try {
+      const response = await exports.default.fetch(
+        "https://later-gator.test/auth/login",
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ password: "local-test-later-gator-password" }),
+        },
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        error: { code: "authentication_unavailable" },
+      });
+    } finally {
+      await env.DB
+        .prepare("UPDATE auth_config SET kdf_iterations = 100000 WHERE id = 1")
+        .run();
+    }
   });
 
   it("requires CSRF on setup mutations", async () => {

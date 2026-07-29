@@ -7,7 +7,7 @@ import {
   utf8,
 } from "./encoding";
 
-const KDF_ITERATIONS = 310_000;
+export const PBKDF2_ITERATIONS = 100_000;
 const VERIFIER = "later-gator-password-verifier-v1";
 
 interface AuthConfigRow {
@@ -97,7 +97,7 @@ export async function unlockOrInitializeVault(
     if (bootstrapPassword === null || !constantTimeEqual(password, bootstrapPassword)) return null;
 
     const salt = randomBytes(16);
-    const wrappingKey = await deriveWrappingKey(password, salt, KDF_ITERATIONS);
+    const wrappingKey = await deriveWrappingKey(password, salt, PBKDF2_ITERATIONS);
     const rawDataKey = randomBytes(32);
     const dataKey = await importDataKey(rawDataKey);
     const wrapped = await encrypt(wrappingKey, rawDataKey);
@@ -112,7 +112,7 @@ export async function unlockOrInitializeVault(
         ) VALUES (1, 1, 'PBKDF2-SHA256', ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
-        KDF_ITERATIONS,
+        PBKDF2_ITERATIONS,
         toBase64(salt),
         wrapped.ciphertext,
         wrapped.nonce,
@@ -129,7 +129,7 @@ export async function unlockOrInitializeVault(
   if (
     config.schema_version !== 1 ||
     config.kdf_name !== "PBKDF2-SHA256" ||
-    config.kdf_iterations < 100_000
+    config.kdf_iterations !== PBKDF2_ITERATIONS
   ) {
     throw new Error("unsupported_auth_config");
   }

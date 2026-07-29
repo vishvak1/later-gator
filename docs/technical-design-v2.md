@@ -420,10 +420,15 @@ On the first valid login:
 
 1. Compare the submitted password to the Worker secret in constant time.
 2. Generate a random 256-bit data-encryption key.
-3. Derive a wrapping key from the password using Web Crypto PBKDF2, a random salt, and a release-versioned iteration count.
+3. Derive a wrapping key from the password using Web Crypto PBKDF2-SHA256, a random salt, and 100,000 iterations, which is the maximum accepted by the hosted Workers runtime.
 4. Wrap the data-encryption key with AES-GCM.
 5. Store only the salt, KDF parameters, wrapped key, nonce, and schema version in D1.
 6. Mark password initialization complete.
+
+The same iteration constant is reused for the background-service copy of
+provider credentials. Stored KDF parameters outside the supported version and
+iteration count fail closed with a controlled `503 authentication_unavailable`
+response rather than an uncaught Worker exception.
 
 After initialization, authentication succeeds only by unwrapping the data-encryption key. The bootstrap secret is ignored for login.
 

@@ -15,7 +15,7 @@ connects to, changes, or deletes data in your Raindrop account.
 1. Press **Deploy to Cloudflare**.
 2. Sign in to GitHub and Cloudflare and approve the requested resources.
 3. In the blank **Later Gator password** field, choose a password of at least
-   10 characters and save it somewhere safe.
+   10 characters—16 or more is recommended—and save it somewhere safe.
 4. Finish the deployment and open the Worker URL.
 5. Sign in. Later Gator automatically sends an unfinished installation to
    `/setup`; after setup it sends you to `/dashboard`.

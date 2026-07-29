@@ -154,20 +154,38 @@ async function login(request: Request, env: Env): Promise<Response> {
     } else {
       password = await parseFormPassword(request);
       if (password === null || password.length < 10 || password.length > 1024) {
-        return loginPage(true);
+        return loginPage("invalid");
       }
     }
   } catch {
     return apiError(400, "invalid_login", "Enter your Later Gator password.");
   }
 
-  const unlocked = await unlockOrInitializeVault(env.DB, env, password);
+  let unlocked: Awaited<ReturnType<typeof unlockOrInitializeVault>>;
+  try {
+    unlocked = await unlockOrInitializeVault(env.DB, env, password);
+  } catch (error) {
+    console.error(
+      JSON.stringify({
+        event: "authentication_vault_unavailable",
+        errorType: error instanceof Error ? error.name : "UnknownError",
+      }),
+    );
+    if (request.headers.get("content-type")?.includes("application/json") === true) {
+      return apiError(
+        503,
+        "authentication_unavailable",
+        "Secure authentication is temporarily unavailable.",
+      );
+    }
+    return loginPage("unavailable");
+  }
   if (unlocked === null) {
     await recordLoginFailure(request, env.DB);
     if (request.headers.get("content-type")?.includes("application/json") === true) {
       return apiError(401, "invalid_password", "That password was not accepted.");
     }
-    return loginPage(true);
+    return loginPage("invalid");
   }
   await env.DB
     .prepare("DELETE FROM login_attempts WHERE client_hash = ?")

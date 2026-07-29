@@ -5,6 +5,12 @@ thumbnail storage. Dashboard mutations require an authenticated HTTP-only
 session, same-origin validation, and CSRF. Browser, iOS, and MCP connections use
 separate revocable credentials with the minimum required scopes.
 
+Password-wrapped keys use PBKDF2-SHA256 with the hosted Workers maximum of
+100,000 iterations. Deployments accept the existing 10-character compatibility
+minimum, but users should choose 16 or more characters. Login attempts are
+rate-limited, and an unsupported stored KDF configuration fails closed with a
+controlled response.
+
 Provider keys are encrypted before D1 storage and never returned to the browser.
 Logs and Queue messages must not contain bookmark URLs, titles, notes, content,
 provider keys, capture tokens, session values, or MCP paths.

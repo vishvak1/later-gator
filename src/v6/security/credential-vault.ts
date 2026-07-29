@@ -1,5 +1,5 @@
 import { fromBase64, randomBytes, toBase64, utf8 } from "./encoding";
-import { encryptWithRawKey } from "./password-vault";
+import { encryptWithRawKey, PBKDF2_ITERATIONS } from "./password-vault";
 import { getBootstrapPassword } from "./password-vault";
 
 interface CredentialRow {
@@ -24,7 +24,7 @@ async function serviceKey(
     {
       name: "PBKDF2",
       hash: "SHA-256",
-      iterations: 310_000,
+      iterations: PBKDF2_ITERATIONS,
       salt: utf8(`later-gator-service-credential-v1:${provider}`),
     },
     source,

@@ -7,6 +7,8 @@ const PAGE_HEADERS = {
   "x-content-type-options": "nosniff",
 } satisfies HeadersInit;
 
+const ASSET_VERSION = "20260730-library-rework";
+
 function page(title: string, pageName: string, body: string, status = 200): Response {
   return new Response(
     `<!doctype html>
@@ -15,15 +17,47 @@ function page(title: string, pageName: string, body: string, status = 200): Resp
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${title} · Later Gator</title>
-  <link rel="stylesheet" href="/app.css">
+  <link rel="stylesheet" href="/app.css?v=${ASSET_VERSION}">
 </head>
 <body data-page="${pageName}">
 ${body}
-<script src="/app.js" defer></script>
+${importOverlay()}
+<script src="/app.js?v=${ASSET_VERSION}" defer></script>
 </body>
 </html>`,
     { status, headers: PAGE_HEADERS },
   );
+}
+
+function importOverlay(): string {
+  return `<div id="importOverlay" class="busy-overlay" hidden>
+    <section class="busy-card" role="dialog" aria-modal="true" aria-labelledby="importOverlayTitle">
+      <div class="import-mark">↥</div>
+      <p class="eyebrow">Raindrop import</p>
+      <h2 id="importOverlayTitle">Preparing your library</h2>
+      <p id="importOverlayMessage" class="muted">Reading the selected CSV…</p>
+      <div id="importProgressWrap" class="progress-track" hidden>
+        <span id="importProgressBar"></span>
+      </div>
+      <p id="importProgressLabel" class="progress-label"></p>
+      <div id="duplicateDecision" class="duplicate-decision" hidden>
+        <p id="duplicateCounter" class="eyebrow"></p>
+        <div class="comparison-grid">
+          <article><span>Already in Later Gator</span><strong id="existingDuplicateTitle"></strong><small id="existingDuplicateUrl"></small></article>
+          <article><span>From this CSV</span><strong id="importedDuplicateTitle"></strong><small id="importedDuplicateUrl"></small></article>
+        </div>
+        <label class="check-row"><input id="duplicateApplyAll" type="checkbox"> Use this decision for all remaining duplicates</label>
+        <div class="actions split">
+          <button id="duplicateUseCurrent" class="secondary" type="button">Use current</button>
+          <button id="duplicateReplace" type="button">Replace with import</button>
+        </div>
+      </div>
+      <div class="import-controls">
+        <button id="retryImportButton" class="secondary" type="button" hidden>Resume import</button>
+        <button id="cancelImportButton" class="text-button" type="button" hidden>Cancel import</button>
+      </div>
+    </section>
+  </div>`;
 }
 
 function navigation(active: "dashboard" | "settings"): string {
@@ -72,11 +106,43 @@ export function setupPage(): Response {
     "Setup",
     "setup",
     `<main class="setup-shell">
-      <header class="setup-header"><span class="logo small">🐊</span><div><h1>Set up Later Gator</h1><p class="muted">Required profile first; import and MCP are optional.</p></div></header>
+      <header class="setup-header"><span class="logo small">🐊</span><div><h1>Set up Later Gator</h1><p class="muted">Choose your interests and optionally import your Raindrop library.</p></div></header>
       <form id="setupForm" class="stack">
-        <section class="panel"><span class="step">1</span><h2>Your most relevant topics</h2>
-          <p>Enter 5–20 comma-separated tags.</p>
-          <input id="setupTags" required placeholder="ai, software engineering, research, design, systems">
+        <section class="panel topic-onboarding"><span class="step">1</span><h2>Shape your starting interests</h2>
+          <p class="muted">Choose at least five topics or subtopics. These guide the first few recommendations; AI can create completely new tags whenever your bookmarks introduce new subjects.</p>
+          <div id="topicPicker" class="topic-picker">
+            <fieldset><legend>Technology</legend><div class="topic-options">
+              <button type="button" class="topic-chip" data-topic="artificial-intelligence">artificial-intelligence</button>
+              <button type="button" class="topic-chip" data-topic="software-engineering">software-engineering</button>
+              <button type="button" class="topic-chip" data-topic="data-science">data-science</button>
+              <button type="button" class="topic-chip" data-topic="cybersecurity">cybersecurity</button>
+              <button type="button" class="topic-chip" data-topic="web-development">web-development</button>
+            </div></fieldset>
+            <fieldset><legend>Work &amp; Business</legend><div class="topic-options">
+              <button type="button" class="topic-chip" data-topic="career">career</button>
+              <button type="button" class="topic-chip" data-topic="entrepreneurship">entrepreneurship</button>
+              <button type="button" class="topic-chip" data-topic="product-management">product-management</button>
+              <button type="button" class="topic-chip" data-topic="finance">finance</button>
+              <button type="button" class="topic-chip" data-topic="leadership">leadership</button>
+            </div></fieldset>
+            <fieldset><legend>Ideas &amp; Learning</legend><div class="topic-options">
+              <button type="button" class="topic-chip" data-topic="research">research</button>
+              <button type="button" class="topic-chip" data-topic="history">history</button>
+              <button type="button" class="topic-chip" data-topic="religion-and-philosophy">religion-and-philosophy</button>
+              <button type="button" class="topic-chip" data-topic="psychology">psychology</button>
+              <button type="button" class="topic-chip" data-topic="education">education</button>
+            </div></fieldset>
+            <fieldset><legend>Creative &amp; Life</legend><div class="topic-options">
+              <button type="button" class="topic-chip" data-topic="design">design</button>
+              <button type="button" class="topic-chip" data-topic="writing">writing</button>
+              <button type="button" class="topic-chip" data-topic="health">health</button>
+              <button type="button" class="topic-chip" data-topic="travel">travel</button>
+              <button type="button" class="topic-chip" data-topic="personal-growth">personal-growth</button>
+            </div></fieldset>
+          </div>
+          <div class="custom-topic"><input id="customTopic" maxlength="512" placeholder="Add comma-separated topics"><button id="addCustomTopic" class="secondary" type="button">Add topics</button></div>
+          <div id="customTopicTokens" class="topic-options custom-topic-tokens" aria-live="polite"></div>
+          <p id="topicSelectionCount" class="selection-count">0 selected · choose at least 5</p>
         </section>
         <section class="panel"><span class="step">2</span><h2>Career and aspirations</h2>
           <label>What is your career?<textarea id="careerContext" required maxlength="2000"></textarea></label>
@@ -90,16 +156,13 @@ export function setupPage(): Response {
           <div class="screenshot-placeholder">Raindrop export screenshot placeholder 1</div>
           <div class="screenshot-placeholder">Raindrop export screenshot placeholder 2</div>
           <input id="setupImportFile" type="file" accept=".csv,text/csv">
-          <label><input type="radio" name="setupImportOption" value="reorganize" checked> Strip imported tags/description and reorganize from Unsorted</label>
-          <label><input type="radio" name="setupImportOption" value="preserve"> Preserve tags/description and classify through Imports</label>
+          <label><input type="radio" name="setupImportOption" value="reorganize" checked> Start fresh — remove imported tags and descriptions</label>
+          <label><input type="radio" name="setupImportOption" value="preserve"> Keep imported tags and descriptions</label>
+          <p class="muted">Every imported bookmark starts in Unsorted. AI organization waits for the full import and then follows your current pause setting.</p>
         </section>
-        <section class="panel"><span class="step">5</span><h2>MCP connection <small>Optional</small></h2>
-          <p>Connect ChatGPT or Claude later from Settings, or generate your private read-only URL now.</p>
-          <label><input id="setupMcp" type="checkbox"> Generate my MCP connection after setup</label>
-        </section>
-        <section class="panel"><span class="step">6</span><h2>Ready</h2>
+        <section class="panel"><span class="step">5</span><h2>Ready</h2>
           <p>Folders are fixed. Tags and bookmarks remain under your control.</p>
-          <button type="submit">Finish setup</button>
+          <button id="finishSetupButton" type="submit" disabled>Finish setup</button>
           <p id="setupStatus" class="status" role="status"></p>
         </section>
       </form>
@@ -114,32 +177,68 @@ export function dashboardPage(): Response {
     `${navigation("dashboard")}
     <div class="app-layout">
       <aside class="sidebar">
-        <button id="addBookmarkButton" class="wide">＋ Add bookmark</button>
+        <button id="addBookmarkButton" class="wide add-button">＋ Add bookmark</button>
+        <p class="sidebar-label">Library</p>
         <nav id="folderNavigation" aria-label="Folders"></nav>
+        <div class="sidebar-section-heading"><p class="sidebar-label">Topics</p><button id="viewAllTopicsButton" class="text-button compact" type="button">View all</button></div>
+        <nav id="tagNavigation" class="tag-navigation" aria-label="Tags"></nav>
       </aside>
       <main class="library">
         <header class="library-header">
-          <div><h1 id="libraryTitle">All Bookmarks</h1><p id="libraryCount" class="muted"></p></div>
-          <button id="editModeButton" class="secondary" type="button">Enter edit mode</button>
+          <div><p class="eyebrow">Your knowledge garden</p><h1 id="libraryTitle">All Bookmarks</h1><p id="libraryCount" class="muted"></p></div>
         </header>
-        <section class="filters" aria-label="Bookmark filters">
-          <input id="searchInput" type="search" placeholder="Search bookmarks">
-          <input id="siteInput" placeholder="Filter by site">
-          <select id="tagFilter"><option value="">All tags</option></select>
-          <select id="favoriteFilter"><option value="">All bookmarks</option><option value="true">Favorites</option><option value="false">Not favorites</option></select>
-          <select id="sortSelect"><option value="modified_at">Date modified</option><option value="added_at">Date added</option><option value="source_created_at">Date created</option><option value="hostname">Site</option><option value="title">Title</option></select>
-          <select id="directionSelect"><option value="desc">Descending</option><option value="asc">Ascending</option></select>
-          <select id="dateField"><option value="added_at">Date added</option><option value="modified_at">Date modified</option><option value="source_created_at">Date created</option></select>
-          <input id="dateFrom" type="date" aria-label="From date"><input id="dateTo" type="date" aria-label="To date">
-          <button id="applyFilters" class="secondary">Apply</button>
+        <section class="discovery-bar" aria-label="Search and filter bookmarks">
+          <div class="search-shell">
+            <span aria-hidden="true">⌕</span>
+            <input id="searchInput" type="search" autocomplete="off" placeholder="Search titles, notes, descriptions… Type # for tags">
+            <div id="tagSuggestions" class="suggestion-menu" hidden></div>
+          </div>
+          <button id="filterButton" class="secondary filter-button" type="button">Sort &amp; filter <span id="filterCount"></span></button>
         </section>
+        <div id="searchTagChips" class="selected-tags"></div>
         <p id="libraryStatus" class="status" role="status"></p>
         <section id="bookmarkGrid" class="bookmark-grid"></section>
+        <div class="load-more-wrap"><button id="loadMoreBookmarks" class="secondary" type="button" hidden>Load more bookmarks</button></div>
       </main>
     </div>
+    <dialog id="filterDialog" class="filter-dialog">
+      <form id="filterForm" method="dialog" class="stack">
+        <div class="dialog-heading"><div><p class="eyebrow">Library controls</p><h2>Sort &amp; filter</h2></div><button value="cancel" class="icon-button" aria-label="Close">×</button></div>
+        <div class="filter-grid">
+          <label>Site<input id="siteInput" list="siteOptions" placeholder="e.g. github.com"><datalist id="siteOptions"></datalist></label>
+          <label>Favorites<select id="favoriteFilter"><option value="">All bookmarks</option><option value="true">Favorites only</option><option value="false">Not favorites</option></select></label>
+          <label>Sort by<select id="sortSelect"><option value="added_at">Date added</option><option value="modified_at">Date modified</option><option value="source_created_at">Date created</option><option value="hostname">Site</option><option value="title">Title</option></select></label>
+          <label>Order<select id="directionSelect"><option value="desc">Newest / Z–A</option><option value="asc">Oldest / A–Z</option></select></label>
+          <label>Date field<select id="dateField"><option value="added_at">Date added</option><option value="modified_at">Date modified</option><option value="source_created_at">Date created</option></select></label>
+          <label>From<input id="dateFrom" type="date"></label>
+          <label>To<input id="dateTo" type="date"></label>
+        </div>
+        <div class="actions split"><button id="clearFilters" class="text-button" type="button">Clear filters</button><div><button value="cancel" class="secondary">Cancel</button> <button id="applyFilters" value="default">Apply filters</button></div></div>
+      </form>
+    </dialog>
+    <dialog id="topicsDialog" class="topics-dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">Your topic vocabulary</p><h2>All topics</h2></div><button id="closeTopicsDialog" class="icon-button" type="button" aria-label="Close">×</button></div>
+      <p class="muted">Choose a topic to filter the library. Deleting a topic removes it from bookmarks but keeps the bookmarks.</p>
+      <nav id="allTagNavigation" class="all-tag-navigation" aria-label="All topics"></nav>
+    </dialog>
     <dialog id="bookmarkDialog">
-      <form id="bookmarkForm" method="dialog" class="stack">
-        <h2 id="bookmarkDialogTitle">Add bookmark</h2>
+      <div id="bookmarkDetailView">
+        <div class="dialog-heading"><div><p id="detailFolder" class="eyebrow"></p><h2 id="detailTitle"></h2></div><button id="closeBookmarkDialog" class="icon-button" type="button" aria-label="Close">×</button></div>
+        <div id="detailPreview" class="detail-preview"></div>
+        <p id="detailDescription" class="detail-description"></p>
+        <section class="metadata-grid">
+          <div><span>Note</span><p id="detailNote"></p></div>
+          <div><span>Tags</span><div id="detailTags" class="chips"></div></div>
+          <div><span>Site</span><p id="detailSite"></p></div>
+          <div><span>Added</span><p id="detailAdded"></p></div>
+          <div><span>Created</span><p id="detailCreated"></p></div>
+          <div><span>Modified</span><p id="detailModified"></p></div>
+          <div class="span-two"><span>Linked bookmarks</span><div id="detailRelationships"></div></div>
+        </section>
+        <div class="actions split"><a id="detailExternalLink" class="button-link secondary" target="_blank" rel="noreferrer">Open original ↗</a><div><button id="restoreDetailButton" class="secondary" type="button" hidden>Restore</button> <button id="deleteDetailButton" class="danger" type="button" hidden>Delete forever</button> <button id="editDetailButton" type="button">Edit bookmark</button></div></div>
+      </div>
+      <form id="bookmarkForm" method="dialog" class="stack" hidden>
+        <div class="dialog-heading"><div><p class="eyebrow">Bookmark editor</p><h2 id="bookmarkDialogTitle">Edit bookmark</h2></div><button value="cancel" class="icon-button" aria-label="Close">×</button></div>
         <input id="bookmarkId" type="hidden"><input id="bookmarkRevision" type="hidden">
         <input id="relatedBookmarkId" type="hidden">
         <label>URL<input id="bookmarkUrl" type="url" required></label>
@@ -150,7 +249,7 @@ export function dashboardPage(): Response {
         <label>Folder<select id="bookmarkFolder"></select></label>
         <label>Tags<input id="bookmarkTags" placeholder="comma-separated tags"></label>
         <label><input id="bookmarkFavorite" type="checkbox"> Favorite</label>
-        <div class="actions"><button value="cancel" class="secondary">Cancel</button><button id="saveBookmarkButton" value="default">Save</button></div>
+        <div class="actions split"><button id="trashBookmarkButton" class="danger" type="button">Move to Trash</button><div><button value="cancel" class="secondary">Cancel</button> <button id="saveBookmarkButton" value="default">Save changes</button></div></div>
       </form>
     </dialog>`,
   );
@@ -173,12 +272,27 @@ export function settingsPage(): Response {
           </form><p id="providerStatus" class="status"></p>
           <a href="https://dash.cloudflare.com/" target="_blank" rel="noreferrer">View account-wide Workers AI usage ↗</a>
         </section>
-        <section class="panel"><h2>Automation</h2><p id="automationStatus"></p><button id="automationButton" class="secondary">Pause AI</button></section>
+        <section class="panel"><h2>AI sorting</h2>
+          <p id="automationStatus"></p>
+          <div id="automationProgress" class="automation-progress">
+            <div class="progress-track"><span id="automationProgressBar"></span></div>
+            <p id="automationProgressLabel" class="progress-label"></p>
+            <div id="automationProgressStates" class="progress-states"></div>
+          </div>
+          <p class="muted">Setup topics are only a starting point. While AI is running it may create new, precise tags for subjects it discovers.</p>
+          <button id="automationButton" class="secondary">Pause AI</button>
+        </section>
         <section class="panel"><h2>Raindrop CSV import</h2>
           <form id="importForm" class="stack"><input id="importFile" type="file" accept=".csv,text/csv" required>
-            <select id="importOption"><option value="reorganize">Reorganize everything</option><option value="preserve">Preserve tags and description</option></select>
-            <button type="submit">Preview and import</button>
-          </form><p id="importStatus" class="status"></p>
+            <select id="importOption"><option value="reorganize">Start fresh — remove imported tags and descriptions</option><option value="preserve">Keep imported tags and descriptions</option></select>
+            <button type="submit">Review and import</button>
+          </form>
+          <div id="settingsImportProgress" class="inline-import-progress" hidden>
+            <strong id="settingsImportTitle">Import in progress</strong>
+            <div class="progress-track"><span id="settingsImportProgressBar"></span></div>
+            <p id="settingsImportProgressLabel" class="progress-label"></p>
+          </div>
+          <p class="muted">Folder-only and full-library Raindrop exports are supported. Everything starts in Unsorted; AI organization waits for the import and preserves your pause setting.</p><p id="importStatus" class="status"></p>
         </section>
         <section class="panel"><h2>Export</h2><p>Download a portable copy of the Later Gator library.</p><a class="button-link" href="/api/export?format=json">Export JSON</a> <a class="button-link secondary" href="/api/export?format=csv">Export CSV</a></section>
         <section class="panel"><h2>Browser extension</h2>
@@ -188,7 +302,7 @@ export function settingsPage(): Response {
         </section>
         <section class="panel"><h2>iOS Share Sheet Shortcut</h2><button id="pairIos">Generate iOS connection</button><pre id="iosCredential" class="secret-output"></pre><p><a href="/shortcut/ios" target="_blank">Open guided installation</a></p></section>
         <section class="panel"><h2>MCP</h2><p>Read-only access for ChatGPT or Claude.</p><button id="rotateMcp">Generate or rotate MCP URL</button><pre id="mcpCredential" class="secret-output"></pre></section>
-        <section class="panel span-two"><h2>Tags</h2><form id="newTagForm"><input id="newTagName" required maxlength="64" placeholder="New tag"><button>Add</button></form><div id="tagSettings" class="tag-list"></div></section>
+        <section class="panel span-two danger-zone"><p class="eyebrow">Testing tools</p><h2>Reset Later Gator</h2><p>Delete every bookmark, tag, thumbnail, import, connection, provider credential, and preference, then return this deployment to setup. Your Later Gator password is kept.</p><button id="resetApplicationButton" class="danger" type="button">Delete everything and restart setup</button></section>
       </div>
       <p id="settingsStatus" class="status"></p>
     </main>`,

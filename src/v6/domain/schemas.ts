@@ -70,19 +70,17 @@ export const bookmarkListQuerySchema = z.strictObject({
     .optional(),
   hostname: z.string().trim().max(255).optional(),
   q: z.string().trim().max(500).optional(),
+  tags: z.string().trim().max(700).optional(),
   dateField: z.enum(["added_at", "modified_at", "source_created_at"]).optional(),
   dateFrom: z.iso.datetime({ offset: true }).optional(),
   dateTo: z.iso.datetime({ offset: true }).optional(),
   sort: z
     .enum(["added_at", "modified_at", "source_created_at", "hostname", "title"])
-    .default("modified_at"),
+    .default("added_at"),
   direction: z.enum(["asc", "desc"]).default("desc"),
   includeTrash: z.enum(["true", "false"]).default("false"),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-});
-
-export const editModeInputSchema = z.strictObject({
-  active: z.boolean(),
+  cursor: z.string().trim().min(1).max(2048).optional(),
 });
 
 export const automationPauseInputSchema = z.strictObject({
@@ -114,14 +112,55 @@ export const relationshipInputSchema = z.strictObject({
   linkedUrl: trimmedText(8192),
 });
 
+export const importStartInputSchema = z.strictObject({
+  duplicateDecisions: z
+    .array(
+      z.strictObject({
+        rowNumber: z.number().int().positive(),
+        action: z.enum(["replace", "use_current"]),
+      }),
+    )
+    .max(5000)
+    .default([]),
+});
+
+export const resetApplicationInputSchema = z.strictObject({
+  confirmation: z.literal("DELETE EVERYTHING"),
+});
+
 export type CreateBookmarkInput = z.infer<typeof createBookmarkInputSchema>;
 export type UpdateBookmarkInput = z.infer<typeof updateBookmarkInputSchema>;
 export type BookmarkListQuery = z.infer<typeof bookmarkListQuerySchema>;
 export type CompleteSetupInput = z.infer<typeof completeSetupInputSchema>;
 
-export const backgroundMessageSchema = z.strictObject({
-  version: z.literal(1),
-  jobId: z.uuid(),
-});
+export const backgroundMessageSchema = z.union([
+  z.strictObject({
+    version: z.literal(1),
+    jobId: z.uuid(),
+  }),
+  z.strictObject({
+    version: z.literal(1),
+    type: z.literal("organize"),
+    jobId: z.uuid(),
+  }),
+  z.strictObject({
+    version: z.literal(1),
+    type: z.literal("import"),
+    importId: z.uuid(),
+  }),
+  z.strictObject({
+    version: z.literal(1),
+    type: z.literal("import_thumbnails"),
+    importId: z.uuid(),
+  }),
+  z.strictObject({
+    version: z.literal(1),
+    type: z.literal("reset_storage"),
+  }),
+  z.strictObject({
+    version: z.literal(1),
+    type: z.literal("dispatch_pending"),
+  }),
+]);
 
 export type BackgroundMessage = z.infer<typeof backgroundMessageSchema>;

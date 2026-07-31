@@ -27,6 +27,8 @@ export async function readJson(request: Request, maximumBytes = 64 * 1024): Prom
 }
 
 export function redirect(request: Request, path: string): Response {
-  return Response.redirect(new URL(path, request.url), 303);
+  return new Response(null, {
+    status: 303,
+    headers: { location: new URL(path, request.url).toString() },
+  });
 }
-

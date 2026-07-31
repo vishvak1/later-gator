@@ -1,8 +1,11 @@
-# Later Gator v2 Developer Guide
+# Later Gator — Developer Guide
 
-**Applies to:** the v6 target architecture
+**Applies to:** the current Later Gator product and implementation architecture
 
-**Companion documents:** PRD v6.0 and Technical Design v2.0
+**Companion documents:** [Product Requirements](product-requirements.md) and
+[Technical Design](technical-design.md)
+
+**Last consolidated:** 2026-07-31
 
 **Current repository status:** `src/index.ts` now selects the v6 implementation
 under `src/v6`. The older source tree is retained temporarily as migration
@@ -13,7 +16,7 @@ entry points.
 
 ## 1. The mental model
 
-Later Gator v2 is the bookmark manager.
+Later Gator is the bookmark manager.
 
 ```mermaid
 flowchart LR
@@ -41,7 +44,7 @@ If you remember those six rules, most of the design follows naturally.
 
 ---
 
-## 2. What changed from v1.5
+## 2. What changed from the retired Raindrop architecture
 
 The previous implementation was built around Raindrop:
 
@@ -50,9 +53,9 @@ The previous implementation was built around Raindrop:
 - KV contains onboarding, leases, folder IDs, and a tag registry.
 - Raindrop remains authoritative.
 
-The v2 implementation replaces that architecture:
+The current implementation replaces that architecture:
 
-| Old concept                  | v2 replacement                                   |
+| Retired concept              | Current replacement                              |
 | ---------------------------- | ------------------------------------------------ |
 | Raindrop bookmark            | D1 `bookmarks` row                               |
 | Raindrop folder IDs          | Seeded immutable D1 `folders` rows               |
@@ -66,7 +69,7 @@ The v2 implementation replaces that architecture:
 | Raindrop search through MCP  | D1/FTS search                                    |
 | Raindrop onboarding reset    | Personal setup plus optional CSV import          |
 
-The verified v2 entry point is active. Remove remaining legacy files only as a
+The active implementation entry point is verified. Remove remaining legacy source files only as a
 separate housekeeping change after confirming no release tooling references
 them.
 
@@ -119,7 +122,9 @@ If a message is duplicated, delayed, or retried, the consumer asks D1 whether th
 
 ### AI provider
 
-The provider supplies a proposal and usage metadata. It never becomes authoritative. Application code validates and applies the proposal.
+The provider supplies a proposal and may include usage metadata in its response.
+Neither is authoritative: application code validates the proposal and does not
+persist provider token or neuron usage.
 
 ---
 
@@ -164,7 +169,10 @@ Never let credentials cross lanes. In particular:
 
 ## 5. Deployment and first login
 
-The user presses **Deploy to Cloudflare** and enters one blank secret labelled **Later Gator password**.
+The user presses **Deploy to Cloudflare** and enters one blank secret labelled
+**Later Gator password**. It must be non-empty. The interface recommends a
+strong password but does not reject an existing deployment password merely
+because it is shorter than 10 characters.
 
 Cloudflare provisions:
 
@@ -223,7 +231,8 @@ Optional:
 
 - Personal AI instructions.
 - Raindrop CSV import.
-- MCP setup.
+
+MCP is configured later from Settings and is not part of setup.
 
 Completing setup seeds:
 
@@ -347,12 +356,13 @@ Before saving AI output:
 ```text
 current bookmark revision == expected revision
 AND job is still running
-AND edit mode is inactive
 AND owner pause is inactive
 AND organization generation still matches
 ```
 
-If any condition fails, the AI result is stale and is discarded.
+If the revision or generation changed, the AI result is stale and is discarded.
+The same job is refreshed against the current bookmark rather than cancelled
+while leaving the bookmark pending.
 
 This is the central protection for simultaneous user and AI activity.
 
@@ -369,28 +379,20 @@ No time-based lease is involved.
 
 ---
 
-## 11. View mode and edit mode
+## 11. Bookmark details and editing
 
-View mode is default. It allows focused actions such as adding a bookmark and toggling favorite.
+Clicking a card opens a non-mutating details modal with its description, note,
+tags, dates, folder, relationships, thumbnail, and an explicit external-link
+action. The user can open the editor for that bookmark from the modal.
 
-Edit mode enables broad mutation and pauses the start of AI work.
+There is no library-wide edit mode. Editing one bookmark does not pause other AI
+jobs. Every PATCH carries `expectedRevision`; a concurrent AI commit produces a
+revision conflict, while a user edit that commits first causes the stale AI
+proposal to be rejected and the job to refresh against the current revision.
 
-### Entering edit mode
-
-- Set application state to `preparing`.
-- Let any running inference reach a safe check.
-- Prevent its result from committing after the edit boundary.
-- Set state to `active`.
-- New bookmarks may still be captured, but their jobs become `paused_edit`.
-
-### Leaving edit mode
-
-- Finish or discard open edits.
-- Clear edit mode.
-- Redispatch eligible paused jobs.
-- Respect a separate owner pause or provider failure.
-
-An expired browser session does not silently restart AI. The next authenticated user sees a recovery action.
+An expired browser session clears stale cookies and redirects to login. It
+cannot leave automation globally paused because bookmark editing owns no global
+automation state.
 
 ---
 
@@ -402,7 +404,8 @@ For each eligible bookmark:
 2. Resolve safe metadata and a thumbnail candidate.
 3. Build the provider-neutral organization input.
 4. Call the selected provider.
-5. Record actual usage metadata when returned.
+5. Ignore provider usage metadata for product accounting; do not persist token
+   or neuron usage.
 6. Validate the structured proposal with Zod.
 7. Normalize tags.
 8. Apply deterministic folder rules.
@@ -425,7 +428,8 @@ The model may suggest a folder, but deterministic rules handle obvious cases:
 - YouTube-like sites → Videos & Talks.
 - arXiv/direct papers → Papers.
 - Documentation sites → Docs & Reference.
-- X, Reddit, LinkedIn → Social Posts.
+- X and Twitter → Social Posts through a deterministic hostname override.
+- Reddit and LinkedIn → Social Posts.
 
 The model may suggest tags, but code:
 
@@ -500,6 +504,18 @@ Never show a calculated account balance or invoice as authoritative.
 
 Tags live in D1, so there is no registry resynchronization.
 
+The setup topics seed useful starting interests only. The organizer prompt treats
+the active registry as open: it reuses an accurate tag or inserts a new
+`created_by = 'ai'` tag for a missing subject. The Library sidebar shows the
+eight most-used topics; **View all** opens the full filter/delete vocabulary in
+a modal. Settings does not own tag vocabulary management.
+
+Setup's custom topic field tokenizes comma-separated values live. All tag entry
+paths—setup, AI, CSV, dashboard edits, capture, and MCP-adjacent repository
+calls—canonicalize values to lowercase single words or lowercase hyphenated
+words. Bootstrap performs an idempotent set-based merge of legacy equivalent
+tags before returning the registry.
+
 ### Add/remove on one bookmark
 
 Update `bookmark_tags` and usage count in the same transaction.
@@ -538,7 +554,7 @@ Permanent destinations:
 System views:
 
 - Unsorted
-- Imports
+- Imports as a hidden compatibility row; new CSV imports go to Unsorted
 - Trash
 - All Bookmarks
 
@@ -555,9 +571,8 @@ Thumbnail priority:
 1. Imported CSV cover.
 2. Extension/page preview metadata.
 3. Server-resolved page image.
-4. Optional Browser Rendering screenshot.
-5. Favicon.
-6. Built-in placeholder.
+4. Favicon.
+5. Built-in placeholder.
 
 The bookmark save never depends on thumbnail success.
 
@@ -595,47 +610,58 @@ The supplied representative CSV fields are:
 id,title,note,excerpt,url,folder,tags,created,cover,highlights,favorite
 ```
 
+Single-folder or collection exports omit `folder`; both layouts are accepted.
+
 Mapping:
 
 | CSV field    | Treatment                                        |
 | ------------ | ------------------------------------------------ |
 | `id`         | Import-report source ID only                     |
 | `title`      | Bookmark title                                   |
-| `note`       | User note                                        |
+| `note`       | Ignored                                          |
 | `excerpt`    | Imported description                             |
 | `url`        | Required URL                                     |
 | `folder`     | Preview/report only; never recreated             |
 | `tags`       | Discard or preserve according to selected option |
-| `created`    | Source-created date                              |
-| `cover`      | Thumbnail candidate                              |
+| `created`    | Ignored                                          |
+| `cover`      | Ignored                                          |
 | `highlights` | Unsupported; warn if populated                   |
-| `favorite`   | Favorite state                                   |
+| `favorite`   | Ignored                                          |
 
 ### Preview
 
 Preview:
 
 - Parses and validates.
-- Reports invalid rows and duplicates.
+- Reports invalid rows and within-file duplicates.
 - Stores expiring staged rows.
 - Creates no bookmarks.
 - Sends no Queue messages.
 - Stores no original CSV file.
+- Pauses AI and preserves whether it was already owner-paused.
 
 ### Commit
 
 Commit:
 
-- Runs in idempotent chunks.
-- Rechecks duplicates.
-- Stores bookmarks before background work.
+- Appears to the user as one short set-based D1 operation.
+- Uses JSON-backed `INSERT ... SELECT` statements instead of the normal
+  per-bookmark creation path.
+- Keeps an existing active normalized URL unchanged and records it as skipped.
+- Stores all accepted bookmarks in Unsorted before AI organization resumes.
 - Records each row outcome.
-- Dispatches jobs after each D1 chunk commits.
+- Keeps mutations read-only but presents progress as a dock so library browsing
+  remains available.
+- Restores the pre-import AI pause state at completion and dispatches eligible
+  jobs only when AI was previously running.
+- Creates paused AI jobs with one set-based statement after bookmark insertion.
+- Does not use Queue messages to insert CSV rows.
 
 ### Option A
 
 Reorganize:
 
+- Preserve only URL and title from the CSV.
 - Remove imported tags and description.
 - Save in Unsorted.
 - Let AI generate them.
@@ -644,8 +670,8 @@ Reorganize:
 
 Preserve:
 
-- Retain description and normalized tags.
-- Save temporarily in Imports.
+- Preserve URL, title, description, and normalized tags.
+- Save in Unsorted.
 - Let AI select folder and add tags.
 
 Imported folders are never recreated.
@@ -753,6 +779,26 @@ Search combines:
 - Indexed SQL filters for folder, tag, site, dates, favorite, AI state, and thumbnail state.
 - Keyset pagination.
 
+Date added descending is the default. The dashboard loads 48 results at a time,
+shows `loaded of total`, and follows the validated next cursor. Bootstrap
+returns grouped non-trashed counts beside every fixed folder and a separate
+Trash count.
+
+There is no Vectorize or Elasticsearch integration in v6. Text search is lexical
+D1 FTS5; semantic/vector search is a separately scoped future capability.
+
+The dashboard translates `#` input into a dynamic tag picker and sends selected
+tags as structured filters. A bare `#` returns every active tag; typed text
+narrows the complete registry rather than a fixed top-eight slice. Sort order,
+site, dates, and favorite state live in one modal rather than a row of
+always-visible controls.
+
+Settings polls bootstrap while visible and renders actual D1 state counts:
+organized, waiting, processing, provider wait, owner pause, review, and failed.
+Bootstrap also repairs legacy `paused_edit`, stale queued/running work older than
+the recovery window, and pending bookmarks that have no active job. One
+`dispatch_pending` notification resumes recovered work.
+
 Never concatenate a user-supplied sort column or FTS expression.
 
 Map allowlisted sort names to known SQL fragments in code.
@@ -775,10 +821,10 @@ Supported sorts:
 | `queued`           | Queue accepted job                              | Wait for consumer                     |
 | `running`          | Consumer owns current attempt                   | Inspect safe event trail              |
 | `waiting_provider` | Provider temporarily unavailable                | Wait, switch, or explicit retry       |
-| `paused_edit`      | User has exclusive edit control                 | Redispatch after edit mode ends       |
+| `paused_edit`      | Legacy state from a pre-removal deployment      | Bootstrap recovery converts it        |
 | `paused_owner`     | User explicitly paused AI                       | Do nothing until resume               |
 | `review`           | AI quality attempts exhausted or low confidence | User reviews bookmark                 |
-| `cancelled`        | Job revision/generation became stale            | Create a new job only if still needed |
+| `cancelled`        | Terminal historical job                         | Pending bookmarks get a replacement   |
 | `completed`        | Organization committed                          | No action                             |
 | `failed`           | Non-recoverable internal job failure            | Diagnose systemic invariant           |
 
@@ -827,7 +873,7 @@ npm run build
 
 Expected workflow:
 
-1. Read PRD v6.0 and Technical Design v2.0.
+1. Read the consolidated Product Requirements and Technical Design.
 2. Create or update a numbered D1 migration.
 3. Implement domain rule and Zod schema.
 4. Implement adapter/repository behavior.
@@ -893,7 +939,8 @@ Every adapter must:
 - Use a bounded timeout.
 - Request structured output when supported.
 - Return proposal as `unknown`.
-- Return actual usage or `null`.
+- Tolerate provider usage metadata without persisting or presenting it as
+  Later Gator usage.
 - Convert provider errors to the shared safe taxonomy.
 - Never log request/response bodies.
 - Expose a synthetic connection test.
@@ -914,7 +961,9 @@ Provider activation happens only after the candidate passes.
 - Keep thumbnail failure independent of bookmark success.
 - Measure normalized size.
 
-Browser Rendering is a fallback, not the default metadata strategy.
+Browser Rendering is not bound in the current deployment. Thumbnail candidates
+come from imports, capture input, bounded page metadata, favicons, and the
+built-in placeholder.
 
 ---
 
@@ -1009,9 +1058,10 @@ Measure:
 - Workers KV bytes and operations.
 - Queue operations.
 - Workers requests.
-- Provider-reported AI tokens.
-- Workers AI neurons calculated from actual tokens.
-- Browser Rendering time.
+- AI job counts, durations, success states, and provider-wait states without
+  storing token or neuron usage.
+- Account-wide Workers AI usage only through Cloudflare's authoritative
+  dashboard entry point.
 
 Graceful degradation:
 
@@ -1031,14 +1081,15 @@ Check:
 1. `background_jobs.state`.
 2. Whether Queue send was recorded.
 3. Owner pause.
-4. Edit mode.
-5. Provider configuration.
+4. Provider configuration.
 
 Do not create a second bookmark.
 
 ### AI result disappeared
 
-Check the revision and organization generation. A discarded stale result is expected when the user edited or entered edit mode.
+Check the revision and organization generation. A discarded stale result is
+expected when the bookmark changed. The job should immediately become
+retryable; a pending bookmark without an active job is repaired on bootstrap.
 
 ### Tag returned after deletion
 
@@ -1067,9 +1118,11 @@ Do not inspect or log the full source URL in production.
 
 Expected under at-least-once delivery. The D1 conditional state transition should make it harmless.
 
-### Provider usage is blank
+### Workers AI usage is unavailable
 
-If the provider did not return usage, blank/**not reported** is correct. Do not add a heuristic.
+If Cloudflare does not expose authoritative account-wide usage to the Worker,
+show the Cloudflare dashboard link and **unavailable**. Do not add a heuristic,
+local counter, or per-request reconstruction.
 
 ### MCP cannot find a bookmark
 
@@ -1087,7 +1140,7 @@ MCP never queries Raindrop.
 
 ## 37. Migration discipline
 
-During the v1.5-to-v2 rewrite:
+During the Raindrop-to-D1 architecture replacement:
 
 - Keep the current code understandable until its replacement exists.
 - Do not mix Raindrop and D1 as co-authoritative sources.
@@ -1100,12 +1153,12 @@ The supported migration path for user content is the CSV importer.
 
 ---
 
-## 38. Definition of done for a v2 feature
+## 38. Definition of done for a current feature
 
 A feature is complete when:
 
-- Product behavior matches PRD v6.
-- Technical behavior matches Technical Design v2.
+- Product behavior matches the consolidated Product Requirements.
+- Technical behavior matches the consolidated Technical Design.
 - External inputs have Zod validation.
 - D1 migration and indexes exist.
 - Authorization and CSRF/scope rules are enforced.
@@ -1120,8 +1173,8 @@ A feature is complete when:
 
 ## 39. Source documents
 
-- [Product Requirements v6.0](product-requirements-v6.md)
-- [Technical Design v2.0](technical-design-v2.md)
+- [Product Requirements](product-requirements.md)
+- [Technical Design](technical-design.md)
 - [Cloudflare D1 documentation](https://developers.cloudflare.com/d1/)
 - [Cloudflare Workers KV documentation](https://developers.cloudflare.com/kv/)
 - [Cloudflare Queues documentation](https://developers.cloudflare.com/queues/)

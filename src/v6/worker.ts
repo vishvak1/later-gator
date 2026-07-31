@@ -6,10 +6,11 @@ import {
   captureCredentialInputSchema,
   createBookmarkInputSchema,
   createTagInputSchema,
-  editModeInputSchema,
+  importStartInputSchema,
   loginInputSchema,
   providerActivationInputSchema,
   providerCandidateInputSchema,
+  resetApplicationInputSchema,
   relationshipInputSchema,
   updateBookmarkInputSchema,
 } from "./domain/schemas";
@@ -21,13 +22,12 @@ import {
   getBookmark,
   getBookmarkDetails,
   getBootstrapState,
-  listBookmarks,
+  listBookmarkPage,
   permanentlyDeleteBookmark,
   relateBookmarks,
   restoreTag,
   retireTag,
   setBookmarkDeleted,
-  setEditMode,
   setOwnerPause,
   unrelateBookmarks,
   updateBookmark,
@@ -52,10 +52,17 @@ import {
 } from "./security/sessions";
 import { organizeBookmarkJob } from "./application/organize-bookmark";
 import {
-  commitImportChunk,
+  cancelImport,
   getImportStatus,
+  processImportThumbnailWork,
+  processImportWork,
   previewRaindropCsv,
+  startImport,
 } from "./application/imports";
+import {
+  processResetStorage,
+  resetApplication,
+} from "./application/reset";
 import { ingestThumbnailCandidate } from "./application/thumbnails";
 import {
   captureBookmark,
@@ -76,6 +83,7 @@ import {
 } from "./adapters/organization-providers";
 import { handleMcp, rotateMcpCredential } from "./routes/mcp";
 import { sha256Base64 } from "./security/encoding";
+import { repairOrganizationBacklog } from "./application/automation";
 
 interface RouteContext {
   request: Request;
@@ -233,6 +241,19 @@ function queryObject(url: URL): Record<string, string> {
   return Object.fromEntries(url.searchParams.entries());
 }
 
+async function importIsActive(db: D1Database): Promise<boolean> {
+  return (
+    (await db
+      .prepare(
+        `SELECT 1
+           FROM import_sessions
+          WHERE status IN ('preview', 'committing')
+          LIMIT 1`,
+      )
+      .first()) !== null
+  );
+}
+
 function csvCell(value: unknown): string {
   const text =
     typeof value === "string" ||
@@ -318,7 +339,40 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
   const { request, env, url } = context;
 
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
+    if (await repairOrganizationBacklog(env)) {
+      await env.BACKGROUND_QUEUE.send({ version: 1, type: "dispatch_pending" }).catch(() => undefined);
+    }
     return json({ ok: true, state: await getBootstrapState(env.DB) });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/testing/reset") {
+    const securityError = await requireMutationSecurity(context);
+    if (securityError !== null) return securityError;
+    let parsed;
+    try {
+      parsed = resetApplicationInputSchema.safeParse(await readJson(request, 4 * 1024));
+    } catch {
+      return apiError(400, "reset_confirmation_required", "Type DELETE EVERYTHING to confirm.");
+    }
+    if (!parsed.success) {
+      return apiError(400, "reset_confirmation_required", "Type DELETE EVERYTHING to confirm.");
+    }
+    await resetApplication(env, context.session.idHash);
+    return json({ ok: true, redirectTo: "/setup" });
+  }
+
+  const importControlRequest =
+    /^\/api\/imports\/[0-9a-f-]+\/(?:commit|cancel)$/iu.test(url.pathname);
+  if (
+    request.method !== "GET" &&
+    !importControlRequest &&
+    (await importIsActive(env.DB))
+  ) {
+    return apiError(
+      409,
+      "import_in_progress",
+      "The library is read-only until the active import finishes.",
+    );
   }
 
   if (request.method === "POST" && url.pathname === "/api/setup/complete") {
@@ -349,7 +403,15 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     if (!parsed.success) {
       return apiError(400, "invalid_filters", "One or more bookmark filters are invalid.");
     }
-    return json({ ok: true, bookmarks: await listBookmarks(env.DB, parsed.data) });
+    try {
+      const pageResult = await listBookmarkPage(env.DB, parsed.data);
+      return json({ ok: true, ...pageResult });
+    } catch (error) {
+      if (error instanceof Error && error.message === "invalid_bookmark_cursor") {
+        return apiError(400, "invalid_cursor", "The bookmark page cursor is invalid.");
+      }
+      throw error;
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/api/bookmarks") {
@@ -564,6 +626,9 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
           "This tag was deleted globally. Restore it explicitly before reuse.",
         );
       }
+      if (error instanceof Error && error.message === "invalid_tag_name") {
+        return apiError(400, "invalid_tag", "Use a lowercase word or hyphenated tag.");
+      }
       throw error;
     }
   }
@@ -589,30 +654,6 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
       return apiError(404, "not_found", "Retired tag not found.");
     }
     return json({ ok: true });
-  }
-
-  if (request.method === "PUT" && url.pathname === "/api/edit-mode") {
-    const securityError = await requireMutationSecurity(context);
-    if (securityError !== null) return securityError;
-    let parsed;
-    try {
-      parsed = editModeInputSchema.safeParse(await readJson(request, 4 * 1024));
-    } catch {
-      return apiError(400, "invalid_edit_mode", "The edit-mode request could not be read.");
-    }
-    if (!parsed.success) {
-      return apiError(400, "invalid_edit_mode", "Choose whether edit mode is active.");
-    }
-    const jobIds = await setEditMode(env.DB, context.session.idHash, parsed.data.active);
-    const dispatchResults = await Promise.all(
-      jobIds.map((jobId) => dispatchJob(env.DB, env.BACKGROUND_QUEUE, jobId)),
-    );
-    return json({
-      ok: true,
-      active: parsed.data.active,
-      redispatched: dispatchResults.filter(Boolean).length,
-      pendingDispatch: dispatchResults.filter((result) => !result).length,
-    });
   }
 
   if (request.method === "PUT" && url.pathname === "/api/automation/pause") {
@@ -735,7 +776,6 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
                   state = CASE
                     WHEN state = 'waiting_provider'
                       AND (SELECT owner_ai_paused FROM app_state WHERE id = 1) = 0
-                      AND (SELECT edit_mode_state FROM app_state WHERE id = 1) = 'inactive'
                     THEN 'pending_dispatch'
                     ELSE state
                   END,
@@ -752,7 +792,6 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
               SET ai_state = CASE
                 WHEN ai_state = 'waiting_provider'
                   AND (SELECT owner_ai_paused FROM app_state WHERE id = 1) = 0
-                  AND (SELECT edit_mode_state FROM app_state WHERE id = 1) = 'inactive'
                 THEN 'pending'
                 ELSE ai_state
               END
@@ -825,10 +864,35 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     const importId = importCommitMatch[1];
     if (importId === undefined) return apiError(404, "not_found", "Import not found.");
     try {
-      return json({ ok: true, ...(await commitImportChunk(env, importId)) });
+      const parsed = importStartInputSchema.safeParse(await readJson(request, 512 * 1024));
+      if (!parsed.success) {
+        return apiError(400, "invalid_import", "The import request could not be read.");
+      }
+      return json({
+        ok: true,
+        import: await startImport(env, importId),
+      });
     } catch (error) {
       const code = error instanceof Error ? error.message : "import_failed";
-      return apiError(code === "import_not_found" ? 404 : 409, code, "The import could not continue.");
+      return apiError(
+        code === "import_not_found" ? 404 : 409,
+        code,
+        "The import could not continue.",
+      );
+    }
+  }
+  const importCancelMatch = /^\/api\/imports\/([0-9a-f-]+)\/cancel$/iu.exec(url.pathname);
+  if (request.method === "POST" && importCancelMatch !== null) {
+    const securityError = await requireMutationSecurity(context);
+    if (securityError !== null) return securityError;
+    const importId = importCancelMatch[1];
+    if (importId === undefined) return apiError(404, "not_found", "Import not found.");
+    try {
+      await cancelImport(env, importId);
+      return json({ ok: true });
+    } catch (error) {
+      const code = error instanceof Error ? error.message : "import_cannot_cancel";
+      return apiError(code === "import_not_found" ? 404 : 409, code, "The import cannot be cancelled now.");
     }
   }
 
@@ -989,9 +1053,21 @@ async function handleFetch(
   }
   if (session === null) {
     if (url.pathname.startsWith("/api/")) {
-      return apiError(401, "unauthenticated", "Sign in to Later Gator.");
+      const response = apiError(401, "unauthenticated", "Sign in to Later Gator.");
+      response.headers.append("set-cookie", expiredSessionCookie());
+      response.headers.append(
+        "set-cookie",
+        "lg_csrf=; Path=/; Secure; SameSite=Strict; Max-Age=0",
+      );
+      return response;
     }
-    return redirect(request, "/");
+    const response = redirect(request, "/");
+    response.headers.append("set-cookie", expiredSessionCookie());
+    response.headers.append(
+      "set-cookie",
+      "lg_csrf=; Path=/; Secure; SameSite=Strict; Max-Age=0",
+    );
+    return response;
   }
 
   if (request.method === "POST" && url.pathname === "/auth/logout") {
@@ -1037,9 +1113,53 @@ async function handleQueue(batch: MessageBatch, env: Env): Promise<void> {
       continue;
     }
 
-    const outcome = await organizeBookmarkJob(env, parsed.data.jobId);
-    if (outcome === "retry") message.retry({ delaySeconds: 300 });
-    else message.ack();
+    try {
+      if ("type" in parsed.data && parsed.data.type === "import") {
+        await processImportWork(env, parsed.data.importId);
+        message.ack();
+        continue;
+      }
+      if ("type" in parsed.data && parsed.data.type === "import_thumbnails") {
+        await processImportThumbnailWork(env, parsed.data.importId);
+        message.ack();
+        continue;
+      }
+      if ("type" in parsed.data && parsed.data.type === "reset_storage") {
+        await processResetStorage(env);
+        message.ack();
+        continue;
+      }
+      if ("type" in parsed.data && parsed.data.type === "dispatch_pending") {
+        if (await importIsActive(env.DB)) {
+          message.ack();
+          continue;
+        }
+        const jobs = await env.DB
+          .prepare(
+            `SELECT id
+               FROM background_jobs
+              WHERE state = 'pending_dispatch'
+              ORDER BY created_at
+              LIMIT 20`,
+          )
+          .all<{ id: string }>();
+        for (const job of jobs.results) {
+          if (!(await dispatchJob(env.DB, env.BACKGROUND_QUEUE, job.id))) {
+            throw new Error("queue_dispatch_failed");
+          }
+        }
+        if (jobs.results.length === 20) {
+          await env.BACKGROUND_QUEUE.send({ version: 1, type: "dispatch_pending" });
+        }
+        message.ack();
+        continue;
+      }
+      const outcome = await organizeBookmarkJob(env, parsed.data.jobId);
+      if (outcome === "retry") message.retry({ delaySeconds: 300 });
+      else message.ack();
+    } catch {
+      message.retry({ delaySeconds: 30 });
+    }
   }
 }
 

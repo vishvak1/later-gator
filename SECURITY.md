@@ -27,5 +27,5 @@ before release.
 
 The full development audit can additionally report findings through the local Cloudflare test toolchain. Do not process untrusted files with that toolchain. This note records the current assessment; it is not blanket acceptance of future advisories.
 
-Production deployment remains subject to the Technical Design v2 release gates,
+Production deployment remains subject to the consolidated Technical Design release gates,
 including no unaccepted high-severity production finding.

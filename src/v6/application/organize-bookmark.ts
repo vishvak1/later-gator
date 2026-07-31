@@ -4,6 +4,8 @@ import {
   runOrganizationProvider,
   type ProviderName,
 } from "../adapters/organization-providers";
+import { deterministicFolderForHostname } from "../domain/folders";
+import { normalizeTagName } from "../domain/tags";
 import { findPageThumbnail, ingestThumbnailCandidate } from "./thumbnails";
 
 const organizationResultSchema = z.strictObject({
@@ -73,8 +75,8 @@ interface JobContext {
   revision: number;
   deleted_at: string | null;
   owner_ai_paused: number;
-  edit_mode_state: string;
   current_generation: number;
+  provider_status: string;
   personal_instructions: string | null;
 }
 
@@ -93,11 +95,6 @@ export type OrganizationOutcome =
   | "retry"
   | "waiting_provider"
   | "review";
-
-function normalizeTag(value: string): { normalized: string; display: string } {
-  const display = value.trim().replace(/\s+/gu, " ");
-  return { normalized: display.toLocaleLowerCase("en-US"), display };
-}
 
 function parseOrganizationResult(payload: unknown): OrganizationResult | null {
   const envelope = workersEnvelopeSchema.safeParse(payload);
@@ -128,7 +125,11 @@ function buildPrompt(context: JobContext, tags: TagRow[], correction: boolean): 
   return [
     "Organize this bookmark for a private personal library.",
     "Folders classify source type. Tags classify subject matter.",
-    "Reuse an active tag when it fits. Never return a retired tag.",
+    "The active tag registry is a convenience, not a closed taxonomy.",
+    "Reuse an active tag only when it accurately fits. Create precise new subject tags whenever the bookmark introduces a topic that is missing from the registry.",
+    "Do not force bookmarks into the user's setup interests. For example, create tags such as history or religion when the content calls for them.",
+    "Every tag must be lowercase and contain one word or hyphen-separated words only.",
+    "Prefer a useful mix of broad and specific subject tags. Never return a retired tag.",
     "Return only the requested JSON object.",
     `Title: ${context.title.slice(0, 1000)}`,
     `URL: ${context.url.slice(0, 8192)}`,
@@ -170,12 +171,13 @@ async function loadContext(db: D1Database, jobId: string): Promise<JobContext | 
          b.revision,
          b.deleted_at,
          s.owner_ai_paused,
-         s.edit_mode_state,
          s.organization_generation AS current_generation,
+         ps.operational_status AS provider_status,
          p.personal_instructions
        FROM background_jobs j
        JOIN bookmarks b ON b.id = j.bookmark_id
        JOIN app_state s ON s.id = 1
+       JOIN provider_settings ps ON ps.id = 1
        LEFT JOIN profile p ON p.id = 1
       WHERE j.id = ?`,
     )
@@ -211,16 +213,18 @@ async function applyResult(
   result: OrganizationResult,
   allTags: TagRow[],
 ): Promise<boolean> {
+  const folderName = deterministicFolderForHostname(context.hostname) ?? result.folder;
   const destination = await db
     .prepare("SELECT id FROM folders WHERE name = ? AND is_ai_destination = 1")
-    .bind(result.folder)
+    .bind(folderName)
     .first<{ id: string }>();
   if (destination === null) throw new Error("missing_fixed_folder");
 
   const tagRows = new Map(allTags.map((tag) => [tag.normalized_name, tag]));
   const selected = new Map<string, { id: string; display: string; exists: boolean }>();
   for (const value of result.tags) {
-    const tag = normalizeTag(value);
+    const tag = normalizeTagName(value);
+    if (tag.normalized === "") continue;
     const known = tagRows.get(tag.normalized);
     if (known?.status === "retired") continue;
     selected.set(tag.normalized, {
@@ -255,8 +259,7 @@ async function applyResult(
             AND revision = ?
             AND deleted_at IS NULL
             AND ? = (SELECT organization_generation FROM app_state WHERE id = 1)
-            AND (SELECT owner_ai_paused FROM app_state WHERE id = 1) = 0
-            AND (SELECT edit_mode_state FROM app_state WHERE id = 1) = 'inactive'`,
+            AND (SELECT owner_ai_paused FROM app_state WHERE id = 1) = 0`,
       )
       .bind(
         destination.id,
@@ -363,15 +366,51 @@ export async function organizeBookmarkJob(
     context.revision !== context.expected_revision ||
     context.organization_generation !== context.current_generation
   ) {
-    await markState(env.DB, context, "cancelled", context.ai_state, "stale_job");
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `UPDATE background_jobs
+              SET state = 'queued',
+                  expected_revision = ?,
+                  organization_generation = ?,
+                  last_safe_error_code = 'stale_job_recovered',
+                  updated_at = ?
+            WHERE id = ? AND state NOT IN ('completed', 'review', 'failed')`,
+        )
+        .bind(context.revision, context.current_generation, now, context.job_id),
+      env.DB
+        .prepare("UPDATE bookmarks SET ai_state = 'pending' WHERE id = ? AND deleted_at IS NULL")
+        .bind(context.bookmark_id),
+    ]);
+    return "retry";
+  }
+  const activeImport = await env.DB
+    .prepare(
+      `SELECT 1
+         FROM import_sessions
+        WHERE status IN ('preview', 'committing')
+        LIMIT 1`,
+    )
+    .first();
+  if (activeImport !== null) {
+    const jobState =
+      context.owner_ai_paused === 1
+        ? "paused_owner"
+        : context.provider_status === "waiting"
+            ? "waiting_provider"
+            : "pending_dispatch";
+    const bookmarkState =
+      jobState === "paused_owner"
+        ? "paused_owner"
+        : jobState === "waiting_provider"
+            ? "waiting_provider"
+            : "pending";
+    await markState(env.DB, context, jobState, bookmarkState, null);
     return "acknowledged";
   }
   if (context.owner_ai_paused === 1) {
     await markState(env.DB, context, "paused_owner", "paused_owner", null);
-    return "acknowledged";
-  }
-  if (context.edit_mode_state !== "inactive") {
-    await markState(env.DB, context, "paused_edit", "paused_edit", null);
     return "acknowledged";
   }
   if (!["workers-ai", "openai", "anthropic"].includes(context.provider)) {
@@ -545,8 +584,27 @@ export async function organizeBookmarkJob(
       }
       return "completed";
     }
-    await markState(env.DB, context, "cancelled", "pending", "stale_ai_result");
-    return "acknowledged";
+    const current = await loadContext(env.DB, context.job_id);
+    if (current === null) return "acknowledged";
+    if (current.deleted_at !== null) return "acknowledged";
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `UPDATE background_jobs
+              SET state = 'queued',
+                  expected_revision = ?,
+                  organization_generation = ?,
+                  last_safe_error_code = 'stale_ai_result_recovered',
+                  updated_at = ?
+            WHERE id = ? AND state = 'running'`,
+        )
+        .bind(current.revision, current.current_generation, now, context.job_id),
+      env.DB
+        .prepare("UPDATE bookmarks SET ai_state = 'pending' WHERE id = ? AND deleted_at IS NULL")
+        .bind(context.bookmark_id),
+    ]);
+    return "retry";
   } catch (error) {
     if (
       error instanceof Error &&

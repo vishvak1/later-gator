@@ -1,16 +1,18 @@
-# Later Gator — Technical Design Document v2.0
+# Later Gator — Technical Design
 
-**Status:** Implemented design; release verification still required
+**Status:** Current consolidated implemented design; release verification still required
 
-**Product requirements:** Later Gator PRD v6.0
+**Product requirements:** [Product Requirements](product-requirements.md)
 
-**Supersedes for the target architecture:** Technical Design v1.5
+**Architecture generation:** v2 for the v6 product
 
 **Target runtime:** Cloudflare Workers
 
 **Primary language:** Strict TypeScript
 
 **Last external-constraint review:** 2026-07-28
+
+**Last consolidated:** 2026-07-31
 
 ---
 
@@ -34,7 +36,7 @@ The PRD is authoritative for product behavior. This document is authoritative fo
 
 ## 2. Implemented replacement
 
-The v5.5/v1.5 implementation used this architecture:
+The retired implementation used this architecture:
 
 - Raindrop is authoritative.
 - KV stores operational state.
@@ -67,7 +69,6 @@ Cloudflare resources:
 | Workers KV | `THUMBNAILS` | Private optimized thumbnail values |
 | Queue | `BACKGROUND_QUEUE` | Durable ID-only notification that a stored bookmark job is ready |
 | Workers AI | `AI` | Default organization provider |
-| Browser Rendering | `BROWSER` | Optional bounded screenshot fallback; disabled by default |
 | Static assets | `ASSETS` | Dashboard, setup, and settings frontend |
 | Worker secret | `BOOTSTRAP_PASSWORD` | Initial user-supplied Later Gator password used only to initialize application authentication |
 
@@ -81,7 +82,6 @@ External services:
 Not required:
 
 - A Raindrop token or Raindrop API client.
-- KV.
 - Cron discovery.
 - Workflows.
 - Durable Objects.
@@ -144,7 +144,6 @@ flowchart LR
     WORKER --> OA["OpenAI"]
     WORKER --> AN["Anthropic"]
     WORKER --> WEB["Public web metadata/images"]
-    WORKER --> BR["Optional Browser Rendering"]
 ```
 
 ### 4.1 Trust boundaries
@@ -295,6 +294,10 @@ The deployment form exposes one blank required secret labelled:
 
 The underlying binding is `BOOTSTRAP_PASSWORD`.
 
+The value must be non-empty. The UI recommends a strong password but does not
+enforce a 10-character login minimum, so an already provisioned bootstrap value
+remains usable.
+
 The template provisions:
 
 - Worker.
@@ -303,7 +306,7 @@ The template provisions:
 - Workers KV namespace.
 - Queue and consumer.
 - Workers AI binding.
-- Optional Browser Rendering binding only if enabled by the release.
+- No Browser Rendering binding in the current deployment.
 
 The Worker URL is the only URL shown as the starting point. The user never appends `/setup`.
 
@@ -318,7 +321,7 @@ New work is created by:
 - iOS capture.
 - CSV import commit.
 - Explicit retry or resume.
-- Leaving edit mode when paused jobs exist.
+- Recovering legacy paused or orphaned jobs during authenticated bootstrap.
 
 ---
 
@@ -339,7 +342,7 @@ New work is created by:
 
 | Method | Route | Purpose |
 |---|---|---|
-| `GET` | `/api/bootstrap` | Current user-safe application state |
+| `GET` | `/api/bootstrap` | Current user-safe state, folder/tag counts, AI progress, and idempotent backlog recovery |
 | `GET` | `/api/bookmarks` | Paginated search, sort, and filters |
 | `POST` | `/api/bookmarks` | Add bookmark and optional linked bookmark |
 | `GET` | `/api/bookmarks/:id` | Bookmark detail |
@@ -347,7 +350,6 @@ New work is created by:
 | `POST` | `/api/bookmarks/:id/trash` | Soft delete |
 | `POST` | `/api/bookmarks/:id/restore` | Restore |
 | `DELETE` | `/api/bookmarks/:id` | Confirmed permanent deletion |
-| `PUT` | `/api/edit-mode` | Enter or leave edit mode |
 | `PUT` | `/api/automation/pause` | Owner pause/resume |
 | `GET` | `/api/tags` | Active and retired tags |
 | `POST` | `/api/tags` | Create tag |
@@ -355,6 +357,7 @@ New work is created by:
 | `POST` | `/api/imports/preview` | Validate and stage CSV |
 | `POST` | `/api/imports/:id/commit` | Commit staged rows in chunks |
 | `GET` | `/api/imports/:id` | Progress and report |
+| `POST` | `/api/testing/reset` | Strongly confirmed reset to setup |
 | `GET` | `/api/thumbnails/:bookmarkId` | Private thumbnail response |
 | `GET` | `/api/usage` | Account-wide Workers AI usage entry point and authoritative dashboard link |
 
@@ -397,16 +400,20 @@ The route uses the current stateless `createMcpHandler` API and Streamable HTTP.
 
 ### 7.5 Queue event
 
-Message schema:
+Message schema is an ID-only discriminated union:
 
 ```ts
-type BackgroundMessage = {
-  version: 1;
-  jobId: string;
-};
+type BackgroundMessage =
+  | { version: 1; type: "organize"; jobId: string }
+  | { version: 1; type: "import"; importId: string }
+  | { version: 1; type: "import_thumbnails"; importId: string }
+  | { version: 1; type: "dispatch_pending" }
+  | { version: 1; type: "reset_storage" };
 ```
 
 No bookmark title, URL, description, note, tags, provider key, or thumbnail URL appears in a Queue message.
+`import` and `import_thumbnails` remain accepted only so messages produced by an
+older deployment are harmless during rollout; new CSV commits do not send them.
 
 ---
 
@@ -562,7 +569,8 @@ Folder rows are seeded by migration and immutable through application routes.
 - `favorite`
 - `source_type`: `dashboard | extension | ios | raindrop_csv | linked`
 - `organization_policy`: `full | preserve | none`
-- `ai_state`: `pending | processing | waiting_provider | paused_edit | paused_owner | complete | review | failed`
+- `ai_state`: `pending | processing | waiting_provider | paused_owner | complete | review | failed`
+  (`paused_edit` remains a legacy database value accepted only for recovery)
 - `ai_managed_description`
 - `source_created_at`
 - `added_at`
@@ -635,7 +643,8 @@ Remote source URLs are not retained in logs. Retaining the source URL in the dat
 - `id`
 - `bookmark_id`
 - `job_type = process_bookmark`
-- `state`: `pending_dispatch | queued | running | waiting_provider | paused_edit | paused_owner | completed | review | cancelled | failed`
+- `state`: `pending_dispatch | queued | running | waiting_provider | paused_owner | completed | review | cancelled | failed`
+  (`paused_edit` remains a legacy database value accepted only for recovery)
 - `expected_revision`
 - `organization_generation`
 - `attempt_count`
@@ -818,40 +827,39 @@ On mismatch, return `409 bookmark_changed` with the current revision and no muta
 
 ---
 
-## 12. Edit mode and automation control
+## 12. Bookmark editing and automation control
 
-### 12.1 Entering edit mode
+### 12.1 Per-bookmark editing
 
-1. Authenticated session requests edit mode.
-2. D1 sets `edit_mode_state = preparing`, owner session, and expiry.
-3. A running consumer is allowed to finish inference but cannot commit until it rechecks state.
-4. When no job is in a commit-critical section, state becomes `active`.
-5. New jobs are stored as `paused_edit` and are not sent to the Queue.
+The details modal opens a form for one bookmark. No global editing flag is set
+and unrelated organization jobs continue.
 
-If an in-flight result reaches its final check after edit mode begins, it is discarded and safely rescheduled after edit mode.
+Every PATCH includes `expectedRevision`. The guarded update either commits the
+user edit or returns a revision conflict. AI applies its proposal only against
+its captured revision. If the bookmark changed first, the proposal is discarded
+and the same job is refreshed to the current revision and generation.
 
-### 12.2 Leaving edit mode
+### 12.2 Owner pause
 
-1. Save or discard open UI edits.
-2. Set edit mode inactive.
-3. Increment `organization_generation`.
-4. Convert eligible `paused_edit` jobs to `pending_dispatch`.
-5. Send those job IDs in bounded batches.
+Owner pause is the only user-controlled global automation stop. Resuming
+converts eligible `paused_owner` jobs to `pending_dispatch` and emits Queue
+notifications without consulting legacy edit-mode state.
 
-Owner pause remains authoritative and prevents redispatch.
+### 12.3 Backlog recovery
 
-### 12.3 Abandoned edit mode
+Authenticated bootstrap performs an idempotent repair before returning status:
 
-Edit mode has a renewable expiry tied to the owning dashboard session.
+1. Clear legacy global edit-mode fields.
+2. Convert legacy `paused_edit` work to owner-pause, provider-wait, or
+   `pending_dispatch`.
+3. Recover stale `queued` or `running` jobs after 15 minutes.
+4. Create a replacement job for any pending bookmark without an active job.
+5. Synchronize revisions for deterministic X/Twitter folder correction.
+6. Emit one `dispatch_pending` notification when dispatchable work exists.
 
-If the session expires:
-
-- A later authenticated request shows the stale edit lock.
-- The user can explicitly recover and resume.
-- Capture continues saving bookmarks.
-- The system does not silently start AI based only on wall-clock expiry.
-
-This favors user safety over automatic mutation.
+This repairs old deployments and prevents a Queue retry exhaustion, stale
+revision, or removed edit-mode transition from leaving a permanently pending
+bookmark.
 
 ---
 
@@ -865,13 +873,14 @@ For each job ID:
 2. Load job, bookmark, application state, profile, folders, active/retired tags, and provider snapshot.
 3. Acknowledge if the job is missing or terminal.
 4. If owner paused, mark `paused_owner` and acknowledge.
-5. If edit mode is active, mark `paused_edit` and acknowledge.
-6. Atomically transition eligible job from `queued` to `running`.
-7. Recheck bookmark revision and generation.
+5. Atomically transition eligible job from `queued` to `running`.
+6. Recheck bookmark revision and generation.
+7. Refresh and retry the job if either value is stale.
 8. Resolve bounded metadata and thumbnail candidate.
 9. If organization policy requires AI, invoke exactly one provider.
 10. Validate and normalize the result.
-11. Apply bookmark, tags, folder, usage event, thumbnail metadata, and job completion in guarded D1 operations.
+11. Apply bookmark, tags, deterministic folder override, thumbnail metadata,
+    and job completion in guarded D1 operations.
 12. Store normalized thumbnail bytes in Workers KV before referencing them from the bookmark.
 13. Acknowledge the Queue message.
 
@@ -1053,10 +1062,15 @@ Seed exactly:
 - Websites & Apps
 - Need for Review
 - Unsorted
-- Imports
+- Imports as a hidden compatibility row; new import commits do not target it
 - Trash as a query over `deleted_at`
 
 Database constraints and route authorization—not disabled buttons alone—prevent folder rename and deletion.
+
+Before applying any model-selected folder, normalize the hostname. `x.com`,
+`twitter.com`, and their subdomains always resolve to `folder_social_posts`.
+Authenticated bootstrap corrects older X/Twitter records and synchronizes the
+revision captured by any active job.
 
 ### 15.2 Tag deletion
 
@@ -1079,6 +1093,14 @@ Usage count is updated transactionally whenever bookmark-tag associations change
 
 No registry resynchronization exists because the join table is the authoritative relationship. A diagnostic may recompute counts during maintenance tests, but it is not a runtime product state.
 
+### 15.4 Topic discovery UI
+
+Bootstrap returns the complete active tag registry. The sidebar renders the
+eight most-used tags without its own scroll region. **View all** opens a modal
+containing the full registry, counts, filter actions, and confirmed deletion.
+The search suggestion query applies its term to the complete registry; a bare
+`#` therefore displays all active tags.
+
 ---
 
 ## 16. Thumbnail pipeline
@@ -1098,9 +1120,8 @@ Implemented v6 defaults:
 1. Imported Raindrop `cover`.
 2. Extension-supplied page preview URL.
 3. Server-resolved Open Graph or equivalent image.
-4. Browser Rendering screenshot when explicitly enabled and within allowance.
-5. Favicon.
-6. Application placeholder; not stored in Workers KV.
+4. Favicon.
+5. Application placeholder; not stored in Workers KV.
 
 ### 16.3 Safe retrieval
 
@@ -1168,6 +1189,8 @@ The server:
 - Accepts multipart CSV only.
 - Computes SHA-256.
 - Parses quoted commas, multiline fields, and Unicode.
+- Accepts full-library exports with `folder` and single-folder/collection
+  exports without it.
 - Requires UTF-8 when encoding is ambiguous.
 - Applies the exact field mapping in PRD section 10.2.
 - Treats cells as text; never evaluates formulas or HTML.
@@ -1178,36 +1201,63 @@ Preview creates an expiring `import_session` and validated `import_rows`.
 
 It does not create bookmarks, Queue messages, tags, thumbnails, or Workers KV values.
 
-Preview counts and samples are derived from staged rows. Unknown columns are reported. Non-empty unsupported highlights require acknowledgement.
+Preview counts and samples are derived from staged rows. Duplicate detection is
+limited to normalized URLs repeated inside the CSV; the first valid row wins.
+Unknown columns are reported. Non-empty unsupported highlights require
+acknowledgement.
 
 ### 17.3 Commit
 
-Commit uses an idempotency key and bounded chunks, provisionally 100 rows.
+Commit is one user-visible set-based D1 operation. Large JSON bindings are split
+only to remain under D1 parameter-size limits; no per-bookmark application loop
+or Queue-driven import pass is used.
 
-For each chunk:
+Before commit:
 
-1. Revalidate staged row state.
-2. Recheck normalized URL duplicates against current D1 state.
-3. Insert bookmark, imported tags, and pending job in one D1 batch.
-4. Mark import row committed with bookmark ID.
-5. Send job IDs after database commit.
-6. Record dispatch failures without rolling back saved bookmarks.
+1. Record whether AI was already owner-paused.
+2. Pause new AI work, make library mutations read-only, and show progress without
+   blocking library browsing.
 
-The browser may close after committed rows are stored.
+The D1 transaction:
 
-### 17.4 Import options
+1. Inserts accepted bookmarks into Unsorted with `INSERT OR IGNORE` and a single
+   import timestamp.
+2. Keeps an existing active normalized URL unchanged and marks that CSV row
+   `existing_library_skipped`.
+3. Inserts canonical imported tags and associations only for preserve-mode
+   bookmarks actually created by this import.
+4. Creates paused AI job rows with one `INSERT ... SELECT` operation after all
+   bookmark rows exist.
+5. Marks staged rows and the import session committed.
+
+All imported bookmarks start in Unsorted. After commit, restore the pre-import
+AI pause state; when AI was previously running, send one dispatch signal and
+process eligible jobs sequentially.
+
+Raindrop cover values are not imported. Normal page-thumbnail discovery remains
+independent background work and cannot delay CSV commit.
+
+### 17.4 Test reset
+
+`POST /api/testing/reset` requires session, origin, CSRF, and the literal
+confirmation `DELETE EVERYTHING`. D1 user content and settings are deleted in
+one bounded batch while `auth_config` and the current session remain. A
+`reset_storage` Queue chain deletes private thumbnail KV keys in pages and old
+ID-only messages become harmless after their D1 rows disappear.
+
+### 17.5 Import options
 
 #### Reorganize
 
-- Preserve URL, title, note, source-created date, favorite, and cover candidate.
+- Preserve URL and title.
 - Discard imported tags and description from the active bookmark.
 - Place in Unsorted.
 - Full AI organization.
 
 #### Preserve
 
-- Preserve URL, title, description, note, source-created date, favorite, normalized tags, and cover candidate.
-- Place in Imports.
+- Preserve URL, title, description, and normalized tags.
+- Place in Unsorted.
 - AI selects folder and may add tags.
 - Imported tags are not removed.
 
@@ -1261,7 +1311,8 @@ Settings generates a one-time token and deployment URL.
 
 The extension stores them in extension-local storage. It never receives dashboard cookies, password, provider credentials, or MCP URL.
 
-Official browser-store packaging is preferred for release. Documented development loading is allowed before store publication but must be clearly labelled as a development path.
+The initial release uses documented self-installation for Chrome and Firefox.
+Official browser-store packaging is a future distribution improvement.
 
 ---
 
@@ -1405,6 +1456,11 @@ Cursor contains:
 
 Cursor is signed or encoded and validated so users cannot inject SQL or unsupported sort fields.
 
+The dashboard requests 48 bookmarks per page, defaults to
+`added_at DESC, id DESC`, displays `shown of total`, and exposes a Load more
+control while a next cursor exists. Folder counts are returned by the bootstrap
+query with one grouped aggregate rather than one query per folder.
+
 ### 21.2 Sort mapping
 
 Only allowlisted columns:
@@ -1422,6 +1478,11 @@ Direction is allowlisted `asc | desc`. Column names are selected by code, never 
 Text search uses FTS5 with bounded query grammar. User text is escaped or translated by a dedicated parser rather than concatenated into `MATCH`.
 
 Filters are applied through indexed joins and predicates.
+
+The client keeps keyword text and chosen tags separate. Typing `#` opens a
+dynamic tag suggestion list; selection adds a structured tag filter. The
+allowlisted sort fields, direction, site, favorite state, and date range are
+edited in one modal and serialized into the same validated list query.
 
 ---
 
@@ -1495,7 +1556,7 @@ Prohibited:
 - authentication initialized/login failed/session revoked
 - setup step completed/setup completed
 - bookmark created/edited/trashed/restored/deleted
-- edit mode entered/exited/recovered
+- legacy edit-mode state recovered
 - job dispatched/started/retried/completed/reviewed/paused
 - provider candidate tested/activated/failed
 - thumbnail stored/failed/orphan cleanup required
@@ -1562,7 +1623,8 @@ At the design review date:
 - Queues Free: 10,000 operations/day; free-message retention is 24 hours.
 - Workers AI: 10,000 neurons/day at no charge, resetting at 00:00 UTC.
 - Cloudflare Images Free: 5,000 unique transformations/month.
-- Browser Run Free: 10 minutes/day and three concurrent browsers.
+- Browser Run Free: 10 minutes/day and three concurrent browsers, not consumed
+  by the current deployment because Browser Rendering is not bound.
 
 These values are external constraints, not durable constants. Revalidate before implementation freeze and release.
 
@@ -1572,7 +1634,6 @@ These values are external constraints, not durable constants. Revalidate before 
 - Workers KV exhaustion degrades to bookmark-without-thumbnail.
 - Queue send failure saves the bookmark with visible automation-pending state.
 - Workers AI exhaustion waits until reset or lets the user switch provider.
-- Browser Run exhaustion skips screenshot fallback.
 - No automatic paid-plan upgrade.
 
 ### 25.2 Measurement gate
@@ -1586,7 +1647,8 @@ Test at 1,000, 10,000, and maximum target library sizes:
 - Queue operations per bookmark.
 - Workers KV key count and stored bytes.
 - Average/max thumbnail size.
-- AI tokens and neurons per bookmark.
+- AI job counts, durations, success rates, and provider-wait states without
+  persisting token or neuron usage.
 - Extension and Shortcut request volume.
 
 ---
@@ -1600,8 +1662,7 @@ Test at 1,000, 10,000, and maximum target library sizes:
 - Folder routing.
 - Bookmark revision guards.
 - AI schema validation.
-- Provider usage parsing.
-- Workers AI neuron conversion.
+- Provider response parsing that ignores usage metadata for product accounting.
 - Cursor encoding.
 - CSV field mapping.
 - Thumbnail candidate selection.
@@ -1612,9 +1673,11 @@ Test at 1,000, 10,000, and maximum target library sizes:
 - D1 repositories against migrations.
 - Workers KV put/get/delete and conditional delivery.
 - Queue duplicate and retry behavior.
-- Workers AI output and usage envelopes.
-- OpenAI Responses structured output and usage.
-- Anthropic Messages structured output, refusal/truncation, and usage.
+- Workers AI output envelopes, including safe handling of unused usage fields.
+- OpenAI Responses structured output, including safe handling of unused usage
+  fields.
+- Anthropic Messages structured output and refusal/truncation behavior,
+  including safe handling of unused usage fields.
 - Stateless MCP initialization and tool schemas.
 - Chrome/Firefox API payload parity.
 - iOS minimal capture rejection of extra fields.
@@ -1628,7 +1691,7 @@ Provider contracts use recorded redacted fixtures by default. Live tests require
 - Setup completion.
 - Bookmark add through background completion.
 - Queue send failure after D1 commit.
-- Edit mode races with in-flight AI.
+- Per-bookmark PATCH races with in-flight AI.
 - User edit after inference but before commit.
 - Owner pause and provider switch.
 - Global tag deletion.
@@ -1688,7 +1751,7 @@ Each test proves:
 
 The v6 rewrite should proceed behind a branch and deployment boundary.
 
-### Phase 0 — Freeze and characterize v1.5
+### Phase 0 — Freeze and characterize the retired architecture
 
 - Keep current tests passing.
 - Record current routes, bindings, and behavior.
@@ -1702,13 +1765,15 @@ The v6 rewrite should proceed behind a branch and deployment boundary.
 
 ### Phase 2 — Dashboard library
 
-- Implement setup, bookmark CRUD, tags, fixed folders, search, Trash, relationships, edit mode, and export.
+- Implement setup, bookmark CRUD, tags, fixed folders, search, Trash,
+  relationships, per-bookmark editing, and export.
 - Prove D1 revision behavior before AI.
 
 ### Phase 3 — Background organization
 
 - Replace Raindrop organization with D1 jobs and the simplified Queue.
-- Add provider adapters and actual usage accounting.
+- Add provider adapters and the account-wide Cloudflare usage entry point
+  without a Later Gator token or neuron ledger.
 - Delete Cron discovery, leases, registry resync, and Raindrop runtime calls only after replacement tests pass.
 
 ### Phase 4 — Import and thumbnails
@@ -1793,38 +1858,48 @@ Before a destructive migration:
 - D1 FTS favors simple private search over semantic search.
 - A password-derived wrapping key makes password security important; the application cannot recover a forgotten password or decrypt provider keys without it.
 - Private thumbnail delivery costs Worker/Workers KV requests but avoids public object URLs.
-- Browser screenshots are disabled by default to protect free-tier Browser Run allowance.
+- Browser screenshots are omitted from the current deployment; thumbnail
+  success does not depend on Browser Rendering.
 - The iOS Shortcut uses guided credential setup instead of pretending the Worker can issue a universally signed Shortcut package.
 
 ---
 
-## 30. Implementation decisions to confirm before coding
+## 30. Final implementation selections
 
-1. Final initial-tag maximum; design default is 20.
-2. Whether career and aspiration allow **Prefer not to say**.
-3. Final CSV maximum; design default is 10 MiB.
-4. Whether Browser Rendering screenshot fallback ships disabled or is omitted from v6.0.
-5. Chrome/Firefox store publication sequence.
-6. Final OpenAI, Anthropic, and Workers AI default model allowlists.
-7. Final session idle and absolute expiry.
-8. Whether a dead-letter queue is worth the extra deployment resource.
-9. Final portable export formats.
-
-No unresolved item authorizes silently changing the PRD.
+1. Setup accepts 5–20 distinct normalized topics.
+2. Career and aspiration are required.
+3. CSV uploads are capped at 10 MiB and 5,000 rows.
+4. Browser Rendering is not bound in the current deployment. Thumbnail
+   candidates come from imports, capture input, and bounded page metadata.
+5. Chrome and Firefox use documented self-installation initially.
+6. Workers AI defaults to
+   `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. Provider model names are not
+   hardcoded into a permanent allowlist; every candidate must pass the live
+   structured-output test before activation.
+7. Dashboard sessions use a 24-hour idle expiry and a 14-day absolute expiry.
+8. The current Queue has no separate dead-letter queue. D1 remains
+   authoritative, and authenticated bootstrap repairs stalled or orphaned work.
+9. Portable exports are JSON and CSV.
 
 ---
 
-## 31. Definition of implementation-ready
+## 31. Current release-readiness gate
 
-Implementation may begin when:
+The implementation exists. A release is ready when:
 
-- PRD v6.0 is accepted.
-- The decisions in section 30 that affect schema or user flows are resolved.
-- Deploy-to-Cloudflare provisioning for D1, Workers KV, and Queue is verified.
-- Default provider models are verified as available and structured-output capable.
-- Thumbnail normalization approach is proven in Workers.
-- Extension distribution approach is selected.
-- The migration branch and non-production test environment are established.
+- Product behavior matches the consolidated PRD.
+- Deploy-to-Cloudflare provisioning for D1, Workers KV, Images, Workers AI, and
+  Queue is verified.
+- D1 migrations apply cleanly to a fresh database and the supported upgrade
+  path.
+- Default and selectable provider models pass their structured-output contract
+  tests.
+- Thumbnail normalization and private KV delivery pass representative tests.
+- Extension and iOS installation instructions are verified end to end.
+- Type, lint, unit, contract, integration, security, import, and dry-run build
+  gates pass in the non-production environment.
+- AI backlog recovery, progress reporting, and deterministic X/Twitter routing
+  are verified against representative existing data.
 
 ---
 
@@ -1861,4 +1936,5 @@ Import source:
 - [Raindrop export and backup](https://help.raindrop.io/export)
 - [Raindrop CSV import fields](https://help.raindrop.io/import)
 
-All provider capabilities, model IDs, configuration shapes, and numeric limits must be revalidated immediately before implementation and release.
+All provider capabilities, model IDs, configuration shapes, and numeric limits
+must be revalidated immediately before release.

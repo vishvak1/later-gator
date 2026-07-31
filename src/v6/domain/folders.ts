@@ -28,3 +28,12 @@ export const FIXED_FOLDERS = [
 
 export const UNSORTED_FOLDER_ID = "folder_unsorted";
 
+export function deterministicFolderForHostname(hostname: string): "Social Posts" | null {
+  const normalized = hostname.toLocaleLowerCase("en-US").replace(/\.$/u, "");
+  return normalized === "x.com" ||
+      normalized.endsWith(".x.com") ||
+      normalized === "twitter.com" ||
+      normalized.endsWith(".twitter.com")
+    ? "Social Posts"
+    : null;
+}

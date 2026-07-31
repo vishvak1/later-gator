@@ -14,8 +14,10 @@ connects to, changes, or deletes data in your Raindrop account.
 
 1. Press **Deploy to Cloudflare**.
 2. Sign in to GitHub and Cloudflare and approve the requested resources.
-3. In the blank **Later Gator password** field, choose a password of at least
-   10 characters—16 or more is recommended—and save it somewhere safe.
+3. In the blank **Later Gator password** field, choose a non-empty password.
+   Sixteen or more characters is strongly recommended, and it should be saved
+   somewhere safe. Login does not impose a 10-character minimum so an existing
+   deployment password remains usable.
 4. Finish the deployment and open the Worker URL.
 5. Sign in. Later Gator automatically sends an unfinished installation to
    `/setup`; after setup it sends you to `/dashboard`.
@@ -31,22 +33,24 @@ The guided setup asks for:
 - 5–20 topics most relevant to you.
 - Your career and what you aspire to become.
 - Optional personal instructions for the organizing AI.
-- An optional Raindrop CSV import.
-- Optional read-only MCP configuration.
+- An optional Raindrop CSV import for either a full-library export or a
+  single-folder/collection export.
 
 For a Raindrop import, Later Gator offers two choices:
 
 - **Reorganize:** remove imported tags and descriptions, place the bookmarks in
   Unsorted, and let AI classify them.
 - **Preserve:** retain imported tags and descriptions, merge tags into the
-  Later Gator vocabulary, place the bookmarks in Imports, and ask AI only to
-  choose permanent folders.
+  Later Gator vocabulary, place the bookmarks in Unsorted, and ask AI to choose
+  permanent folders without removing imported tags.
 
-The import is previewed before it is committed. Imported CSV files are not kept
-after staging; bookmark data becomes part of the D1 library and thumbnail
-candidates are converted to bounded, uncropped WebP previews and stored as private
-Workers KV values. The dashboard preserves their natural aspect ratios in a masonry
-layout.
+The import is previewed before it is committed. Duplicate URLs inside the CSV
+are skipped after the first valid row. If a URL already exists in Later Gator,
+the current bookmark is kept unchanged. AI is paused while a set-based D1
+operation adds accepted rows to Unsorted, then background organization resumes
+according to the owner's pause setting. Imported CSV files are not retained.
+Thumbnail discovery remains independent background work. The dashboard
+preserves thumbnail aspect ratios in a masonry layout.
 
 ## Library behavior
 
@@ -55,12 +59,17 @@ layout.
   restored.
 - Bookmark creation, editing, relationships, filtering, date ranges, sorting,
   Trash, restore, and permanent deletion are supported.
-- View mode is the default. Entering edit mode pauses AI writes; leaving edit
-  mode safely resumes eligible work.
+- Cards open in a details modal, and editing is scoped to that bookmark. There
+  is no library-wide edit mode and editing one bookmark does not pause AI work
+  for the rest of the library.
 - New AI work is created immediately when a bookmark is saved. The Queue carries
   only opaque job IDs and processes one job at a time.
 - Every AI proposal is schema-validated and applied only if the bookmark
-  revision still matches. User edits therefore win over stale AI work.
+  revision still matches. User edits therefore win over stale AI work, and the
+  job is refreshed against the new revision instead of being orphaned.
+- Settings shows organized, waiting, processing, provider-wait, review, and
+  failed counts with live AI-sorting progress.
+- X and Twitter URLs always route to Social Posts.
 
 ## Capture and connections
 
@@ -101,13 +110,14 @@ deployment and migrations are deliberate release actions.
 
 ## Documentation
 
-- [Product Requirements v6](docs/product-requirements-v6.md)
-- [Technical Design v2](docs/technical-design-v2.md)
-- [Developer Guide v2](docs/later-gator-developer-guide-v2.md)
+- [Product Requirements](docs/product-requirements.md)
+- [Technical Design](docs/technical-design.md)
+- [Developer Guide](docs/developer-guide.md)
 - [Security status](SECURITY.md)
 
-The older v5 documents remain in `docs/` as migration history, not as the active
-product specification.
+These three versionless files are the only active product, architecture, and
+developer specifications. Superseded versions remain available through Git
+history rather than as competing documents in `docs/`.
 
 ## Uninstall
 

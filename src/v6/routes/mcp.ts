@@ -169,9 +169,7 @@ export async function handleMcp(
               LIMIT 10`,
           )
           .all(),
-        env.DB
-          .prepare("SELECT owner_ai_paused, edit_mode_state FROM app_state WHERE id = 1")
-          .first(),
+        env.DB.prepare("SELECT owner_ai_paused FROM app_state WHERE id = 1").first(),
       ]);
       return toolResult({
         counts,

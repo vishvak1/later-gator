@@ -1,5 +1,7 @@
 import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
+import { processImportWork } from "../../src/v6/application/imports";
+import { processResetStorage } from "../../src/v6/application/reset";
 
 interface AuthenticatedClient {
   cookie: string;
@@ -149,6 +151,165 @@ describe("v6 Worker foundation", () => {
     expect(listed.bookmarks.map((bookmark) => bookmark.id)).toContain(created.bookmark.id);
   });
 
+  it("defaults to stable date-added cursor pages and returns folder counts", async () => {
+    const client = await login();
+    await finishSetup(client);
+    const ids: string[] = [];
+    for (const [index, url] of [
+      "https://pagination.test/page-oldest",
+      "https://pagination.test/page-middle",
+      "https://pagination.test/page-newest",
+    ].entries()) {
+      const response = await exports.default.fetch("https://later-gator.test/api/bookmarks", {
+        method: "POST",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({ url, title: `Page ${index.toString()}`, organizationPolicy: "none" }),
+      });
+      const body = await response.json<{ bookmark: { id: string } }>();
+      ids.push(body.bookmark.id);
+    }
+    await env.DB.batch(
+      ids.map((id, index) =>
+        env.DB
+          .prepare("UPDATE bookmarks SET added_at = ? WHERE id = ?")
+          .bind(`2026-01-0${(index + 1).toString()}T00:00:00.000Z`, id),
+      ),
+    );
+
+    const firstResponse = await exports.default.fetch(
+      "https://later-gator.test/api/bookmarks?limit=2&hostname=pagination.test",
+      { headers: { cookie: client.cookie } },
+    );
+    const first = await firstResponse.json<{
+      bookmarks: { id: string }[];
+      total: number;
+      nextCursor: string | null;
+    }>();
+    expect(first.total).toBe(3);
+    expect(first.bookmarks.map((bookmark) => bookmark.id)).toEqual([
+      ids[2],
+      ids[1],
+    ]);
+    expect(first.nextCursor).not.toBeNull();
+
+    const secondResponse = await exports.default.fetch(
+      `https://later-gator.test/api/bookmarks?limit=2&hostname=pagination.test&cursor=${encodeURIComponent(first.nextCursor ?? "")}`,
+      { headers: { cookie: client.cookie } },
+    );
+    const second = await secondResponse.json<{
+      bookmarks: { id: string }[];
+      total: number;
+      nextCursor: string | null;
+    }>();
+    expect(second.bookmarks.map((bookmark) => bookmark.id)).toEqual([ids[0]]);
+    expect(second.total).toBe(3);
+    expect(second.nextCursor).toBeNull();
+
+    const bootstrapResponse = await exports.default.fetch(
+      "https://later-gator.test/api/bootstrap",
+      { headers: { cookie: client.cookie } },
+    );
+    const bootstrap = await bootstrapResponse.json<{
+      state: { folders: { slug: string; bookmark_count: number }[]; trashCount: number };
+    }>();
+    const expectedUnsorted = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM bookmarks
+          WHERE folder_id = 'folder_unsorted' AND deleted_at IS NULL`,
+      )
+      .first();
+    expect(
+      bootstrap.state.folders.find((folder) => folder.slug === "unsorted"),
+    ).toMatchObject({ bookmark_count: Number(expectedUnsorted?.count ?? 0) });
+    expect(bootstrap.state.trashCount).toBe(0);
+  });
+
+  it("canonicalizes setup topics to lowercase hyphenated tags", async () => {
+    const client = await login();
+    const response = await exports.default.fetch(
+      "https://later-gator.test/api/setup/complete",
+      {
+        method: "POST",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({
+          relevantTags: [
+            "Machine Learning",
+            "machine-learning",
+            "History",
+            "Religion & Philosophy",
+            "Product Management",
+            "Web Development",
+          ],
+          careerContext: "Engineer",
+          aspirationContext: "Researcher",
+          personalInstructions: null,
+          timezone: "Asia/Kolkata",
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB
+        .prepare(
+          `INSERT INTO tags (
+            id, normalized_name, display_name, status, created_by, usage_count, created_at
+          ) VALUES (?, 'Legacy Topic', 'Legacy Topic', 'active', 'user', 0, ?)`,
+        )
+        .bind(crypto.randomUUID(), now),
+      env.DB
+        .prepare(
+          `INSERT INTO tags (
+            id, normalized_name, display_name, status, created_by, usage_count, created_at
+          ) VALUES (?, 'legacy-topic', 'legacy-topic', 'active', 'user', 0, ?)`,
+        )
+        .bind(crypto.randomUUID(), now),
+    ]);
+    await exports.default.fetch("https://later-gator.test/api/bootstrap", {
+      headers: { cookie: client.cookie },
+    });
+    const tags = await env.DB
+      .prepare(
+        `SELECT normalized_name, display_name
+           FROM tags
+          WHERE normalized_name IN (
+            'history', 'machine-learning', 'product-management',
+            'religion-philosophy', 'web-development'
+          )
+          ORDER BY normalized_name`,
+      )
+      .all();
+    expect(tags.results).toEqual([
+      { normalized_name: "history", display_name: "history" },
+      { normalized_name: "machine-learning", display_name: "machine-learning" },
+      {
+        normalized_name: "product-management",
+        display_name: "product-management",
+      },
+      {
+        normalized_name: "religion-philosophy",
+        display_name: "religion-philosophy",
+      },
+      { normalized_name: "web-development", display_name: "web-development" },
+    ]);
+    const legacyTags = await env.DB
+      .prepare(
+        `SELECT normalized_name, display_name, COUNT(*) AS count
+           FROM tags
+          WHERE normalized_name = 'legacy-topic'
+          GROUP BY normalized_name, display_name`,
+      )
+      .all();
+    expect(legacyTags.results).toEqual([
+      {
+        normalized_name: "legacy-topic",
+        display_name: "legacy-topic",
+        count: 1,
+      },
+    ]);
+  });
+
   it("protects edits with the bookmark revision", async () => {
     const client = await login();
     await finishSetup(client);
@@ -231,33 +392,53 @@ describe("v6 Worker foundation", () => {
     expect(bookmarkResponse.status).toBe(200);
   });
 
-  it("enters and exits edit mode without a scheduled trigger", async () => {
+  it("repairs orphaned pending AI work during bootstrap and reports progress", async () => {
     const client = await login();
     await finishSetup(client);
-    const enterResponse = await exports.default.fetch(
-      "https://later-gator.test/api/edit-mode",
+    const createResponse = await exports.default.fetch(
+      "https://later-gator.test/api/bookmarks",
       {
-        method: "PUT",
+        method: "POST",
         headers: mutationHeaders(client),
-        body: JSON.stringify({ active: true }),
+        body: JSON.stringify({
+          url: "https://example.com/recover-orphaned-ai",
+          title: "Recover this AI job",
+          organizationPolicy: "full",
+        }),
       },
     );
-    expect(enterResponse.status).toBe(200);
+    const created = await createResponse.json<{ bookmark: { id: string } }>();
+    await env.DB
+      .prepare(
+        `UPDATE background_jobs
+            SET state = 'cancelled', last_safe_error_code = 'stale_job'
+          WHERE bookmark_id = ?`,
+      )
+      .bind(created.bookmark.id)
+      .run();
+    await env.DB
+      .prepare("UPDATE bookmarks SET ai_state = 'pending' WHERE id = ?")
+      .bind(created.bookmark.id)
+      .run();
 
-    const activeState = await exports.default.fetch("https://later-gator.test/api/bootstrap", {
+    const bootstrapResponse = await exports.default.fetch("https://later-gator.test/api/bootstrap", {
       headers: { cookie: client.cookie },
     });
-    expect(await activeState.json()).toMatchObject({ state: { editMode: "active" } });
-
-    const exitResponse = await exports.default.fetch(
-      "https://later-gator.test/api/edit-mode",
-      {
-        method: "PUT",
-        headers: mutationHeaders(client),
-        body: JSON.stringify({ active: false }),
-      },
-    );
-    expect(exitResponse.status).toBe(200);
+    const bootstrap = await bootstrapResponse.json<{
+      state: { automationProgress: { total: number; pending: number } };
+    }>();
+    expect(bootstrap.state.automationProgress.total).toBeGreaterThan(0);
+    expect(bootstrap.state.automationProgress.pending).toBeGreaterThan(0);
+    const recovered = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM background_jobs
+          WHERE bookmark_id = ?
+            AND state IN ('pending_dispatch', 'queued', 'running', 'waiting_provider', 'paused_owner')`,
+      )
+      .bind(created.bookmark.id)
+      .first<{ count: number }>();
+    expect(recovered).toEqual({ count: 1 });
   });
 
   it("does not claim a local estimate is account-wide Workers AI usage", async () => {
@@ -341,21 +522,221 @@ describe("v6 Worker foundation", () => {
     expect(conflict.status).toBe(409);
   });
 
-  it("previews and commits the actual Raindrop CSV shape in bounded chunks", async () => {
+  it("imports both full-library and folder-only Raindrop CSV exports into Unsorted", async () => {
     const client = await login();
     await finishSetup(client);
     await exports.default.fetch("https://later-gator.test/api/automation/pause", {
       method: "PUT",
       headers: mutationHeaders(client),
-      body: JSON.stringify({ paused: true, reason: "test import" }),
+      body: JSON.stringify({ paused: false }),
+    });
+    const fullLibraryCsv = [
+      "id,title,note,excerpt,url,folder,tags,created,cover,highlights,favorite",
+      'r-1,"Full export title","A note","An excerpt","https://example.com/from-full-csv","Old folder","alpha, beta",46224,"","","true"',
+    ].join("\n");
+    const folderOnlyCsv = [
+      "id,title,note,excerpt,url,tags,created,cover,highlights,favorite",
+      'r-2,"Folder export title","","","https://example.com/from-folder-csv","research",46225,"","","false"',
+    ].join("\n");
+
+    for (const [name, csv, option] of [
+      ["full-library.csv", fullLibraryCsv, "preserve"],
+      ["folder-only.csv", folderOnlyCsv, "reorganize"],
+    ] as const) {
+      const form = new FormData();
+      form.set("option", option);
+      form.set("file", new File([csv], name, { type: "text/csv" }));
+      const preview = await exports.default.fetch("https://later-gator.test/api/imports/preview", {
+        method: "POST",
+        headers: {
+          cookie: client.cookie,
+          origin: "https://later-gator.test",
+          "x-csrf-token": client.csrf,
+        },
+        body: form,
+      });
+      expect(preview.status, await preview.clone().text()).toBe(201);
+      const previewBody = await preview.json<{
+        preview: { importId: string; validRows: number; duplicateRows: number };
+      }>();
+      expect(previewBody.preview).toMatchObject({ validRows: 1, duplicateRows: 0 });
+
+      const paused = await env.DB
+        .prepare("SELECT owner_ai_paused FROM app_state WHERE id = 1")
+        .first();
+      expect(paused).toEqual({ owner_ai_paused: 0 });
+
+      const commit = await exports.default.fetch(
+        `https://later-gator.test/api/imports/${previewBody.preview.importId}/commit`,
+        {
+          method: "POST",
+          headers: mutationHeaders(client),
+          body: JSON.stringify({ duplicateDecisions: [] }),
+        },
+      );
+      expect(commit.status, await commit.clone().text()).toBe(200);
+      expect(await commit.json()).toMatchObject({ import: { status: "committed" } });
+      expect(await processImportWork(env, previewBody.preview.importId)).toBe("complete");
+    }
+
+    const imported = await env.DB
+      .prepare(
+        `SELECT b.title, b.favorite, f.slug AS folder, b.description
+           FROM bookmarks b JOIN folders f ON f.id = b.folder_id
+          WHERE b.normalized_url IN (?, ?)
+          ORDER BY b.normalized_url`,
+      )
+      .bind("https://example.com/from-folder-csv", "https://example.com/from-full-csv")
+      .all();
+    expect(imported.results).toEqual([
+      expect.objectContaining({
+        title: "Folder export title",
+        favorite: 0,
+        folder: "unsorted",
+        description: null,
+      }),
+      expect.objectContaining({
+        title: "Full export title",
+        favorite: 0,
+        folder: "unsorted",
+        description: "An excerpt",
+      }),
+    ]);
+    const resumed = await env.DB
+      .prepare("SELECT owner_ai_paused FROM app_state WHERE id = 1")
+      .first();
+    expect(resumed).toEqual({ owner_ai_paused: 0 });
+  });
+
+  it("bulk imports a larger CSV without changing the owner's AI pause", async () => {
+    const client = await login();
+    await finishSetup(client);
+    const pause = await exports.default.fetch(
+      "https://later-gator.test/api/automation/pause",
+      {
+        method: "PUT",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({ paused: true }),
+      },
+    );
+    expect(pause.status).toBe(200);
+
+    const csv = [
+      "id,title,note,excerpt,url,tags,created,cover,highlights,favorite",
+      ...Array.from(
+        { length: 75 },
+        (_, index) =>
+          `row-${index.toString()},"Imported ${index.toString()}","","","https://example.com/import-chunk-${index.toString()}","ai",46225,"","","false"`,
+      ),
+    ].join("\n");
+    const form = new FormData();
+    form.set("option", "reorganize");
+    form.set("file", new File([csv], "large-folder-export.csv", { type: "text/csv" }));
+    const preview = await exports.default.fetch(
+      "https://later-gator.test/api/imports/preview",
+      {
+        method: "POST",
+        headers: {
+          cookie: client.cookie,
+          origin: "https://later-gator.test",
+          "x-csrf-token": client.csrf,
+        },
+        body: form,
+      },
+    );
+    expect(preview.status, await preview.clone().text()).toBe(201);
+    const previewBody = await preview.json<{ preview: { importId: string } }>();
+
+    const readOnlyMutation = await exports.default.fetch(
+      "https://later-gator.test/api/bookmarks",
+      {
+        method: "POST",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({
+          url: "https://example.com/blocked-during-import",
+          organizationPolicy: "none",
+        }),
+      },
+    );
+    expect(readOnlyMutation.status).toBe(409);
+    expect(await readOnlyMutation.json()).toMatchObject({
+      error: { code: "import_in_progress" },
+    });
+
+    const commit = await exports.default.fetch(
+      `https://later-gator.test/api/imports/${previewBody.preview.importId}/commit`,
+      {
+        method: "POST",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({ duplicateDecisions: [] }),
+      },
+    );
+    expect(commit.status).toBe(200);
+    expect(await processImportWork(env, previewBody.preview.importId)).toBe("complete");
+
+    const completed = await env.DB
+      .prepare(
+        "SELECT status, committed_rows, failed_rows FROM import_sessions WHERE id = ?",
+      )
+      .bind(previewBody.preview.importId)
+      .first();
+    expect(completed).toEqual({
+      status: "committed",
+      committed_rows: 75,
+      failed_rows: 0,
+    });
+    const importTimestamps = await env.DB
+      .prepare(
+        `SELECT COUNT(DISTINCT b.added_at) AS count
+           FROM bookmarks b
+           JOIN import_rows r ON r.committed_bookmark_id = b.id
+          WHERE r.import_id = ?`,
+      )
+      .bind(previewBody.preview.importId)
+      .first();
+    expect(importTimestamps).toEqual({ count: 1 });
+    const ownerState = await env.DB
+      .prepare("SELECT owner_ai_paused, owner_pause_reason FROM app_state WHERE id = 1")
+      .first();
+    expect(ownerState).toMatchObject({ owner_ai_paused: 1 });
+    const importedJobs = await env.DB
+      .prepare(
+        `SELECT state, COUNT(*) AS count
+           FROM background_jobs
+          WHERE idempotency_key LIKE ?
+          GROUP BY state`,
+      )
+      .bind(`import:${previewBody.preview.importId}:row:%`)
+      .all();
+    expect(importedJobs.results).toEqual([{ state: "paused_owner", count: 75 }]);
+  });
+
+  it("keeps existing library bookmarks and skips duplicate URLs within a CSV", async () => {
+    const client = await login();
+    await finishSetup(client);
+    await exports.default.fetch("https://later-gator.test/api/automation/pause", {
+      method: "PUT",
+      headers: mutationHeaders(client),
+      body: JSON.stringify({ paused: false }),
+    });
+    await exports.default.fetch("https://later-gator.test/api/bookmarks", {
+      method: "POST",
+      headers: mutationHeaders(client),
+      body: JSON.stringify({
+        url: "https://example.com/import-duplicate",
+        title: "Current title",
+        organizationPolicy: "none",
+      }),
     });
     const csv = [
-      "id,title,note,excerpt,url,folder,tags,created,cover,highlights,favorite",
-      'r-1,"CSV title","A note","An excerpt","https://example.com/from-csv","Old folder","alpha, beta",46224,"","","true"',
+      "id,title,note,excerpt,url,tags,created,cover,highlights,favorite",
+      'r-duplicate,"Imported title","","","https://example.com/import-duplicate","ai",46225,"","","false"',
+      'r-new,"First CSV title","","","https://example.com/import-new","AI Research",46225,"","","false"',
+      'r-new-copy,"Second CSV title","","","https://example.com/import-new","Ignored",46225,"","","false"',
     ].join("\n");
     const form = new FormData();
     form.set("option", "preserve");
-    form.set("file", new File([csv], "raindrop.csv", { type: "text/csv" }));
+    form.set("file", new File([csv], "folder-export.csv", { type: "text/csv" }));
     const preview = await exports.default.fetch("https://later-gator.test/api/imports/preview", {
       method: "POST",
       headers: {
@@ -365,32 +746,97 @@ describe("v6 Worker foundation", () => {
       },
       body: form,
     });
-    expect(preview.status, await preview.clone().text()).toBe(201);
     const previewBody = await preview.json<{
-      preview: { importId: string; validRows: number };
+      preview: {
+        importId: string;
+        duplicateRows: number;
+        duplicates: { rowNumber: number; existingTitle: string }[];
+      };
     }>();
-    expect(previewBody.preview.validRows).toBe(1);
+    expect(previewBody.preview.duplicateRows).toBe(1);
+    expect(previewBody.preview.duplicates).toEqual([]);
 
-    const commit = await exports.default.fetch(
+    const started = await exports.default.fetch(
       `https://later-gator.test/api/imports/${previewBody.preview.importId}/commit`,
       {
         method: "POST",
         headers: mutationHeaders(client),
-        body: "{}",
+        body: JSON.stringify({ duplicateDecisions: [] }),
       },
     );
-    expect(commit.status, await commit.clone().text()).toBe(200);
-    expect(await commit.json()).toMatchObject({ complete: true, committed: 1 });
-
+    expect(started.status).toBe(200);
+    expect(await processImportWork(env, previewBody.preview.importId)).toBe("complete");
+    const current = await env.DB
+      .prepare("SELECT title FROM bookmarks WHERE normalized_url = ?")
+      .bind("https://example.com/import-duplicate")
+      .first();
+    expect(current).toEqual({ title: "Current title" });
     const imported = await env.DB
       .prepare(
-        `SELECT b.title, b.favorite, f.slug AS folder
-           FROM bookmarks b JOIN folders f ON f.id = b.folder_id
+        `SELECT b.title, t.normalized_name
+           FROM bookmarks b
+           LEFT JOIN bookmark_tags bt ON bt.bookmark_id = b.id
+           LEFT JOIN tags t ON t.id = bt.tag_id
           WHERE b.normalized_url = ?`,
       )
-      .bind("https://example.com/from-csv")
+      .bind("https://example.com/import-new")
       .first();
-    expect(imported).toMatchObject({ title: "CSV title", favorite: 1, folder: "imports" });
+    expect(imported).toEqual({
+      title: "First CSV title",
+      normalized_name: "ai-research",
+    });
+    const existingOutcome = await env.DB
+      .prepare(
+        `SELECT safe_error_code
+           FROM import_rows
+          WHERE import_id = ? AND row_number = 2`,
+      )
+      .bind(previewBody.preview.importId)
+      .first();
+    expect(existingOutcome).toEqual({ safe_error_code: "existing_library_skipped" });
+  });
+
+  it("serves standard library dialogs and expires unauthenticated API cookies", async () => {
+    const anonymousMissingPage = await exports.default.fetch(
+      new Request("https://later-gator.test/favicon.ico", { redirect: "manual" }),
+    );
+    expect(anonymousMissingPage.status).toBe(303);
+    expect(anonymousMissingPage.headers.get("location")).toBe("https://later-gator.test/");
+    expect(anonymousMissingPage.headers.getSetCookie().join(";")).toContain("Max-Age=0");
+
+    const client = await login();
+    await finishSetup(client);
+    const dashboard = await exports.default.fetch("https://later-gator.test/dashboard", {
+      headers: { cookie: client.cookie },
+    });
+    const html = await dashboard.text();
+    expect(html).toContain('id="filterDialog"');
+    expect(html).toContain('id="tagSuggestions"');
+    expect(html).toContain('id="topicsDialog"');
+    expect(html).toContain('id="detailExternalLink"');
+    expect(html).not.toContain('id="editModeButton"');
+
+    await env.DB.prepare("DELETE FROM sessions").run();
+    const expired = await exports.default.fetch("https://later-gator.test/api/bootstrap", {
+      headers: { cookie: client.cookie },
+    });
+    expect(expired.status).toBe(401);
+    expect(expired.headers.getSetCookie().join(";")).toContain("Max-Age=0");
+    const script = await exports.default.fetch("https://later-gator.test/app.js");
+    expect(script.headers.get("cache-control")).toBe("no-cache");
+    const scriptText = await script.text();
+    expect(scriptText).toContain('response.status === 401');
+    expect(scriptText).toContain('filter(folder => folder.slug !== "imports")');
+    expect(scriptText).not.toContain(".slice(0, 8);");
+    expect(scriptText).toContain("renderAutomationProgress");
+    expect(scriptText).toContain('importState.status === "committing"');
+    expect(scriptText).toContain("Requesting another safe import pass");
+    const stylesheet = await exports.default.fetch("https://later-gator.test/app.css");
+    expect(stylesheet.headers.get("cache-control")).toBe("no-cache");
+    const stylesheetText = await stylesheet.text();
+    expect(stylesheetText).toContain("[hidden] { display: none !important; }");
+    expect(stylesheetText).toContain(".busy-overlay.import-progress");
+    expect(stylesheetText).toContain("body.import-readonly #addBookmarkButton");
   });
 
   it("supports permanent-folder manual saves, export, trash, and permanent deletion", async () => {
@@ -521,5 +967,57 @@ describe("v6 Worker foundation", () => {
       await env.DB.prepare("SELECT id FROM bookmarks WHERE id = ?").bind(created.bookmark.id).first(),
     ).toBeNull();
     expect(await env.THUMBNAILS.get(thumbnailKey, "arrayBuffer")).toBeNull();
+  });
+
+  it("requires explicit confirmation and resets the deployment to setup", async () => {
+    const client = await login();
+    await finishSetup(client);
+    const created = await exports.default.fetch("https://later-gator.test/api/bookmarks", {
+      method: "POST",
+      headers: mutationHeaders(client),
+      body: JSON.stringify({
+        url: "https://example.com/reset-me",
+        organizationPolicy: "none",
+        tags: ["temporary"],
+      }),
+    });
+    expect(created.status).toBe(201);
+    await env.THUMBNAILS.put("thumbnails/test/reset.webp", new Uint8Array([1, 2, 3]));
+
+    const rejected = await exports.default.fetch(
+      "https://later-gator.test/api/testing/reset",
+      {
+        method: "POST",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({ confirmation: "delete" }),
+      },
+    );
+    expect(rejected.status).toBe(400);
+
+    const reset = await exports.default.fetch(
+      "https://later-gator.test/api/testing/reset",
+      {
+        method: "POST",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({ confirmation: "DELETE EVERYTHING" }),
+      },
+    );
+    expect(reset.status).toBe(200);
+    expect(await reset.json()).toMatchObject({ redirectTo: "/setup" });
+    expect(
+      await env.DB.prepare("SELECT setup_status FROM app_state WHERE id = 1").first(),
+    ).toEqual({ setup_status: "setup_incomplete" });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM bookmarks").first()).toEqual({
+      count: 0,
+    });
+    expect(await env.DB.prepare("SELECT COUNT(*) AS count FROM tags").first()).toEqual({
+      count: 0,
+    });
+    const setup = await exports.default.fetch("https://later-gator.test/setup", {
+      headers: { cookie: client.cookie },
+    });
+    expect(setup.status).toBe(200);
+    expect(await processResetStorage(env)).toBe("complete");
+    expect(await env.THUMBNAILS.get("thumbnails/test/reset.webp")).toBeNull();
   });
 });

@@ -5,12 +5,13 @@ import type {
   UpdateBookmarkInput,
 } from "../domain/schemas";
 import { UNSORTED_FOLDER_ID } from "../domain/folders";
+import { normalizeTagName } from "../domain/tags";
 import { normalizeBookmarkUrl } from "../domain/url";
+import { z } from "zod";
 
 interface AppStateRow {
   setup_status: "setup_incomplete" | "ready";
   owner_ai_paused: number;
-  edit_mode_state: "inactive" | "preparing" | "active";
   organization_generation: number;
 }
 
@@ -42,6 +43,7 @@ export interface BookmarkRow {
   thumbnail_id: string | null;
   thumbnail_width: number | null;
   thumbnail_height: number | null;
+  tag_names: string | null;
 }
 
 export interface CreatedBookmark {
@@ -50,15 +52,10 @@ export interface CreatedBookmark {
   jobId: string | null;
 }
 
-function normalizeTagName(value: string): { normalized: string; display: string } {
-  const display = value.trim().replace(/\s+/gu, " ");
-  return { normalized: display.toLocaleLowerCase("en-US"), display };
-}
-
 async function getAppState(db: D1Database): Promise<AppStateRow> {
   const state = await db
     .prepare(
-      `SELECT setup_status, owner_ai_paused, edit_mode_state, organization_generation
+      `SELECT setup_status, owner_ai_paused, organization_generation
          FROM app_state
         WHERE id = 1`,
     )
@@ -97,9 +94,11 @@ export async function completeSetup(
 ): Promise<void> {
   const now = new Date().toISOString();
   const uniqueTags = new Map(
-    input.relevantTags.map((tag) => {
+    input.relevantTags.flatMap((tag) => {
       const normalized = normalizeTagName(tag);
-      return [normalized.normalized, normalized] as const;
+      return normalized.normalized === ""
+        ? []
+        : [[normalized.normalized, normalized] as const];
     }),
   );
   if (uniqueTags.size < 5) throw new Error("not_enough_distinct_tags");
@@ -162,7 +161,11 @@ export async function createBookmark(
   db: D1Database,
   input: CreateBookmarkInput,
   sourceType: "dashboard" | "extension" | "ios" | "raindrop_csv" | "linked",
-  metadata?: { sourceCreatedAt?: string },
+  metadata?: {
+    sourceCreatedAt?: string;
+    deferOrganization?: boolean;
+    jobIdempotencyKey?: string;
+  },
 ): Promise<CreatedBookmark> {
   const normalized = normalizeBookmarkUrl(input.url);
   const existing = await db
@@ -186,19 +189,15 @@ export async function createBookmark(
   const aiState =
     organizationPolicy === "none"
       ? "complete"
-      : appState.owner_ai_paused === 1
+      : metadata?.deferOrganization === true || appState.owner_ai_paused === 1
         ? "paused_owner"
-        : appState.edit_mode_state !== "inactive"
-          ? "paused_edit"
-          : provider.operational_status === "waiting"
+        : provider.operational_status === "waiting"
             ? "waiting_provider"
             : "pending";
   const jobState =
-    appState.owner_ai_paused === 1
+    metadata?.deferOrganization === true || appState.owner_ai_paused === 1
       ? "paused_owner"
-      : appState.edit_mode_state !== "inactive"
-        ? "paused_edit"
-        : provider.operational_status === "waiting"
+      : provider.operational_status === "waiting"
           ? "waiting_provider"
           : "pending_dispatch";
   const suppliedTitle = input.title?.trim();
@@ -251,7 +250,7 @@ export async function createBookmark(
           appState.organization_generation,
           provider.provider,
           provider.model,
-          `bookmark:${id}:revision:1`,
+          metadata?.jobIdempotencyKey ?? `bookmark:${id}:revision:1`,
           now,
           now,
         ),
@@ -260,6 +259,7 @@ export async function createBookmark(
 
   for (const rawTag of new Set(input.tags ?? [])) {
     const tag = normalizeTagName(rawTag);
+    if (tag.normalized === "") continue;
     const existingTag = await db
       .prepare("SELECT id, status FROM tags WHERE normalized_name = ?")
       .bind(tag.normalized)
@@ -304,10 +304,63 @@ const SORT_COLUMNS = {
   title: "b.title",
 } as const;
 
-export async function listBookmarks(
+const bookmarkCursorSchema = z.strictObject({
+  sort: z.enum(["added_at", "modified_at", "source_created_at", "hostname", "title"]),
+  direction: z.enum(["asc", "desc"]),
+  value: z.string(),
+  id: z.uuid(),
+});
+
+export interface BookmarkPage {
+  bookmarks: BookmarkRow[];
+  total: number;
+  nextCursor: string | null;
+}
+
+function encodeBookmarkCursor(
+  sort: BookmarkListQuery["sort"],
+  direction: BookmarkListQuery["direction"],
+  bookmark: BookmarkRow,
+): string {
+  const value = bookmark[sort];
+  const json = JSON.stringify({ sort, direction, value, id: bookmark.id });
+  const binary = Array.from(
+    new TextEncoder().encode(json),
+    (byte) => String.fromCharCode(byte),
+  ).join("");
+  return btoa(binary)
+    .replaceAll("+", "-")
+    .replaceAll("/", "_")
+    .replace(/=+$/u, "");
+}
+
+function decodeBookmarkCursor(
+  encoded: string,
+  query: BookmarkListQuery,
+): z.infer<typeof bookmarkCursorSchema> | null {
+  try {
+    const base64 = encoded.replaceAll("-", "+").replaceAll("_", "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const bytes = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+    const json = new TextDecoder().decode(bytes);
+    const parsed = bookmarkCursorSchema.safeParse(JSON.parse(json) as unknown);
+    if (
+      !parsed.success ||
+      parsed.data.sort !== query.sort ||
+      parsed.data.direction !== query.direction
+    ) {
+      return null;
+    }
+    return parsed.data;
+  } catch {
+    return null;
+  }
+}
+
+export async function listBookmarkPage(
   db: D1Database,
   query: BookmarkListQuery,
-): Promise<BookmarkRow[]> {
+): Promise<BookmarkPage> {
   const predicates: string[] = [];
   const bindings: unknown[] = [];
 
@@ -322,6 +375,16 @@ export async function listBookmarks(
     );
     bindings.push(normalizeTagName(query.tag).normalized);
   }
+  if (query.tags !== undefined && query.tags !== "") {
+    const requestedTags = [...new Set(query.tags.split(",").map((tag) => tag.trim()).filter(Boolean))]
+      .slice(0, 10);
+    for (const requestedTag of requestedTags) {
+      predicates.push(
+        "EXISTS (SELECT 1 FROM bookmark_tags bt JOIN tags t ON t.id = bt.tag_id WHERE bt.bookmark_id = b.id AND t.normalized_name = ? AND t.status = 'active')",
+      );
+      bindings.push(normalizeTagName(requestedTag).normalized);
+    }
+  }
   if (query.favorite !== undefined) {
     predicates.push("b.favorite = ?");
     bindings.push(query.favorite === "true" ? 1 : 0);
@@ -331,8 +394,14 @@ export async function listBookmarks(
     bindings.push(query.aiState);
   }
   if (query.hostname !== undefined) {
-    predicates.push("b.hostname = ?");
-    bindings.push(query.hostname.toLocaleLowerCase("en-US"));
+    predicates.push("b.hostname LIKE ? ESCAPE '\\'");
+    bindings.push(
+      `%${query.hostname
+        .toLocaleLowerCase("en-US")
+        .replaceAll("\\", "\\\\")
+        .replaceAll("%", "\\%")
+        .replaceAll("_", "\\_")}%`,
+    );
   }
   if (query.dateFrom !== undefined || query.dateTo !== undefined) {
     const dateColumn = query.dateField ?? "added_at";
@@ -346,26 +415,81 @@ export async function listBookmarks(
     }
   }
   if (query.q !== undefined && query.q !== "") {
-    predicates.push(
-      "b.id IN (SELECT bookmark_id FROM bookmarks_fts WHERE bookmarks_fts MATCH ?)",
-    );
-    bindings.push(`"${query.q.replaceAll('"', '""')}"`);
+    const terms = query.q.match(/[\p{L}\p{N}_-]+/gu)?.slice(0, 12) ?? [];
+    if (terms.length > 0) {
+      predicates.push(
+        "b.id IN (SELECT bookmark_id FROM bookmarks_fts WHERE bookmarks_fts MATCH ?)",
+      );
+      bindings.push(terms.map((term) => `"${term.replaceAll('"', '""')}"*`).join(" AND "));
+    }
   }
 
   const sortColumn = SORT_COLUMNS[query.sort];
   const direction = query.direction === "asc" ? "ASC" : "DESC";
-  const statement = db.prepare(
+  const countPredicates = [...predicates];
+  const countBindings = [...bindings];
+  if (query.cursor !== undefined) {
+    const cursor = decodeBookmarkCursor(query.cursor, query);
+    if (cursor === null) throw new Error("invalid_bookmark_cursor");
+    const comparison = query.direction === "asc" ? ">" : "<";
+    predicates.push(
+      `(${sortColumn} ${comparison} ? OR (${sortColumn} = ? AND b.id ${comparison} ?))`,
+    );
+    bindings.push(cursor.value, cursor.value, cursor.id);
+  }
+  const batchResults = await db.batch([
+    db
+      .prepare(
+        `SELECT COUNT(*) AS total
+           FROM bookmarks b
+           JOIN folders f ON f.id = b.folder_id
+          WHERE ${countPredicates.join(" AND ")}`,
+      )
+      .bind(...countBindings),
+    db
+      .prepare(
     `SELECT b.*, f.name AS folder_name,
-            t.width AS thumbnail_width, t.height AS thumbnail_height
+            t.width AS thumbnail_width, t.height AS thumbnail_height,
+            (
+              SELECT GROUP_CONCAT(active_tag.display_name, ',')
+                FROM bookmark_tags active_bt
+                JOIN tags active_tag ON active_tag.id = active_bt.tag_id
+               WHERE active_bt.bookmark_id = b.id AND active_tag.status = 'active'
+            ) AS tag_names
        FROM bookmarks b
        JOIN folders f ON f.id = b.folder_id
        LEFT JOIN thumbnails t ON t.id = b.thumbnail_id AND t.state = 'ready'
       WHERE ${predicates.join(" AND ")}
       ORDER BY ${sortColumn} ${direction}, b.id ${direction}
       LIMIT ?`,
-  );
-  const result = await statement.bind(...bindings, query.limit).all<BookmarkRow>();
-  return result.results;
+      )
+      .bind(...bindings, query.limit + 1),
+  ]);
+  const countResult = batchResults[0];
+  const pageResult = batchResults[1];
+  if (countResult === undefined || pageResult === undefined) {
+    throw new Error("bookmark_page_query_failed");
+  }
+  const totalRow = countResult.results[0] as { total?: number } | undefined;
+  const rows = pageResult.results as unknown as BookmarkRow[];
+  const hasNextPage = rows.length > query.limit;
+  const bookmarks = hasNextPage ? rows.slice(0, query.limit) : rows;
+  const lastBookmark = bookmarks.at(-1);
+  return {
+    bookmarks,
+    total: totalRow?.total ?? 0,
+    nextCursor:
+      hasNextPage && lastBookmark !== undefined
+        ? encodeBookmarkCursor(query.sort, query.direction, lastBookmark)
+        : null,
+  };
+}
+
+export async function listBookmarks(
+  db: D1Database,
+  query: BookmarkListQuery,
+): Promise<BookmarkRow[]> {
+  return (await listBookmarkPage(db, query)).bookmarks;
 }
 
 export async function updateBookmark(
@@ -412,9 +536,9 @@ export async function updateBookmark(
 
   if (input.tags !== undefined) {
     const requestedTags = new Map(
-      input.tags.map((rawTag) => {
+      input.tags.flatMap((rawTag) => {
         const tag = normalizeTagName(rawTag);
-        return [tag.normalized, tag] as const;
+        return tag.normalized === "" ? [] : [[tag.normalized, tag] as const];
       }),
     );
     const existingTags = await db
@@ -528,6 +652,15 @@ export async function dispatchJob(
   queue: Queue,
   jobId: string,
 ): Promise<boolean> {
+  const activeImport = await db
+    .prepare(
+      `SELECT 1
+         FROM import_sessions
+        WHERE status IN ('preview', 'committing')
+        LIMIT 1`,
+    )
+    .first();
+  if (activeImport !== null) return true;
   try {
     await queue.send({ version: 1, jobId });
     await db
@@ -544,12 +677,146 @@ export async function dispatchJob(
   }
 }
 
+async function canonicalizeStoredTags(db: D1Database): Promise<void> {
+  const stored = await db
+    .prepare(
+      `SELECT id, normalized_name, display_name, status
+         FROM tags
+        ORDER BY status, created_at, id`,
+    )
+    .all<{
+      id: string;
+      normalized_name: string;
+      display_name: string;
+      status: "active" | "retired";
+    }>();
+  const groups = new Map<string, typeof stored.results>();
+  const invalidIds: string[] = [];
+  for (const tag of stored.results) {
+    const canonical = normalizeTagName(tag.display_name).normalized;
+    if (canonical === "") {
+      invalidIds.push(tag.id);
+      continue;
+    }
+    const group = groups.get(canonical) ?? [];
+    group.push(tag);
+    groups.set(canonical, group);
+  }
+
+  const targets: { id: string; name: string }[] = [];
+  const merges: { sourceId: string; targetId: string }[] = [];
+  for (const [name, tags] of groups) {
+    const target = tags.find((tag) => tag.status === "active") ?? tags[0];
+    if (target === undefined) continue;
+    targets.push({ id: target.id, name });
+    for (const tag of tags) {
+      if (tag.id !== target.id) merges.push({ sourceId: tag.id, targetId: target.id });
+    }
+  }
+  const needsMigration =
+    merges.length > 0 ||
+    invalidIds.length > 0 ||
+    targets.some((target) => {
+      const storedTarget = stored.results.find((tag) => tag.id === target.id);
+      return (
+        storedTarget?.normalized_name !== target.name ||
+        storedTarget.display_name !== target.name
+      );
+    });
+  if (!needsMigration) return;
+
+  const statements: D1PreparedStatement[] = [];
+  if (merges.length > 0) {
+    const payload = JSON.stringify(merges);
+    statements.push(
+      db
+        .prepare(
+          `INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id, source, created_at)
+           SELECT bt.bookmark_id,
+                  json_extract(j.value, '$.targetId'),
+                  bt.source,
+                  bt.created_at
+             FROM json_each(?) j
+             JOIN bookmark_tags bt
+               ON bt.tag_id = json_extract(j.value, '$.sourceId')`,
+        )
+        .bind(payload),
+      db
+        .prepare(
+          `DELETE FROM bookmark_tags
+            WHERE tag_id IN (
+              SELECT json_extract(value, '$.sourceId') FROM json_each(?)
+            )`,
+        )
+        .bind(payload),
+      db
+        .prepare(
+          `DELETE FROM tags
+            WHERE id IN (
+              SELECT json_extract(value, '$.sourceId') FROM json_each(?)
+            )`,
+        )
+        .bind(payload),
+    );
+  }
+  if (invalidIds.length > 0) {
+    const payload = JSON.stringify(invalidIds);
+    statements.push(
+      db
+        .prepare("DELETE FROM bookmark_tags WHERE tag_id IN (SELECT value FROM json_each(?))")
+        .bind(payload),
+      db
+        .prepare("DELETE FROM tags WHERE id IN (SELECT value FROM json_each(?))")
+        .bind(payload),
+    );
+  }
+  statements.push(
+    db
+      .prepare(
+        `WITH payload AS (
+           SELECT json_extract(value, '$.id') AS id,
+                  json_extract(value, '$.name') AS name
+             FROM json_each(?)
+         )
+         UPDATE tags
+            SET normalized_name = (
+                  SELECT name FROM payload WHERE payload.id = tags.id
+                ),
+                display_name = (
+                  SELECT name FROM payload WHERE payload.id = tags.id
+                )
+          WHERE id IN (SELECT id FROM payload)`,
+      )
+      .bind(JSON.stringify(targets)),
+    db.prepare(
+      `UPDATE tags
+          SET usage_count = (
+            SELECT COUNT(*) FROM bookmark_tags WHERE bookmark_tags.tag_id = tags.id
+          )`,
+    ),
+  );
+  await db.batch(statements);
+}
+
 export async function getBootstrapState(db: D1Database): Promise<{
   setupStatus: string;
   ownerAiPaused: boolean;
-  editMode: string;
+  activeImport: Record<string, unknown> | null;
   folders: D1Result<Record<string, unknown>>["results"];
   tags: D1Result<Record<string, unknown>>["results"];
+  sites: string[];
+  trashCount: number;
+  automationProgress: {
+    total: number;
+    complete: number;
+    pending: number;
+    processing: number;
+    waitingProvider: number;
+    pausedOwner: number;
+    review: number;
+    failed: number;
+    lastActivityAt: string | null;
+  };
   provider: {
     provider: string;
     model: string;
@@ -557,11 +824,18 @@ export async function getBootstrapState(db: D1Database): Promise<{
     last_safe_error_code: string | null;
   };
 }> {
+  await canonicalizeStoredTags(db);
   const state = await getAppState(db);
-  const [folders, tags, provider] = await Promise.all([
+  const [folders, tags, sites, provider, activeImport, trash, automationProgress] =
+    await Promise.all([
     db
       .prepare(
-        "SELECT id, slug, name, kind, sort_order, is_ai_destination FROM folders ORDER BY sort_order",
+        `SELECT f.id, f.slug, f.name, f.kind, f.sort_order, f.is_ai_destination,
+                COUNT(b.id) AS bookmark_count
+           FROM folders f
+           LEFT JOIN bookmarks b ON b.folder_id = f.id AND b.deleted_at IS NULL
+          GROUP BY f.id, f.slug, f.name, f.kind, f.sort_order, f.is_ai_destination
+          ORDER BY f.sort_order`,
       )
       .all(),
     db
@@ -569,6 +843,15 @@ export async function getBootstrapState(db: D1Database): Promise<{
         "SELECT id, normalized_name, display_name, status, usage_count FROM tags ORDER BY display_name",
       )
       .all(),
+    db
+      .prepare(
+        `SELECT DISTINCT hostname
+           FROM bookmarks
+          WHERE deleted_at IS NULL
+          ORDER BY hostname
+          LIMIT 500`,
+      )
+      .all<{ hostname: string }>(),
     db
       .prepare(
         `SELECT provider, model, operational_status, last_safe_error_code
@@ -580,14 +863,67 @@ export async function getBootstrapState(db: D1Database): Promise<{
         operational_status: string;
         last_safe_error_code: string | null;
       }>(),
+    db
+      .prepare(
+        `SELECT id, status, option, file_name, total_rows, valid_rows, invalid_rows,
+                duplicate_rows, committed_rows, failed_rows, created_at, expires_at
+           FROM import_sessions
+          WHERE status IN ('preview', 'committing')
+          ORDER BY created_at DESC
+          LIMIT 1`,
+      )
+      .first(),
+    db
+      .prepare("SELECT COUNT(*) AS count FROM bookmarks WHERE deleted_at IS NOT NULL")
+      .first<{ count: number }>(),
+    db
+      .prepare(
+        `SELECT
+           COUNT(*) AS total,
+           SUM(CASE WHEN b.ai_state = 'complete' THEN 1 ELSE 0 END) AS complete,
+           SUM(CASE WHEN b.ai_state = 'pending' THEN 1 ELSE 0 END) AS pending,
+           SUM(CASE WHEN b.ai_state = 'processing' THEN 1 ELSE 0 END) AS processing,
+           SUM(CASE WHEN b.ai_state = 'waiting_provider' THEN 1 ELSE 0 END) AS waiting_provider,
+           SUM(CASE WHEN b.ai_state = 'paused_owner' THEN 1 ELSE 0 END) AS paused_owner,
+           SUM(CASE WHEN b.ai_state = 'review' THEN 1 ELSE 0 END) AS review,
+           SUM(CASE WHEN b.ai_state = 'failed' THEN 1 ELSE 0 END) AS failed,
+           (SELECT MAX(updated_at) FROM background_jobs) AS last_activity_at
+         FROM bookmarks b
+        WHERE b.deleted_at IS NULL
+          AND b.organization_policy != 'none'`,
+      )
+      .first<{
+        total: number;
+        complete: number | null;
+        pending: number | null;
+        processing: number | null;
+        waiting_provider: number | null;
+        paused_owner: number | null;
+        review: number | null;
+        failed: number | null;
+        last_activity_at: string | null;
+      }>(),
   ]);
   if (provider === null) throw new Error("missing_provider_settings");
   return {
     setupStatus: state.setup_status,
     ownerAiPaused: state.owner_ai_paused === 1,
-    editMode: state.edit_mode_state,
+    activeImport,
     folders: folders.results,
     tags: tags.results,
+    sites: sites.results.map((site) => site.hostname),
+    trashCount: trash?.count ?? 0,
+    automationProgress: {
+      total: automationProgress?.total ?? 0,
+      complete: automationProgress?.complete ?? 0,
+      pending: automationProgress?.pending ?? 0,
+      processing: automationProgress?.processing ?? 0,
+      waitingProvider: automationProgress?.waiting_provider ?? 0,
+      pausedOwner: automationProgress?.paused_owner ?? 0,
+      review: automationProgress?.review ?? 0,
+      failed: automationProgress?.failed ?? 0,
+      lastActivityAt: automationProgress?.last_activity_at ?? null,
+    },
     provider,
   };
 }
@@ -597,6 +933,7 @@ export async function createTag(
   rawName: string,
 ): Promise<{ id: string; normalizedName: string; displayName: string; created: boolean }> {
   const tag = normalizeTagName(rawName);
+  if (tag.normalized === "") throw new Error("invalid_tag_name");
   const existing = await db
     .prepare("SELECT id, status, display_name FROM tags WHERE normalized_name = ?")
     .bind(tag.normalized)
@@ -664,80 +1001,6 @@ export async function retireTag(
   return { retired: true, affectedBookmarks: affected?.count ?? 0 };
 }
 
-export async function setEditMode(
-  db: D1Database,
-  sessionId: string,
-  active: boolean,
-): Promise<string[]> {
-  const now = new Date();
-  if (active) {
-    const expiresAt = new Date(now.getTime() + 30 * 60 * 1000).toISOString();
-    await db.batch([
-      db
-        .prepare(
-          `UPDATE app_state
-              SET edit_mode_state = 'active',
-                  edit_mode_session_id = ?,
-                  edit_mode_expires_at = ?,
-                  updated_at = ?
-            WHERE id = 1`,
-        )
-        .bind(sessionId, expiresAt, now.toISOString()),
-      db
-        .prepare(
-          `UPDATE background_jobs
-              SET state = 'paused_edit', updated_at = ?
-            WHERE state IN ('pending_dispatch', 'queued')`,
-        )
-        .bind(now.toISOString()),
-      db
-        .prepare(
-          `UPDATE bookmarks
-              SET ai_state = 'paused_edit'
-            WHERE ai_state = 'pending'`,
-        ),
-    ]);
-    return [];
-  }
-
-  await db.batch([
-    db
-      .prepare(
-        `UPDATE app_state
-            SET edit_mode_state = 'inactive',
-                edit_mode_session_id = NULL,
-                edit_mode_expires_at = NULL,
-                organization_generation = organization_generation + 1,
-                updated_at = ?
-          WHERE id = 1 AND edit_mode_session_id = ?`,
-      )
-      .bind(now.toISOString(), sessionId),
-    db
-      .prepare(
-        `UPDATE background_jobs
-            SET state = 'pending_dispatch',
-                organization_generation = (
-                  SELECT organization_generation FROM app_state WHERE id = 1
-                ),
-                updated_at = ?
-          WHERE state = 'paused_edit'
-            AND (SELECT owner_ai_paused FROM app_state WHERE id = 1) = 0`,
-      )
-      .bind(now.toISOString()),
-    db
-      .prepare(
-        `UPDATE bookmarks
-            SET ai_state = 'pending'
-          WHERE ai_state = 'paused_edit'
-            AND (SELECT owner_ai_paused FROM app_state WHERE id = 1) = 0`,
-      ),
-  ]);
-  const jobs = await db
-    .prepare("SELECT id FROM background_jobs WHERE state = 'pending_dispatch' ORDER BY created_at")
-    .all<{ id: string }>();
-  return jobs.results.map((job) => job.id);
-}
-
 export async function setOwnerPause(
   db: D1Database,
   paused: boolean,
@@ -761,11 +1024,7 @@ export async function setOwnerPause(
                 SET state = 'paused_owner', updated_at = ?
               WHERE state IN ('pending_dispatch', 'queued', 'paused_edit')`
           : `UPDATE background_jobs
-                SET state = CASE
-                  WHEN (SELECT edit_mode_state FROM app_state WHERE id = 1) = 'inactive'
-                    THEN 'pending_dispatch'
-                  ELSE 'paused_edit'
-                END,
+                SET state = 'pending_dispatch',
                     updated_at = ?
               WHERE state = 'paused_owner'`,
       )
@@ -777,11 +1036,7 @@ export async function setOwnerPause(
                 SET ai_state = 'paused_owner'
               WHERE ai_state IN ('pending', 'paused_edit')`
           : `UPDATE bookmarks
-                SET ai_state = CASE
-                  WHEN (SELECT edit_mode_state FROM app_state WHERE id = 1) = 'inactive'
-                    THEN 'pending'
-                  ELSE 'paused_edit'
-                END
+                SET ai_state = 'pending'
               WHERE ai_state = 'paused_owner'`,
       ),
   ]);

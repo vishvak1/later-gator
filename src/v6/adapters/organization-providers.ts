@@ -83,7 +83,7 @@ export async function runOrganizationProvider(
       return await env.AI.run(model, {
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_schema", json_schema: jsonSchema },
-        max_tokens: 700,
+        max_tokens: 1024,
         temperature: 0.1,
       });
     } catch (error) {
@@ -110,7 +110,7 @@ export async function runOrganizationProvider(
       body: JSON.stringify({
         model,
         input: prompt,
-        max_output_tokens: 700,
+        max_output_tokens: 1024,
         store: false,
         text: {
           format: {
@@ -144,7 +144,7 @@ export async function runOrganizationProvider(
     },
     body: JSON.stringify({
       model,
-      max_tokens: 700,
+      max_tokens: 1024,
       messages: [{ role: "user", content: prompt }],
       output_config: { format: { type: "json_schema", schema: jsonSchema } },
     }),

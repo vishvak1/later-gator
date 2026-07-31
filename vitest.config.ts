@@ -9,7 +9,9 @@ export default defineConfig({
     cloudflareTest({
       wrangler: { configPath: "./wrangler.test.jsonc" },
       miniflare: {
-        bindings: { TEST_MIGRATIONS: migrations },
+        // BOOTSTRAP_PASSWORD is pinned so a developer's .dev.vars cannot leak
+        // into the test environment.
+        bindings: { TEST_MIGRATIONS: migrations, BOOTSTRAP_PASSWORD: "test-pass" },
       },
     }),
   ],

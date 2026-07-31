@@ -30,6 +30,9 @@
   ],
   "images": { "binding": "IMAGES" },
   "ai": { "binding": "AI" },
+  "vectorize": [
+    { "binding": "VECTORS", "index_name": "later-gator-vectors", "remote": true }
+  ],
   "queues": {
     "producers": [
       { "binding": "BACKGROUND_QUEUE", "queue": "later-gator-background" }

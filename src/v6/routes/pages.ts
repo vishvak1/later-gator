@@ -7,7 +7,7 @@ const PAGE_HEADERS = {
   "x-content-type-options": "nosniff",
 } satisfies HeadersInit;
 
-const ASSET_VERSION = "20260730-library-rework";
+const ASSET_VERSION = "20260731-raindrop-style";
 
 function page(title: string, pageName: string, body: string, status = 200): Response {
   return new Response(
@@ -185,7 +185,7 @@ export function dashboardPage(): Response {
       </aside>
       <main class="library">
         <header class="library-header">
-          <div><p class="eyebrow">Your knowledge garden</p><h1 id="libraryTitle">All Bookmarks</h1><p id="libraryCount" class="muted"></p></div>
+          <div><h1 id="libraryTitle">All Bookmarks</h1><p id="libraryCount" class="muted"></p></div>
         </header>
         <section class="discovery-bar" aria-label="Search and filter bookmarks">
           <div class="search-shell">
@@ -194,6 +194,10 @@ export function dashboardPage(): Response {
             <div id="tagSuggestions" class="suggestion-menu" hidden></div>
           </div>
           <button id="filterButton" class="secondary filter-button" type="button">Sort &amp; filter <span id="filterCount"></span></button>
+          <div class="view-toggle" role="group" aria-label="View mode">
+            <button id="viewGridButton" type="button" class="active" aria-label="Grid view">▦</button>
+            <button id="viewListButton" type="button" aria-label="List view">☰</button>
+          </div>
         </section>
         <div id="searchTagChips" class="selected-tags"></div>
         <p id="libraryStatus" class="status" role="status"></p>

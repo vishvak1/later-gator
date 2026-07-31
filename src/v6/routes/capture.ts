@@ -165,6 +165,23 @@ export async function captureBookmark(
     requestHash,
   );
   if (repeated !== null) return repeated;
+  const activeImport = await env.DB
+    .prepare(
+      `SELECT 1
+         FROM import_sessions
+        WHERE status IN ('preview', 'committing')
+        LIMIT 1`,
+    )
+    .first();
+  if (activeImport !== null) {
+    return cors(
+      apiError(
+        409,
+        "import_in_progress",
+        "The library is read-only until the active import finishes.",
+      ),
+    );
+  }
 
   try {
     const sourceInput =

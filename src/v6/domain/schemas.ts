@@ -161,6 +161,10 @@ export const backgroundMessageSchema = z.union([
     version: z.literal(1),
     type: z.literal("dispatch_pending"),
   }),
+  z.strictObject({
+    version: z.literal(1),
+    type: z.literal("embed_pending"),
+  }),
 ]);
 
 export type BackgroundMessage = z.infer<typeof backgroundMessageSchema>;

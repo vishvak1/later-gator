@@ -84,6 +84,12 @@ import {
 import { handleMcp, rotateMcpCredential } from "./routes/mcp";
 import { sha256Base64 } from "./security/encoding";
 import { repairOrganizationBacklog } from "./application/automation";
+import {
+  deleteBookmarkVectors,
+  hasEmbedBacklog,
+  processEmbedBacklog,
+  semanticBookmarkIds,
+} from "./application/embeddings";
 
 interface RouteContext {
   request: Request;
@@ -342,6 +348,9 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     if (await repairOrganizationBacklog(env)) {
       await env.BACKGROUND_QUEUE.send({ version: 1, type: "dispatch_pending" }).catch(() => undefined);
     }
+    if (await hasEmbedBacklog(env).catch(() => false)) {
+      await env.BACKGROUND_QUEUE.send({ version: 1, type: "embed_pending" }).catch(() => undefined);
+    }
     return json({ ok: true, state: await getBootstrapState(env.DB) });
   }
 
@@ -404,7 +413,11 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
       return apiError(400, "invalid_filters", "One or more bookmark filters are invalid.");
     }
     try {
-      const pageResult = await listBookmarkPage(env.DB, parsed.data);
+      const semanticIds =
+        parsed.data.q !== undefined && parsed.data.q !== ""
+          ? await semanticBookmarkIds(env, parsed.data.q)
+          : null;
+      const pageResult = await listBookmarkPage(env.DB, parsed.data, semanticIds);
       return json({ ok: true, ...pageResult });
     } catch (error) {
       if (error instanceof Error && error.message === "invalid_bookmark_cursor") {
@@ -536,6 +549,7 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
           "This bookmark changed. Reload it and try again.",
         );
       }
+      await env.BACKGROUND_QUEUE.send({ version: 1, type: "embed_pending" }).catch(() => undefined);
       return json({ ok: true, bookmark: result });
     }
   }
@@ -955,6 +969,7 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     if (bookmarkId === undefined || !(await permanentlyDeleteBookmark(env, bookmarkId))) {
       return apiError(404, "not_found", "Trashed bookmark not found.");
     }
+    await deleteBookmarkVectors(env, [bookmarkId]).catch(() => undefined);
     return json({ ok: true });
   }
 
@@ -1126,6 +1141,13 @@ async function handleQueue(batch: MessageBatch, env: Env): Promise<void> {
       }
       if ("type" in parsed.data && parsed.data.type === "reset_storage") {
         await processResetStorage(env);
+        message.ack();
+        continue;
+      }
+      if ("type" in parsed.data && parsed.data.type === "embed_pending") {
+        if (await processEmbedBacklog(env)) {
+          await env.BACKGROUND_QUEUE.send({ version: 1, type: "embed_pending" });
+        }
         message.ack();
         continue;
       }

@@ -68,7 +68,8 @@ Cloudflare resources:
 | D1 | `DB` | Bookmarks, tags, folders, relationships, setup, jobs, imports, sessions, and encrypted settings |
 | Workers KV | `THUMBNAILS` | Private optimized thumbnail values |
 | Queue | `BACKGROUND_QUEUE` | Durable ID-only notification that a stored bookmark job is ready |
-| Workers AI | `AI` | Default organization provider |
+| Workers AI | `AI` | Default organization provider and `@cf/baai/bge-m3` embeddings |
+| Vectorize | `VECTORS` | Bookmark embedding index powering semantic search |
 | Static assets | `ASSETS` | Dashboard, setup, and settings frontend |
 | Worker secret | `BOOTSTRAP_PASSWORD` | Initial user-supplied Later Gator password used only to initialize application authentication |
 
@@ -85,7 +86,6 @@ Not required:
 - Cron discovery.
 - Workflows.
 - Durable Objects.
-- A vector database.
 - Public Workers KV access.
 - Email.
 
@@ -122,7 +122,7 @@ This provides sequential AI work, delivery retries, and continuation after the d
 | Authentication | Password-wrapped data-encryption key plus opaque D1 sessions | Allows in-app password change without exposing provider keys |
 | Capture authentication | Separate hashed bearer credentials | Extension and Shortcut never receive the password or MCP secret |
 | AI output | Provider structured output plus Zod validation | Provider constraints help, but application validation remains mandatory |
-| Search | Indexed SQL plus D1 FTS5 | Avoids a vector database in v6 |
+| Search | Indexed SQL plus D1 FTS5 plus Vectorize embeddings | Hybrid exact and semantic retrieval; semantic failures degrade to FTS |
 | Thumbnail capture | Imported cover or page metadata first; screenshot fallback off by default | Protects free-tier browser execution |
 
 ---
@@ -408,6 +408,7 @@ type BackgroundMessage =
   | { version: 1; type: "import"; importId: string }
   | { version: 1; type: "import_thumbnails"; importId: string }
   | { version: 1; type: "dispatch_pending" }
+  | { version: 1; type: "embed_pending" }
   | { version: 1; type: "reset_storage" };
 ```
 
@@ -1855,7 +1856,7 @@ Before a destructive migration:
 - One Queue remains even though Raindrop leases are removed; durable continuation is worth one small transport dependency.
 - Queue and D1 cannot commit atomically; the visible `pending_dispatch` state makes that boundary recoverable.
 - Sequential processing favors consistency over throughput.
-- D1 FTS favors simple private search over semantic search.
+- Vectorize semantic search is additive: embedding or query failures silently degrade to FTS-only results.
 - A password-derived wrapping key makes password security important; the application cannot recover a forgotten password or decrypt provider keys without it.
 - Private thumbnail delivery costs Worker/Workers KV requests but avoids public object URLs.
 - Browser screenshots are omitted from the current deployment; thumbnail

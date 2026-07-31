@@ -496,6 +496,12 @@ Dashboard search covers:
 - Note.
 - Tags.
 
+Text search combines exact full-text matching with embedding-based semantic
+matching over the same library, so a query such as `ml` also surfaces
+machine-learning bookmarks whose text never contains the literal term. Semantic
+matching degrades silently to full-text matching when the embedding service is
+unavailable; search never fails because embeddings are unavailable.
+
 Typing `#` in the search box opens a dynamic, narrowing tag picker. Selecting a
 suggestion applies that tag as a removable search filter without requiring the
 user to know its exact spelling. An empty `#` query shows every active tag.
@@ -1608,7 +1614,6 @@ Measure:
 - User-uploaded PDF, video, or arbitrary binary-file storage beyond one supported thumbnail per bookmark.
 - Full archived copies of web pages.
 - A native iOS, iPadOS, Android, macOS, Windows, or Linux application.
-- Vector database or embedding-based semantic search.
 - AI bulk rewriting of already organized bookmarks.
 - Automatic duplicate merging.
 - Arbitrary bookmark mutation through MCP.

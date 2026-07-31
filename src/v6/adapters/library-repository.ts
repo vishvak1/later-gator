@@ -360,6 +360,7 @@ function decodeBookmarkCursor(
 export async function listBookmarkPage(
   db: D1Database,
   query: BookmarkListQuery,
+  semanticIds?: string[] | null,
 ): Promise<BookmarkPage> {
   const predicates: string[] = [];
   const bindings: unknown[] = [];
@@ -416,12 +417,37 @@ export async function listBookmarkPage(
   }
   if (query.q !== undefined && query.q !== "") {
     const terms = query.q.match(/[\p{L}\p{N}_-]+/gu)?.slice(0, 12) ?? [];
+    const textClauses: string[] = [];
     if (terms.length > 0) {
-      predicates.push(
+      textClauses.push(
         "b.id IN (SELECT bookmark_id FROM bookmarks_fts WHERE bookmarks_fts MATCH ?)",
       );
       bindings.push(terms.map((term) => `"${term.replaceAll('"', '""')}"*`).join(" AND "));
+      // Tags are not in the FTS index; "machine learning" must still match a
+      // bookmark tagged machine-learning.
+      textClauses.push(
+        `(${terms
+          .map(
+            () =>
+              "EXISTS (SELECT 1 FROM bookmark_tags qbt JOIN tags qt ON qt.id = qbt.tag_id WHERE qbt.bookmark_id = b.id AND qt.status = 'active' AND qt.normalized_name LIKE ? ESCAPE '\\')",
+          )
+          .join(" AND ")})`,
+      );
+      for (const term of terms) {
+        bindings.push(
+          `%${term
+            .toLocaleLowerCase("en-US")
+            .replaceAll("\\", "\\\\")
+            .replaceAll("%", "\\%")
+            .replaceAll("_", "\\_")}%`,
+        );
+      }
     }
+    if (semanticIds !== null && semanticIds !== undefined && semanticIds.length > 0) {
+      textClauses.push("b.id IN (SELECT value FROM json_each(?))");
+      bindings.push(JSON.stringify(semanticIds.slice(0, 50)));
+    }
+    if (textClauses.length > 0) predicates.push(`(${textClauses.join(" OR ")})`);
   }
 
   const sortColumn = SORT_COLUMNS[query.sort];
@@ -488,8 +514,9 @@ export async function listBookmarkPage(
 export async function listBookmarks(
   db: D1Database,
   query: BookmarkListQuery,
+  semanticIds?: string[] | null,
 ): Promise<BookmarkRow[]> {
-  return (await listBookmarkPage(db, query)).bookmarks;
+  return (await listBookmarkPage(db, query, semanticIds)).bookmarks;
 }
 
 export async function updateBookmark(

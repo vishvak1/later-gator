@@ -6,6 +6,9 @@ import {
 } from "../adapters/organization-providers";
 import { deterministicFolderForHostname } from "../domain/folders";
 import { normalizeTagName } from "../domain/tags";
+import { createBookmark, dispatchJob, relateBookmarks } from "../adapters/library-repository";
+import { upsertBookmarkVector } from "./embeddings";
+import { resolvePageContext, type PageContext } from "./page-content";
 import { findPageThumbnail, ingestThumbnailCandidate } from "./thumbnails";
 
 const organizationResultSchema = z.strictObject({
@@ -78,6 +81,8 @@ interface JobContext {
   current_generation: number;
   provider_status: string;
   personal_instructions: string | null;
+  career_context: string | null;
+  aspiration_context: string | null;
 }
 
 interface TagRow {
@@ -111,7 +116,12 @@ function parseOrganizationResult(payload: unknown): OrganizationResult | null {
   return parsed.success ? parsed.data : null;
 }
 
-function buildPrompt(context: JobContext, tags: TagRow[], correction: boolean): string {
+function buildPrompt(
+  context: JobContext,
+  tags: TagRow[],
+  pageContext: PageContext | null,
+  correction: boolean,
+): string {
   const registry = tags
     .filter((tag) => tag.status === "active")
     .slice(0, 200)
@@ -122,30 +132,74 @@ function buildPrompt(context: JobContext, tags: TagRow[], correction: boolean): 
     .slice(0, 200)
     .map((tag) => tag.display_name)
     .join(", ");
-  return [
-    "Organize this bookmark for a private personal library.",
-    "Folders classify source type. Tags classify subject matter.",
-    "The active tag registry is a convenience, not a closed taxonomy.",
-    "Reuse an active tag only when it accurately fits. Create precise new subject tags whenever the bookmark introduces a topic that is missing from the registry.",
-    "Do not force bookmarks into the user's setup interests. For example, create tags such as history or religion when the content calls for them.",
-    "Every tag must be lowercase and contain one word or hyphen-separated words only.",
-    "Prefer a useful mix of broad and specific subject tags. Never return a retired tag.",
+  const xPost = pageContext?.xPost ?? null;
+  const rules = [
+    "You organize a private personal bookmark library so its owner can retrieve anything months later.",
     "Return only the requested JSON object.",
+    "",
+    "Description rules:",
+    "- Write 2 to 4 full sentences (roughly 40 to 90 words) describing what this page actually contains and why it is worth returning to.",
+    "- Name the concrete subjects, technologies, tools, people, and organizations involved so a search for any of them finds this bookmark.",
+    "- Never open with filler such as 'This is a bookmark about' or 'This page contains'. State the substance directly.",
+    "- For social posts, summarize the post's actual claim or content and name the author when known, including what any linked article or resource is.",
+    "",
+    "Tag rules:",
+    "- Folders classify source type. Tags classify subject matter.",
+    "- Choose 3 to 6 tags mixing one or two broad subjects with precise specifics.",
+    "- The active tag registry is a convenience, not a closed taxonomy.",
+    "- Reuse an active tag only when it accurately fits. Create precise new subject tags whenever the bookmark introduces a topic that is missing from the registry.",
+    "- Do not force bookmarks into the user's setup interests. For example, create tags such as history or religion when the content calls for them.",
+    "- Every tag must be lowercase and contain one word or hyphen-separated words only.",
+    "- Never return a retired tag.",
+    "",
+    "Folder rules:",
+    "- Social Posts: posts on X, Reddit, LinkedIn, and similar social platforms.",
+    "- Articles: news stories, essays, and blog posts.",
+    "- Videos & Talks: video pages and recorded talks.",
+    "- Code: repositories and code hosting.",
+    "- Docs & Reference: official documentation and reference material.",
+    "- Papers: research papers and preprints.",
+    "- Websites & Apps: tools, products, homepages, and anything without a better fit.",
+    "",
+  ];
+  const details = [
     `Title: ${context.title.slice(0, 1000)}`,
     `URL: ${context.url.slice(0, 8192)}`,
+    pageContext?.pageTitle === null || pageContext?.pageTitle === undefined
+      ? ""
+      : `Page title: ${pageContext.pageTitle}`,
+    pageContext?.siteName === null || pageContext?.siteName === undefined
+      ? ""
+      : `Site: ${pageContext.siteName}`,
+    pageContext?.metaDescription === null || pageContext?.metaDescription === undefined
+      ? ""
+      : `Page meta description: ${pageContext.metaDescription}`,
+    pageContext?.excerpt === null || pageContext?.excerpt === undefined
+      ? ""
+      : `Page content excerpt: ${pageContext.excerpt}`,
+    xPost === null ? "" : `X post author: ${xPost.author ?? "unknown"}`,
+    xPost === null ? "" : `X post text: ${xPost.text}`,
+    xPost === null || xPost.externalUrls.length === 0
+      ? ""
+      : `Links inside the X post: ${xPost.externalUrls.join(", ")}`,
     context.description === null ? "" : `Existing description: ${context.description.slice(0, 5000)}`,
     context.note === null ? "" : `User note: ${context.note.slice(0, 5000)}`,
     `Active tag registry: ${registry}`,
     retired.length === 0 ? "" : `Retired tags that must not be used: ${retired}`,
+    context.career_context === null || context.career_context.length === 0
+      ? ""
+      : `The owner's current work: ${context.career_context.slice(0, 2000)}`,
+    context.aspiration_context === null || context.aspiration_context.length === 0
+      ? ""
+      : `The owner is working toward: ${context.aspiration_context.slice(0, 2000)}`,
     context.personal_instructions === null
       ? ""
       : `Personal instructions: ${context.personal_instructions.slice(0, 5000)}`,
     correction
       ? "The previous answer failed validation. Correct it and return exactly one valid JSON object."
       : "",
-  ]
-    .filter((line) => line.length > 0)
-    .join("\n");
+  ];
+  return [...rules, ...details.filter((line) => line.length > 0)].join("\n");
 }
 
 async function loadContext(db: D1Database, jobId: string): Promise<JobContext | null> {
@@ -173,7 +227,9 @@ async function loadContext(db: D1Database, jobId: string): Promise<JobContext | 
          s.owner_ai_paused,
          s.organization_generation AS current_generation,
          ps.operational_status AS provider_status,
-         p.personal_instructions
+         p.personal_instructions,
+         p.career_context,
+         p.aspiration_context
        FROM background_jobs j
        JOIN bookmarks b ON b.id = j.bookmark_id
        JOIN app_state s ON s.id = 1
@@ -350,6 +406,34 @@ async function applyResult(
   return applied?.revision === nextRevision && applied.ai_state === "complete";
 }
 
+/**
+ * X handling: an X post and the article or resource it links to become two
+ * separate bookmarks connected through a `related` relationship. The linked
+ * destination starts in Unsorted and receives its own organization job.
+ */
+async function linkXPostDestinations(
+  env: Env,
+  bookmarkId: string,
+  urls: string[],
+): Promise<void> {
+  for (const url of urls) {
+    try {
+      const linked = await createBookmark(
+        env.DB,
+        { url, folderId: "folder_unsorted", organizationPolicy: "full" },
+        "linked",
+      );
+      if (linked.bookmark.id === bookmarkId) continue;
+      await relateBookmarks(env.DB, bookmarkId, linked.bookmark.id);
+      if (linked.jobId !== null && "BACKGROUND_QUEUE" in env) {
+        await dispatchJob(env.DB, env.BACKGROUND_QUEUE, linked.jobId);
+      }
+    } catch {
+      // The X post itself is already organized; a failed link never fails the job.
+    }
+  }
+}
+
 export async function organizeBookmarkJob(
   env: Env,
   jobId: string,
@@ -439,6 +523,9 @@ export async function organizeBookmarkJob(
         ORDER BY status, usage_count DESC, normalized_name`,
     )
     .all<TagRow>();
+  const environment = (env as { ENVIRONMENT?: string }).ENVIRONMENT;
+  const remoteAllowed = environment !== undefined && environment !== "test";
+  const pageContext = remoteAllowed ? await resolvePageContext(context.url) : null;
   const thumbnailCandidate =
     "IMAGES" in env ? await findPageThumbnail(context.url).catch(() => null) : null;
 
@@ -449,46 +536,16 @@ export async function organizeBookmarkJob(
         env,
         context.provider as ProviderName,
         context.model,
-        buildPrompt(context, tags.results, attempt > 0),
+        buildPrompt(context, tags.results, pageContext, attempt > 0),
         organizationJsonSchema,
       );
       result = parseOrganizationResult(payload);
     }
   } catch (error) {
-    if (error instanceof OrganizationProviderError && error.kind === "allocation") {
-      const now = new Date().toISOString();
-      await env.DB.batch([
-        env.DB
-          .prepare(
-            `UPDATE provider_settings
-                SET operational_status = 'waiting', last_safe_error_code = ?, updated_at = ?
-              WHERE id = 1`,
-          )
-          .bind(error.safeCode, now),
-        env.DB
-          .prepare(
-            `UPDATE background_jobs
-                SET state = 'waiting_provider', last_safe_error_code = ?, updated_at = ?
-              WHERE state IN ('pending_dispatch', 'queued')`,
-          )
-          .bind(error.safeCode, now),
-        env.DB
-          .prepare(
-            `UPDATE bookmarks
-                SET ai_state = 'waiting_provider'
-              WHERE ai_state = 'pending'`,
-          ),
-      ]);
-      await markState(
-        env.DB,
-        context,
-        "waiting_provider",
-        "waiting_provider",
-        error.safeCode,
-      );
-      return "waiting_provider";
-    }
-    if (error instanceof OrganizationProviderError && error.kind === "systemic") {
+    if (
+      error instanceof OrganizationProviderError &&
+      (error.kind === "allocation" || error.kind === "systemic")
+    ) {
       const now = new Date().toISOString();
       await env.DB.batch([
         env.DB
@@ -582,6 +639,10 @@ export async function organizeBookmarkJob(
           "page_metadata",
         );
       }
+      if (pageContext?.xPost !== null && pageContext?.xPost !== undefined) {
+        await linkXPostDestinations(env, context.bookmark_id, pageContext.xPost.externalUrls);
+      }
+      await upsertBookmarkVector(env, context.bookmark_id).catch(() => undefined);
       return "completed";
     }
     const current = await loadContext(env.DB, context.job_id);

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { createMcpHandler } from "agents/mcp";
 import { z } from "zod";
 import { getBookmarkDetails, listBookmarks } from "../adapters/library-repository";
+import { semanticBookmarkIds } from "../application/embeddings";
 import { sha256Base64, randomBytes, toBase64 } from "../security/encoding";
 
 const searchInputSchema = z.strictObject({
@@ -89,6 +90,8 @@ export async function handleMcp(
       annotations: { readOnlyHint: true },
     },
     async (input) => {
+      const semanticIds =
+        input.text === undefined ? null : await semanticBookmarkIds(env, input.text);
       const rows = await listBookmarks(env.DB, {
         ...(input.text === undefined ? {} : { q: input.text }),
         ...(input.tags?.[0] === undefined ? {} : { tag: input.tags[0] }),
@@ -102,7 +105,7 @@ export async function handleMcp(
         direction: "desc",
         includeTrash: "false",
         limit: input.limit,
-      });
+      }, semanticIds);
       return toolResult(
         rows.map((row) => ({
           id: row.id,

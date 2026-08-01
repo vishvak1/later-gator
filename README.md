@@ -18,13 +18,26 @@ connects to, changes, or deletes data in your Raindrop account.
    Sixteen or more characters is strongly recommended, and it should be saved
    somewhere safe. Login does not impose a 10-character minimum so an existing
    deployment password remains usable.
-4. Finish the deployment and open the Worker URL.
-5. Sign in. Later Gator automatically sends an unfinished installation to
+4. In the **Vectorize** section, enter these two values exactly:
+
+   | Field | Value |
+   |---|---|
+   | Dimensions | `1024` |
+   | Metric | `cosine` |
+
+   Cloudflare's deploy form cannot read these from this repository
+   ([workers-sdk#14075](https://github.com/cloudflare/workers-sdk/issues/14075)),
+   so they are the only technical values you have to type. They match the
+   `@cf/baai/bge-large-en-v1.5` embedding model used for search and **cannot be
+   changed after the index is created** — a wrong value here means semantic
+   search never returns results, and the index has to be deleted and recreated.
+5. Finish the deployment and open the Worker URL.
+6. Sign in. Later Gator automatically sends an unfinished installation to
    `/setup`; after setup it sends you to `/dashboard`.
 
 Cloudflare provisions the Worker, D1 database, private Workers KV thumbnail namespace,
-Workers AI binding, image transformation binding, and sequential background
-Queue. There is no scheduled Cron trigger.
+Workers AI binding, image transformation binding, Vectorize search index, and
+sequential background Queue. There is no scheduled Cron trigger.
 
 ## Setup
 
@@ -69,7 +82,14 @@ preserves thumbnail aspect ratios in a masonry layout.
   job is refreshed against the new revision instead of being orphaned.
 - Settings shows organized, waiting, processing, provider-wait, review, and
   failed counts with live AI-sorting progress.
-- X and Twitter URLs always route to Social Posts.
+- Search matches meaning as well as words. Searching `ml` finds machine-learning
+  bookmarks, and `machine learning` matches the `machine-learning` tag, because
+  every bookmark is embedded into the Vectorize index alongside the lexical
+  full-text index. If embeddings are unavailable, search quietly falls back to
+  word matching instead of failing.
+- X and Twitter URLs always route to Social Posts. When an X post links out to an
+  article, Later Gator saves that destination as its own bookmark and relates the
+  two instead of replacing the post URL.
 
 ## Capture and connections
 

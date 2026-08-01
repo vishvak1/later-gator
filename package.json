@@ -10,7 +10,7 @@
   "scripts": {
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "build": "wrangler deploy --dry-run --outdir dist",
-    "check": "npm run types:check && npm run lint && npm run test",
+    "check": "npm run build:web && npm run types:check && npm run lint && npm run test",
     "deploy": "npm run db:migrate:remote && wrangler deploy",
     "dev": "wrangler dev",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
@@ -20,7 +20,11 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types",
-    "types:check": "wrangler types --check && npm run typecheck"
+    "types:check": "wrangler types --check && npm run typecheck",
+    "build:web": "node scripts/build-web.mjs",
+    "predev": "npm run build:web",
+    "prebuild": "npm run build:web",
+    "typecheck:web": "tsc -p web/tsconfig.json --noEmit"
   },
   "cloudflare": {
     "bindings": {
@@ -35,6 +39,9 @@
       },
       "AI": {
         "description": "Runs organization inference when Cloudflare Workers AI is selected."
+      },
+      "VECTORS": {
+        "description": "Stores bookmark embeddings so search matches meaning, not just words. Cloudflare cannot pre-fill these two fields, so enter them exactly: **Dimensions** `1024` and **Metric** `cosine`. They must match the `@cf/baai/bge-large-en-v1.5` embedding model and cannot be changed after the index is created."
       },
       "BACKGROUND_QUEUE": {
         "description": "Carries opaque job IDs only and invokes one sequential background job at a time."

@@ -647,21 +647,21 @@ describe("v6 Worker foundation", () => {
     expect(preview.status, await preview.clone().text()).toBe(201);
     const previewBody = await preview.json<{ preview: { importId: string } }>();
 
-    const readOnlyMutation = await exports.default.fetch(
+    // A staged preview is unconfirmed work and must NOT hold the library
+    // read-only. Previously it did, so an abandoned preview bricked the
+    // deployment until its 24-hour expiry.
+    const mutationDuringPreview = await exports.default.fetch(
       "https://later-gator.test/api/bookmarks",
       {
         method: "POST",
         headers: mutationHeaders(client),
         body: JSON.stringify({
-          url: "https://example.com/blocked-during-import",
+          url: "https://example.com/allowed-during-preview",
           organizationPolicy: "none",
         }),
       },
     );
-    expect(readOnlyMutation.status).toBe(409);
-    expect(await readOnlyMutation.json()).toMatchObject({
-      error: { code: "import_in_progress" },
-    });
+    expect(mutationDuringPreview.status).toBe(201);
 
     const commit = await exports.default.fetch(
       `https://later-gator.test/api/imports/${previewBody.preview.importId}/commit`,
@@ -796,6 +796,59 @@ describe("v6 Worker foundation", () => {
     expect(existingOutcome).toEqual({ safe_error_code: "existing_library_skipped" });
   });
 
+  it("lets the user cancel a wedged import even after its preview expired", async () => {
+    const client = await login();
+    await finishSetup(client);
+    const csv = [
+      "id,title,note,excerpt,url,tags,created,cover,highlights,favorite",
+      'w-1,"Wedged row","","","https://example.com/wedged","",46225,"","","false"',
+    ].join("\n");
+    const form = new FormData();
+    form.set("option", "reorganize");
+    form.set("file", new File([csv], "wedged.csv", { type: "text/csv" }));
+    const preview = await exports.default.fetch("https://later-gator.test/api/imports/preview", {
+      method: "POST",
+      headers: {
+        cookie: client.cookie,
+        origin: "https://later-gator.test",
+        "x-csrf-token": client.csrf,
+      },
+      body: form,
+    });
+    const { preview: staged } = await preview.json<{ preview: { importId: string } }>();
+
+    // Simulate the wedge: a commit that died mid-flight, then expiry elapsed.
+    await env.DB
+      .prepare(
+        "UPDATE import_sessions SET status = 'committing', expires_at = ? WHERE id = ?",
+      )
+      .bind(new Date(Date.now() - 60_000).toISOString(), staged.importId)
+      .run();
+
+    // An expired hold must not keep the library read-only.
+    const mutation = await exports.default.fetch("https://later-gator.test/api/bookmarks", {
+      method: "POST",
+      headers: mutationHeaders(client),
+      body: JSON.stringify({
+        url: "https://example.com/after-wedge",
+        organizationPolicy: "none",
+      }),
+    });
+    expect(mutation.status).toBe(201);
+
+    // Cancel is the escape hatch and must succeed on a stuck, expired session.
+    const cancelled = await exports.default.fetch(
+      `https://later-gator.test/api/imports/${staged.importId}/cancel`,
+      { method: "POST", headers: mutationHeaders(client), body: "{}" },
+    );
+    expect(cancelled.status).toBe(200);
+    const finalState = await env.DB
+      .prepare("SELECT status FROM import_sessions WHERE id = ?")
+      .bind(staged.importId)
+      .first();
+    expect(finalState).toEqual({ status: "cancelled" });
+  });
+
   it("serves standard library dialogs and expires unauthenticated API cookies", async () => {
     const anonymousMissingPage = await exports.default.fetch(
       new Request("https://later-gator.test/favicon.ico", { redirect: "manual" }),
@@ -822,21 +875,14 @@ describe("v6 Worker foundation", () => {
     });
     expect(expired.status).toBe(401);
     expect(expired.headers.getSetCookie().join(";")).toContain("Max-Age=0");
-    const script = await exports.default.fetch("https://later-gator.test/app.js");
-    expect(script.headers.get("cache-control")).toBe("no-cache");
-    const scriptText = await script.text();
-    expect(scriptText).toContain('response.status === 401');
-    expect(scriptText).toContain('filter(folder => folder.slug !== "imports")');
-    expect(scriptText).not.toContain(".slice(0, 8);");
-    expect(scriptText).toContain("renderAutomationProgress");
-    expect(scriptText).toContain('importState.status === "committing"');
-    expect(scriptText).toContain("Requesting another safe import pass");
-    const stylesheet = await exports.default.fetch("https://later-gator.test/app.css");
-    expect(stylesheet.headers.get("cache-control")).toBe("no-cache");
-    const stylesheetText = await stylesheet.text();
-    expect(stylesheetText).toContain("[hidden] { display: none !important; }");
-    expect(stylesheetText).toContain(".busy-overlay.import-progress");
-    expect(stylesheetText).toContain("body.import-readonly #addBookmarkButton");
+    // The frontend is now built to content-hashed static assets, so the page
+    // must reference them and the asset layer must serve them.
+    const assetPage = await exports.default.fetch("https://later-gator.test/dashboard", {
+      headers: { cookie: client.cookie },
+    });
+    const dashboardHtml = await assetPage.text();
+    expect(dashboardHtml).toMatch(/<link rel="stylesheet" href="\/assets\/app\.[A-Z0-9]+\.css">/u);
+    expect(dashboardHtml).toMatch(/<script type="module" src="\/assets\/main\.[A-Z0-9]+\.js"><\/script>/u);
   });
 
   it("supports permanent-folder manual saves, export, trash, and permanent deletion", async () => {

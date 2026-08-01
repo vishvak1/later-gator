@@ -37,8 +37,8 @@ import {
   loginPage,
   settingsPage,
   setupPage,
+  themeFromCookie,
 } from "./routes/pages";
-import { appCss, appJs } from "./routes/assets";
 import { apiError, json, readJson, redirect } from "./routes/responses";
 import { unlockOrInitializeVault } from "./security/password-vault";
 import {
@@ -84,6 +84,8 @@ import {
 import { handleMcp, rotateMcpCredential } from "./routes/mcp";
 import { sha256Base64 } from "./security/encoding";
 import { repairOrganizationBacklog } from "./application/automation";
+import { ASSET_MANIFEST } from "./generated/asset-manifest";
+import { importHoldsAi, importHoldsLibrary } from "./domain/import-state";
 import {
   deleteBookmarkVectors,
   hasEmbedBacklog,
@@ -168,7 +170,7 @@ async function login(request: Request, env: Env): Promise<Response> {
     } else {
       password = await parseFormPassword(request);
       if (password === null || password.length === 0 || password.length > 1024) {
-        return loginPage("invalid");
+        return loginPage("invalid", themeFromCookie(request));
       }
     }
   } catch {
@@ -192,14 +194,14 @@ async function login(request: Request, env: Env): Promise<Response> {
         "Secure authentication is temporarily unavailable.",
       );
     }
-    return loginPage("unavailable");
+    return loginPage("unavailable", themeFromCookie(request));
   }
   if (unlocked === null) {
     await recordLoginFailure(request, env.DB);
     if (request.headers.get("content-type")?.includes("application/json") === true) {
       return apiError(401, "invalid_password", "That password was not accepted.");
     }
-    return loginPage("invalid");
+    return loginPage("invalid", themeFromCookie(request));
   }
   await env.DB
     .prepare("DELETE FROM login_attempts WHERE client_hash = ?")
@@ -248,16 +250,7 @@ function queryObject(url: URL): Record<string, string> {
 }
 
 async function importIsActive(db: D1Database): Promise<boolean> {
-  return (
-    (await db
-      .prepare(
-        `SELECT 1
-           FROM import_sessions
-          WHERE status IN ('preview', 'committing')
-          LIMIT 1`,
-      )
-      .first()) !== null
-  );
+  return importHoldsAi(db);
 }
 
 function csvCell(value: unknown): string {
@@ -330,7 +323,7 @@ function installationGuide(kind: "chrome" | "firefox" | "ios"): Response {
       ? `<h1>Install the iOS Share Sheet Shortcut</h1><ol><li>In Later Gator Settings, generate an iOS connection.</li><li>Create a Shortcut that accepts URLs from the Share Sheet.</li><li>Add “Get Contents of URL”: POST the shared URL and a generated UUID as JSON to the displayed endpoint.</li><li>Add the Authorization header as Bearer plus the displayed token.</li><li>If result is saved, show “Saved to Later Gator”; if already_saved, show “Already saved in Later Gator”; otherwise show “Failed to save to Later Gator”.</li></ol><p>The maintained request template is in <code>shortcuts/ios/request-template.json</code>.</p>`
       : `<h1>Install the ${kind === "chrome" ? "Chrome" : "Firefox"} extension</h1><ol><li>Download or clone the Later Gator repository.</li><li>Open the browser's extension debugging page.</li><li>Load <code>extension/${kind}</code> as an unpacked or temporary extension.</li><li>Open the popup, enter this Later Gator deployment URL and the extension token generated in Settings.</li><li>Approve access only to this deployment host.</li></ol><p>The extension asks for the active tab only when you open it and does not request browsing history.</p>`;
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Later Gator installation</title><link rel="stylesheet" href="/app.css"></head><body><main class="settings-shell"><section class="panel">${copy}<p><a href="/settings">Back to Settings</a></p></section></main></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Later Gator installation</title><link rel="stylesheet" href="${ASSET_MANIFEST.css}"></head><body><main class="settings-shell"><section class="panel">${copy}<p><a href="/settings">Back to Settings</a></p></section></main></body></html>`,
     {
       headers: {
         "content-type": "text/html; charset=utf-8",
@@ -375,7 +368,7 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
   if (
     request.method !== "GET" &&
     !importControlRequest &&
-    (await importIsActive(env.DB))
+    (await importHoldsLibrary(env.DB))
   ) {
     return apiError(
       409,
@@ -1035,8 +1028,6 @@ async function handleFetch(
 ): Promise<Response> {
   const url = new URL(request.url);
 
-  if (request.method === "GET" && url.pathname === "/app.css") return appCss();
-  if (request.method === "GET" && url.pathname === "/app.js") return appJs();
   if (request.method === "GET" && url.pathname === "/health") {
     return json({ ok: true, service: "later-gator", architecture: "v6" });
   }
@@ -1063,7 +1054,7 @@ async function handleFetch(
 
   const session = await loadSession(request, env.DB);
   if (url.pathname === "/" && request.method === "GET") {
-    if (session === null) return loginPage();
+    if (session === null) return loginPage(null, themeFromCookie(request));
     return redirect(request, (await setupComplete(env.DB)) ? "/dashboard" : "/setup");
   }
   if (session === null) {
@@ -1100,13 +1091,13 @@ async function handleFetch(
     return handleAuthenticatedApi({ request, env, url, session });
   }
   if (request.method === "GET" && url.pathname === "/setup") {
-    return (await setupComplete(env.DB)) ? redirect(request, "/settings") : setupPage();
+    return (await setupComplete(env.DB)) ? redirect(request, "/settings") : setupPage(themeFromCookie(request));
   }
   if (request.method === "GET" && url.pathname === "/dashboard") {
-    return (await setupComplete(env.DB)) ? dashboardPage() : redirect(request, "/setup");
+    return (await setupComplete(env.DB)) ? dashboardPage(themeFromCookie(request)) : redirect(request, "/setup");
   }
   if (request.method === "GET" && url.pathname === "/settings") {
-    return (await setupComplete(env.DB)) ? settingsPage() : redirect(request, "/setup");
+    return (await setupComplete(env.DB)) ? settingsPage(themeFromCookie(request)) : redirect(request, "/setup");
   }
   if (request.method === "GET" && url.pathname === "/extension/chrome") {
     return installationGuide("chrome");

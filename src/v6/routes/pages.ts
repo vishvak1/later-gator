@@ -1,3 +1,4 @@
+import { ASSET_MANIFEST } from "../generated/asset-manifest";
 const PAGE_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
@@ -7,22 +8,35 @@ const PAGE_HEADERS = {
   "x-content-type-options": "nosniff",
 } satisfies HeadersInit;
 
-const ASSET_VERSION = "20260731-raindrop-style";
 
-function page(title: string, pageName: string, body: string, status = 200): Response {
+export type Theme = "light" | "dark" | "system";
+
+export function themeFromCookie(request: Request): Theme {
+  const cookie = request.headers.get("cookie") ?? "";
+  const match = /(?:^|;\s*)lg_theme=(light|dark|system)(?:;|$)/u.exec(cookie);
+  return (match?.[1] as Theme | undefined) ?? "system";
+}
+
+function page(
+  title: string,
+  pageName: string,
+  body: string,
+  status = 200,
+  theme: Theme = "system",
+): Response {
   return new Response(
     `<!doctype html>
-<html lang="en">
+<html lang="en"${theme === "system" ? "" : ` data-theme="${theme}"`}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>${title} · Later Gator</title>
-  <link rel="stylesheet" href="/app.css?v=${ASSET_VERSION}">
+  <link rel="stylesheet" href="${ASSET_MANIFEST.css}">
 </head>
 <body data-page="${pageName}">
 ${body}
 ${importOverlay()}
-<script src="/app.js?v=${ASSET_VERSION}" defer></script>
+<script type="module" src="${ASSET_MANIFEST.js}"></script>
 </body>
 </html>`,
     { status, headers: PAGE_HEADERS },
@@ -73,6 +87,7 @@ function navigation(active: "dashboard" | "settings"): string {
 
 export function loginPage(
   error: "invalid" | "unavailable" | null = null,
+  theme: Theme = "system",
 ): Response {
   const errorMessage =
     error === "invalid"
@@ -98,10 +113,11 @@ export function loginPage(
       </section>
     </main>`,
     error === "unavailable" ? 503 : 200,
+    theme,
   );
 }
 
-export function setupPage(): Response {
+export function setupPage(theme: Theme = "system"): Response {
   return page(
     "Setup",
     "setup",
@@ -167,10 +183,12 @@ export function setupPage(): Response {
         </section>
       </form>
     </main>`,
+    200,
+    theme,
   );
 }
 
-export function dashboardPage(): Response {
+export function dashboardPage(theme: Theme = "system"): Response {
   return page(
     "Dashboard",
     "dashboard",
@@ -194,6 +212,7 @@ export function dashboardPage(): Response {
             <div id="tagSuggestions" class="suggestion-menu" hidden></div>
           </div>
           <button id="filterButton" class="secondary filter-button" type="button">Sort &amp; filter <span id="filterCount"></span></button>
+          <button id="selectModeButton" class="secondary select-toggle" type="button" aria-pressed="false">Select</button>
           <div class="view-toggle" role="group" aria-label="View mode">
             <button id="viewGridButton" type="button" class="active" aria-label="Grid view">▦</button>
             <button id="viewListButton" type="button" aria-label="List view">☰</button>
@@ -204,6 +223,21 @@ export function dashboardPage(): Response {
         <section id="bookmarkGrid" class="bookmark-grid"></section>
         <div class="load-more-wrap"><button id="loadMoreBookmarks" class="secondary" type="button" hidden>Load more bookmarks</button></div>
       </main>
+      <div id="bulkBar" class="bulk-bar" role="region" aria-label="Bulk actions" hidden>
+        <span id="bulkCount" class="bulk-count" aria-live="polite">0 selected</span>
+        <button id="bulkSelectAll" class="secondary" type="button">Select all</button>
+        <label class="visually-hidden" for="bulkFolder">Move selected bookmarks to folder</label>
+        <select id="bulkFolder" aria-label="Move to folder"></select>
+        <button id="bulkFavorite" class="secondary" type="button">★ Favorite</button>
+        <button id="bulkTrash" class="danger" type="button">Move to Trash</button>
+        <button id="bulkRestore" class="secondary" type="button" hidden>Restore</button>
+        <button id="bulkDelete" class="danger" type="button" hidden>Delete forever</button>
+        <button id="bulkCancel" class="ghost" type="button">Cancel</button>
+      </div>
+      <div id="toast" class="toast" role="status" hidden>
+        <span id="toastMessage"></span>
+        <button id="toastUndo" type="button">Undo</button>
+      </div>
     </div>
     <dialog id="filterDialog" class="filter-dialog">
       <form id="filterForm" method="dialog" class="stack">
@@ -222,8 +256,13 @@ export function dashboardPage(): Response {
     </dialog>
     <dialog id="topicsDialog" class="topics-dialog">
       <div class="dialog-heading"><div><p class="eyebrow">Your topic vocabulary</p><h2>All topics</h2></div><button id="closeTopicsDialog" class="icon-button" type="button" aria-label="Close">×</button></div>
-      <p class="muted">Choose a topic to filter the library. Deleting a topic removes it from bookmarks but keeps the bookmarks.</p>
+      <p class="muted">Choose a topic to filter the library. Tick topics to remove them; the bookmarks themselves are kept.</p>
       <nav id="allTagNavigation" class="all-tag-navigation" aria-label="All topics"></nav>
+      <div id="topicBulkBar" class="topic-bulk-bar" hidden>
+        <span id="topicBulkCount" class="bulk-count" aria-live="polite">0 topics selected</span>
+        <button id="topicClearSelection" class="ghost" type="button">Clear</button>
+        <button id="topicDeleteSelected" class="danger" type="button">Remove from library</button>
+      </div>
     </dialog>
     <dialog id="bookmarkDialog">
       <div id="bookmarkDetailView">
@@ -256,10 +295,12 @@ export function dashboardPage(): Response {
         <div class="actions split"><button id="trashBookmarkButton" class="danger" type="button">Move to Trash</button><div><button value="cancel" class="secondary">Cancel</button> <button id="saveBookmarkButton" value="default">Save changes</button></div></div>
       </form>
     </dialog>`,
+    200,
+    theme,
   );
 }
 
-export function settingsPage(): Response {
+export function settingsPage(theme: Theme = "system"): Response {
   return page(
     "Settings",
     "settings",
@@ -267,6 +308,14 @@ export function settingsPage(): Response {
     <main class="settings-shell">
       <header><h1>Settings</h1><p class="muted">Connections, automation, imports, and security.</p></header>
       <div class="settings-grid">
+        <section class="panel"><h2>Appearance</h2>
+          <p class="muted">Choose how Later Gator looks. System follows your device setting.</p>
+          <div class="theme-options" role="group" aria-label="Theme">
+            <button class="theme-option" type="button" data-theme-choice="light" aria-pressed="false">Light</button>
+            <button class="theme-option" type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
+            <button class="theme-option" type="button" data-theme-choice="system" aria-pressed="false">System</button>
+          </div>
+        </section>
         <section class="panel"><h2>AI provider</h2>
           <form id="providerForm" class="stack">
             <label>Provider<select id="providerName"><option value="workers-ai">Cloudflare Workers AI</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
@@ -310,5 +359,7 @@ export function settingsPage(): Response {
       </div>
       <p id="settingsStatus" class="status"></p>
     </main>`,
+    200,
+    theme,
   );
 }

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { importHoldsLibrary } from "../domain/import-state";
 import {
   createBookmark,
   dispatchJob,
@@ -165,15 +166,7 @@ export async function captureBookmark(
     requestHash,
   );
   if (repeated !== null) return repeated;
-  const activeImport = await env.DB
-    .prepare(
-      `SELECT 1
-         FROM import_sessions
-        WHERE status IN ('preview', 'committing')
-        LIMIT 1`,
-    )
-    .first();
-  if (activeImport !== null) {
+  if (await importHoldsLibrary(env.DB)) {
     return cors(
       apiError(
         409,

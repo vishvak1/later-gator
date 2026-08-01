@@ -174,6 +174,15 @@ The user presses **Deploy to Cloudflare** and enters one blank secret labelled
 strong password but does not reject an existing deployment password merely
 because it is shorter than 10 characters.
 
+The form also asks for the Vectorize index **Dimensions** (`1024`) and **Metric**
+(`cosine`). The Wrangler config schema sets `additionalProperties: false` on the
+`vectorize` block, so a template cannot pre-fill them
+(`cloudflare/workers-sdk#14075`). The values are therefore carried in the
+`cloudflare.bindings.VECTORS` description in `package.json`, which the deploy
+form renders beside those fields, and repeated in the README install steps. If
+the embedding model in `src/v6/application/embeddings.ts` ever changes, update
+the dimensions in all three places together.
+
 Cloudflare provisions:
 
 - Worker and static assets.
@@ -181,6 +190,7 @@ Cloudflare provisions:
 - Workers KV.
 - Queue.
 - Workers AI.
+- Vectorize.
 
 The user opens the root URL.
 
@@ -784,8 +794,14 @@ shows `loaded of total`, and follows the validated next cursor. Bootstrap
 returns grouped non-trashed counts beside every fixed folder and a separate
 Trash count.
 
-There is no Vectorize or Elasticsearch integration in v6. Text search is lexical
-D1 FTS5; semantic/vector search is a separately scoped future capability.
+Text search is hybrid. A query matches when FTS5 matches, when every term
+matches an active tag name, or when the query embedding is semantically close to
+the bookmark embedding held in Vectorize. Embeddings come from
+`@cf/baai/bge-large-en-v1.5` (1024 dimensions, cosine); queries carry the bge
+retrieval prefix and documents do not. Matches are gated at
+`max(0.3, 0.85 × top score)`. `bookmarks.embedded_revision` marks stale rows and
+an `embed_pending` Queue message drains the backlog. Every semantic failure
+degrades to lexical results; search never fails because embeddings are missing.
 
 The dashboard translates `#` input into a dynamic tag picker and sends selected
 tags as structured filters. A bare `#` returns every active tag; typed text

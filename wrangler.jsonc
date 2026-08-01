@@ -28,6 +28,13 @@
       "binding": "THUMBNAILS"
     }
   ],
+  "assets": {
+    "directory": "./web/public",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "build": { "command": "npm run build:web" },
   "images": { "binding": "IMAGES" },
   "ai": { "binding": "AI" },
   "vectorize": [

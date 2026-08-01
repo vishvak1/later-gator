@@ -676,11 +676,40 @@ export async function processImportThumbnailWork(
   return "continued";
 }
 
+/**
+ * Cancelling is the user's escape hatch, so it must succeed for any
+ * non-terminal session — including one stuck at 'committing' and one whose
+ * preview window has already expired. It deliberately does not call
+ * loadImportSession, which throws `import_expired` and previously made a
+ * wedged import impossible to clear from the UI.
+ *
+ * Already-committed rows are never withdrawn; cancelling only stops further
+ * work and releases the library and AI holds.
+ */
 export async function cancelImport(env: Env, importId: string): Promise<void> {
-  const session = await loadImportSession(env.DB, importId);
-  if (session.status !== "preview") throw new Error("import_cannot_cancel");
+  const cancelled = await env.DB
+    .prepare(
+      `UPDATE import_sessions
+          SET status = 'cancelled'
+        WHERE id = ? AND status IN ('preview', 'committing')`,
+    )
+    .bind(importId)
+    .run();
+  if (cancelled.meta.changes !== 1) {
+    const existing = await env.DB
+      .prepare("SELECT status FROM import_sessions WHERE id = ?")
+      .bind(importId)
+      .first<{ status: string }>();
+    if (existing === null) throw new Error("import_not_found");
+    // Already terminal: treat as success so a retry can never wedge the UI.
+    return;
+  }
   await env.DB
-    .prepare("UPDATE import_sessions SET status = 'cancelled' WHERE id = ? AND status = 'preview'")
+    .prepare(
+      `UPDATE import_rows
+          SET row_status = 'invalid', safe_error_code = 'import_cancelled'
+        WHERE import_id = ? AND row_status = 'valid'`,
+    )
     .bind(importId)
     .run();
   await releaseAiAfterImport(env, importId);

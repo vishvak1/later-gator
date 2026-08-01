@@ -5,6 +5,7 @@ import {
   type ProviderName,
 } from "../adapters/organization-providers";
 import { deterministicFolderForHostname } from "../domain/folders";
+import { importHoldsAi } from "../domain/import-state";
 import { normalizeTagName } from "../domain/tags";
 import { createBookmark, dispatchJob, relateBookmarks } from "../adapters/library-repository";
 import { upsertBookmarkVector } from "./embeddings";
@@ -469,15 +470,7 @@ export async function organizeBookmarkJob(
     ]);
     return "retry";
   }
-  const activeImport = await env.DB
-    .prepare(
-      `SELECT 1
-         FROM import_sessions
-        WHERE status IN ('preview', 'committing')
-        LIMIT 1`,
-    )
-    .first();
-  if (activeImport !== null) {
+  if (await importHoldsAi(env.DB)) {
     const jobState =
       context.owner_ai_paused === 1
         ? "paused_owner"

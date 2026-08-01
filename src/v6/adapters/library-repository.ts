@@ -5,6 +5,7 @@ import type {
   UpdateBookmarkInput,
 } from "../domain/schemas";
 import { UNSORTED_FOLDER_ID } from "../domain/folders";
+import { importHoldsAi } from "../domain/import-state";
 import { normalizeTagName } from "../domain/tags";
 import { normalizeBookmarkUrl } from "../domain/url";
 import { z } from "zod";
@@ -679,15 +680,7 @@ export async function dispatchJob(
   queue: Queue,
   jobId: string,
 ): Promise<boolean> {
-  const activeImport = await db
-    .prepare(
-      `SELECT 1
-         FROM import_sessions
-        WHERE status IN ('preview', 'committing')
-        LIMIT 1`,
-    )
-    .first();
-  if (activeImport !== null) return true;
+  if (await importHoldsAi(db)) return true;
   try {
     await queue.send({ version: 1, jobId });
     await db
@@ -893,12 +886,15 @@ export async function getBootstrapState(db: D1Database): Promise<{
     db
       .prepare(
         `SELECT id, status, option, file_name, total_rows, valid_rows, invalid_rows,
-                duplicate_rows, committed_rows, failed_rows, created_at, expires_at
+                duplicate_rows, committed_rows, failed_rows, created_at, expires_at,
+                committed_rows + failed_rows AS processed_rows
            FROM import_sessions
           WHERE status IN ('preview', 'committing')
+            AND expires_at > ?
           ORDER BY created_at DESC
           LIMIT 1`,
       )
+      .bind(new Date().toISOString())
       .first(),
     db
       .prepare("SELECT COUNT(*) AS count FROM bookmarks WHERE deleted_at IS NOT NULL")

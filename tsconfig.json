@@ -24,6 +24,7 @@
     "src/v6/**/*.ts",
     "test/v6/**/*.ts",
     "vitest.config.ts",
+    "vitest.web.config.ts",
     "worker-configuration.d.ts"
   ]
 }

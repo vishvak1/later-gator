@@ -59,6 +59,7 @@ export interface ProviderState {
 export interface BootstrapState {
   setupStatus: string;
   ownerAiPaused: boolean;
+  personalInstructions: string | null;
   activeImport: ImportSession | null;
   folders: FolderSummary[];
   tags: TagSummary[];
@@ -93,14 +94,4 @@ export interface BookmarkPageResponse {
   bookmarks: Bookmark[];
   total: number;
   nextCursor: string | null;
-}
-
-export interface ImportPreview {
-  importId: string;
-  totalRows: number;
-  validRows: number;
-  invalidRows: number;
-  duplicateRows: number;
-  option: string;
-  expiresAt: string;
 }

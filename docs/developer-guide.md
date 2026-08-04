@@ -26,8 +26,10 @@ flowchart LR
     MCP["MCP client"] --> W
     W <--> D1["D1: authoritative library"]
     W <--> KV["Workers KV: private thumbnails"]
-    W --> Q["Queue: job ID notification"]
-    Q --> W
+    W --> AQ["AI/background Queue: job IDs"]
+    AQ --> W
+    W --> TQ["Thumbnail Queue: job IDs"]
+    TQ --> W
     W --> AI["Selected AI provider"]
 ```
 
@@ -35,7 +37,7 @@ The most important rules are:
 
 1. D1 is the system of record.
 2. Workers KV contains only thumbnail binaries.
-3. Queue messages contain only a job ID.
+3. Queue messages contain only a job ID or an ID-free dispatcher signal.
 4. AI never writes without rechecking the bookmark revision.
 5. Raindrop is only a CSV import source.
 6. View and edit remain usable when AI is unavailable.
@@ -88,7 +90,7 @@ D1 owns:
 - Favorite and Trash state.
 - Setup and personalization.
 - AI jobs and provider/model configuration.
-- Import preview and progress.
+- Import progress.
 - Sessions.
 - Encrypted provider settings.
 - Capture and MCP credential hashes.
@@ -143,7 +145,8 @@ There are four authorization lanes.
 
 - Scoped bearer token.
 - Can fetch fixed folders and tag suggestions.
-- Can create a bookmark, linked bookmark, and relationship.
+- Can search a bounded projection of active bookmarks.
+- Can create the active-tab bookmark and relate it to the selected existing bookmark.
 - Can inspect only the result of its own request.
 
 ### iOS Shortcut lane
@@ -255,7 +258,7 @@ It does not:
 
 - Connect to Raindrop.
 - Delete or modify Raindrop data.
-- Start a migration unless the user commits a CSV preview.
+- Start an import unless the user submits a CSV file.
 
 ---
 
@@ -412,18 +415,28 @@ For each eligible bookmark:
 
 1. Load current bookmark and revision.
 2. Resolve safe metadata and a thumbnail candidate.
-3. Build the provider-neutral organization input.
-4. Call the selected provider.
-5. Ignore provider usage metadata for product accounting; do not persist token
+3. Objectively require at least one primary content field beyond a title, URL,
+   hostname, author, engagement count, thumbnail, or link-only placeholder.
+4. If primary content is absent, skip AI and record an insufficient-evidence
+   attempt. Otherwise let AI decide whether the retrieved content is meaningful
+   enough or is generic/ambiguous.
+5. Build the provider-neutral organization input.
+6. Call the selected provider.
+7. Validate either an `organized` or `insufficient_evidence` result. An
+   insufficient result cannot contain a generated description or tags.
+8. Retry retrieval once after the first insufficient result from either the
+   Worker gate or AI. A second completed insufficient result moves the bookmark
+   to Need for Review.
+9. Ignore provider usage metadata for product accounting; do not persist token
    or neuron usage.
-6. Validate the structured proposal with Zod.
-7. Normalize tags.
-8. Apply deterministic folder rules.
-9. Recheck revision and application state.
-10. Commit the valid result.
+10. Normalize tags for an organized result.
+11. Apply deterministic folder rules.
+12. Recheck revision and application state.
+13. Commit the valid result.
 
 The proposal contains:
 
+- Status.
 - Description.
 - Tags.
 - Folder.
@@ -447,7 +460,6 @@ The model may suggest tags, but code:
 - Removes duplicates.
 - Rejects operational/folder terms.
 - Blocks retired tags.
-- Preserves imported tags under the preservation option.
 
 ---
 
@@ -473,6 +485,13 @@ Failure sequence:
 4. Move to Need for Review after the quality limit.
 
 Queue retries do not increment quality attempts.
+
+Insufficient evidence uses one bounded lifecycle across both layers. Objective
+absence of primary content records `content_unavailable`; a valid AI abstention
+records `ai_insufficient_evidence`. The first code retries retrieval later. If
+the next completed attempt produces either code, the bookmark moves to Need for
+Review without applying a description or tags. A timeout or failed Queue
+delivery is not a completed content attempt.
 
 ---
 
@@ -520,11 +539,20 @@ the active registry as open: it reuses an accurate tag or inserts a new
 eight most-used topics; **View all** opens the full filter/delete vocabulary in
 a modal. Settings does not own tag vocabulary management.
 
+There is no 20-topic or global vocabulary ceiling. Normalization applies
+canonical aliases for known equivalents, and the organizer prompt requires reuse
+of canonical registry wording rather than synonym or abbreviation duplicates.
+
 Setup's custom topic field tokenizes comma-separated values live. All tag entry
 paths—setup, AI, CSV, dashboard edits, capture, and MCP-adjacent repository
 calls—canonicalize values to lowercase single words or lowercase hyphenated
 words. Bootstrap performs an idempotent set-based merge of legacy equivalent
 tags before returning the registry.
+
+The bookmark editor and browser extension use the same `#` autocomplete
+contract: existing results render as `#tag`, a missing normalized value renders
+as `Create #tag`, and neither menu adds “Existing tag” or “New tag” helper
+labels. Selected values render as removable chips.
 
 ### Add/remove on one bookmark
 
@@ -578,11 +606,10 @@ Trash is represented by `deleted_at`. It is not a folder that AI can select.
 
 Thumbnail priority:
 
-1. Imported CSV cover.
-2. Extension/page preview metadata.
-3. Server-resolved page image.
-4. Favicon.
-5. Built-in placeholder.
+1. User or extension preview candidate.
+2. Server-resolved page image metadata.
+3. Declared page icon or conventional favicon.
+4. Built-in placeholder.
 
 The bookmark save never depends on thumbnail success.
 
@@ -595,6 +622,8 @@ Remote images are untrusted:
 - Recheck redirects.
 - Enforce timeout, redirect count, byte limit, media type, and magic bytes.
 - Do not forward cookies or authorization.
+- Use the shared browser-compatible public-page headers for HTML and image
+  discovery; do not add site-specific YouTube or social-network branches.
 - Reject SVG in the initial release.
 
 ### Storage
@@ -602,7 +631,8 @@ Remote images are untrusted:
 - Normalize to an uncropped WebP bounded by 960 × 1,600 pixels and 500 KiB.
 - Write the private bytes under an immutable Workers KV key.
 - Store object key and metadata in D1.
-- Serve through an authenticated Worker route.
+- Serve through an authenticated, versioned Worker route using one-year
+  `private, immutable` browser caching.
 
 Workers KV is never made public.
 
@@ -624,67 +654,46 @@ Single-folder or collection exports omit `folder`; both layouts are accepted.
 
 Mapping:
 
-| CSV field    | Treatment                                        |
-| ------------ | ------------------------------------------------ |
-| `id`         | Import-report source ID only                     |
-| `title`      | Bookmark title                                   |
-| `note`       | Ignored                                          |
-| `excerpt`    | Imported description                             |
-| `url`        | Required URL                                     |
-| `folder`     | Preview/report only; never recreated             |
-| `tags`       | Discard or preserve according to selected option |
-| `created`    | Ignored                                          |
-| `cover`      | Ignored                                          |
-| `highlights` | Unsupported; warn if populated                   |
-| `favorite`   | Ignored                                          |
+| CSV field | Treatment                                      |
+| --------- | ---------------------------------------------- |
+| `url`     | Required; normalized for duplicate identity    |
+| `title`   | Optional; falls back to the URL hostname       |
+| `tags` | Normalized and retained only in preserve mode |
+| `excerpt` | Retained as description only in preserve mode |
+| all other fields | Ignored and not stored                  |
 
-### Preview
+### Direct import
 
-Preview:
+Submitting the file starts the import immediately. There is no preview,
+separate commit, or resume action. Setup and Settings both require one explicit
+mode: reorganize everything, or preserve imported tags and descriptions while
+AI assigns only the permanent folder.
 
-- Parses and validates.
-- Reports invalid rows and within-file duplicates.
-- Stores expiring staged rows.
-- Creates no bookmarks.
-- Sends no Queue messages.
-- Stores no original CSV file.
-- Pauses AI and preserves whether it was already owner-paused.
+The Worker:
 
-### Commit
+- Parses quoted commas, multiline cells, Unicode, and both common Raindrop
+  export layouts.
+- Performs only the minimum safe checks needed to read valid HTTP(S) URLs.
+- Keeps the first occurrence of a normalized URL inside the file.
+- Inserts rows into Unsorted in chunks using D1's active-URL uniqueness as the
+  final duplicate guard.
+- In preserve mode, normalizes `tags` and retains `excerpt` as description; in
+  reorganize mode, both are discarded.
+- Updates processed, added, duplicate, and invalid counts after every chunk so
+  the dashboard can show real progress.
+- Creates one recoverable AI job and one independent thumbnail job for each
+  newly inserted Unsorted bookmark.
+- Commits both job records before signaling their separate Queue consumers.
+- Does not pause AI or the library, import notes, favorites, folders, or
+  Raindrop covers, or perform remote fetches inside the import request.
 
-Commit:
+Only bookmarks currently in Unsorted may be processed by AI. X/Twitter routing
+is applied when such a job successfully commits, never during import or
+bootstrap. Moving a pending bookmark to a permanent folder cancels its AI job.
 
-- Appears to the user as one short set-based D1 operation.
-- Uses JSON-backed `INSERT ... SELECT` statements instead of the normal
-  per-bookmark creation path.
-- Keeps an existing active normalized URL unchanged and records it as skipped.
-- Stores all accepted bookmarks in Unsorted before AI organization resumes.
-- Records each row outcome.
-- Keeps mutations read-only but presents progress as a dock so library browsing
-  remains available.
-- Restores the pre-import AI pause state at completion and dispatches eligible
-  jobs only when AI was previously running.
-- Creates paused AI jobs with one set-based statement after bookmark insertion.
-- Does not use Queue messages to insert CSV rows.
-
-### Option A
-
-Reorganize:
-
-- Preserve only URL and title from the CSV.
-- Remove imported tags and description.
-- Save in Unsorted.
-- Let AI generate them.
-
-### Option B
-
-Preserve:
-
-- Preserve URL, title, description, and normalized tags.
-- Save in Unsorted.
-- Let AI select folder and add tags.
-
-Imported folders are never recreated.
+If an import is interrupted, upload the same CSV again. Existing normalized
+URLs are skipped, so this safely fills only bookmarks that were not inserted by
+the earlier attempt.
 
 ---
 
@@ -697,13 +706,16 @@ Popup fields:
 - Thumbnail/title/description preview.
 - Note.
 - Folder.
-- Tags.
-- Source URL.
-- Linked to.
+- Tags, enabled for permanent folders with `#` existing-or-create completion.
+- Linked to, enabled for permanent folders as an existing-bookmark search.
 - Favorite.
 - Save.
 
-Source URL is filled from the active tab.
+The source URL is always the active tab URL and is not an editable field.
+Unsorted disables and clears Tags and Linked to. The Worker enforces the same
+rule even if a client bypasses the popup. Linked to search calls
+`POST /api/capture/bookmark-search` after at least two characters and receives
+only active bookmark ID, title, URL, hostname, and folder name.
 
 Use minimal permissions:
 
@@ -713,6 +725,30 @@ Use minimal permissions:
 - access to the configured Later Gator host
 
 Do not request browsing-history permission.
+
+On popup startup, keep both primary forms hidden while the stored capture
+credential is checked against `GET /api/capture/options`. Show only the capture
+form after a successful check. Missing, malformed, rejected, or permission-less
+credentials show only the connection form. Preserve a credential through
+temporary network and deployment failures and offer Retry. Test a newly entered
+credential before saving it to extension-local storage.
+
+Settings combines `location.origin` and the newly issued extension token into a
+single `later-gator-v1.` connection code. Keep the code out of links, query
+parameters, logs, and browser navigation. Present it once with an explicit Copy
+action. The extension decodes one pasted value, validates its version and
+fields, requests host permission, and tests the credential before storing the
+decoded connection. Encoding does not make the code non-secret.
+
+Chrome and Firefox self-install instructions open in the Settings-page dialog,
+not a new tab. Keep browser-specific steps in that dialog synchronized with the
+actual `extension/chrome` and `extension/firefox` folders.
+
+The normal capture form has no full-size Connection action. A compact settings
+control may open the connection form deliberately, with Cancel available while
+the existing credential remains valid. Capture credentials have no automatic
+expiry; revocation and application reset are the server-side invalidation paths,
+while lost extension storage or host permission requires local reconnection.
 
 ### Save feedback
 
@@ -726,6 +762,18 @@ Render the server's committed result:
 - Failed.
 
 Do not infer success from a completed `fetch` alone. Parse and validate the application response.
+After a confirmed result, hide the capture form and header and render the full
+success panel with the exact outcome, dashboard link, and Done action. Options
+validation and active-tab metadata retrieval run concurrently; Linked to search
+does not run until the user types at least two characters.
+
+The popup also POSTs the active URL to `/api/capture/bookmark-status`. A live
+normalized-URL match renders **Already saved** immediately and sets a per-tab
+tick badge; a new page clears the badge. A status-only failure degrades to the
+capture form and never invalidates an otherwise working connection.
+The background script repeats this check for the active tab on navigation and
+activation. The required `tabs` permission is used only to read that current URL;
+do not persist it or scan inactive browsing history.
 
 ---
 
@@ -754,7 +802,12 @@ The Shortcut shows:
 
 There is no offline queue in v6. A timeout is failure, not “probably saved.”
 
-The user configures the Shortcut with its own endpoint and token from Settings.
+Settings reveals the Shortcut endpoint and token once with separate Copy
+actions. **Create in Shortcuts** opens `shortcuts://create-shortcut`; Apple's URL
+scheme opens an empty editor and cannot prefill actions. The setup tutorial
+therefore lists the required actions in a Settings-page dialog. Do not advertise
+this as one-tap installation until the project has an Apple-validated iCloud
+Shortcut link with endpoint and token import questions.
 
 ---
 
@@ -778,6 +831,9 @@ MCP cannot mutate or resume anything.
 Search excludes Trash and respects output limits.
 
 Rotating the MCP URL invalidates the old credential without affecting capture tokens or dashboard sessions.
+The rotated URL is shown once with a Copy action. Its setup tutorial opens in a
+Settings dialog. D1 retains only the secret hash, so an old URL cannot be
+recovered for reuse.
 
 ---
 
@@ -793,6 +849,10 @@ Date added descending is the default. The dashboard loads 48 results at a time,
 shows `loaded of total`, and follows the validated next cursor. Bootstrap
 returns grouped non-trashed counts beside every fixed folder and a separate
 Trash count.
+
+In selection mode, **Select all** snapshots the current folder, search, sort,
+and filter query, then follows every validated cursor page to select all
+matching bookmark IDs. It is not limited to the 48 cards currently rendered.
 
 Text search is hybrid. A query matches when FTS5 matches, when every term
 matches an active tag name, or when the query embedding is semantically close to
@@ -812,8 +872,9 @@ always-visible controls.
 Settings polls bootstrap while visible and renders actual D1 state counts:
 organized, waiting, processing, provider wait, owner pause, review, and failed.
 Bootstrap also repairs legacy `paused_edit`, stale queued/running work older than
-the recovery window, and pending bookmarks that have no active job. One
-`dispatch_pending` notification resumes recovered work.
+the recovery window, and pending bookmarks that have no active job. Independent
+dispatcher notifications resume AI/background and thumbnail work from their D1
+pending records.
 
 Never concatenate a user-supplied sort column or FTS expression.
 
@@ -975,11 +1036,16 @@ Provider activation happens only after the candidate passes.
 - Put object before referencing it in D1.
 - Clean up orphaned objects.
 - Keep thumbnail failure independent of bookmark success.
+- Keep thumbnail messages on `THUMBNAIL_QUEUE`; never route them through the
+  sequential AI/background consumer.
+- Treat the thumbnail UUID in `/api/thumbnails/:bookmarkId/:thumbnailId` as the
+  immutable browser-cache version.
 - Measure normalized size.
 
 Browser Rendering is not bound in the current deployment. Thumbnail candidates
-come from imports, capture input, bounded page metadata, favicons, and the
-built-in placeholder.
+come from capture input, bounded page metadata, declared icons, conventional
+favicons, and the built-in placeholder. Thumbnail jobs retry and recover
+independently from AI organization jobs.
 
 ---
 
@@ -990,12 +1056,14 @@ The extension is a separate client of the capture API.
 Test:
 
 - Chrome and Firefox manifests.
-- Active-tab URL population.
+- Internal active-tab URL capture with no editable Source URL field.
 - Metadata permission failure.
 - Missing/expired/revoked token.
 - Duplicate clicks.
 - Popup closing after commit.
-- Linked URL new/existing/invalid.
+- Unsorted organization controls disabled and server-side values discarded.
+- Permanent-folder `#` tag selection and creation.
+- Existing-bookmark search and Linked to selection.
 - Partial automation result.
 
 Do not import dashboard code that assumes cookie authentication into the extension client.

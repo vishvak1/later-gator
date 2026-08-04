@@ -3,11 +3,24 @@
   "name": "Later Gator",
   "version": "6.0.0",
   "description": "Save the current page to your private Later Gator library.",
-  "permissions": ["activeTab", "storage", "scripting"],
+  "permissions": ["activeTab", "storage", "scripting", "tabs"],
   "optional_host_permissions": ["https://*/*", "http://localhost/*"],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "action": {
     "default_title": "Save to Later Gator",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    },
     "default_popup": "popup.html"
+  },
+  "background": {
+    "scripts": ["background.js"]
   },
   "browser_specific_settings": {
     "gecko": {

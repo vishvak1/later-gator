@@ -1,6 +1,5 @@
 import { env, exports } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
-import { processImportWork } from "../../src/v6/application/imports";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { processResetStorage } from "../../src/v6/application/reset";
 
 interface AuthenticatedClient {
@@ -47,6 +46,36 @@ async function finishSetup(client: AuthenticatedClient): Promise<void> {
   expect(response.status).toBe(200);
 }
 
+async function importRaindropCsv(
+  client: AuthenticatedClient,
+  csv: string,
+  fileName: string,
+  option: "reorganize" | "preserve" = "reorganize",
+): Promise<string> {
+  const form = new FormData();
+  form.set("file", new File([csv], fileName, { type: "text/csv" }));
+  form.set("option", option);
+  const response = await exports.default.fetch("https://later-gator.test/api/imports", {
+    method: "POST",
+    headers: {
+      cookie: client.cookie,
+      origin: "https://later-gator.test",
+      "x-csrf-token": client.csrf,
+    },
+    body: form,
+  });
+  expect(response.status, await response.clone().text()).toBe(202);
+  const body = await response.json<{ import: { id: string } }>();
+  await vi.waitFor(async () => {
+    const status = await env.DB
+      .prepare("SELECT status FROM import_sessions WHERE id = ?")
+      .bind(body.import.id)
+      .first<{ status: string }>();
+    expect(status?.status).toBe("committed");
+  }, { timeout: 5000, interval: 20 });
+  return body.import.id;
+}
+
 describe("v6 Worker foundation", () => {
   beforeEach(async () => {
     await env.DB.prepare("DELETE FROM sessions").run();
@@ -57,6 +86,8 @@ describe("v6 Worker foundation", () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain("Later Gator password");
+    expect(html).toContain('rel="icon"');
+    expect(html).toContain('type="image/svg+xml"');
     expect(html).not.toContain('minlength="10"');
   });
 
@@ -310,6 +341,48 @@ describe("v6 Worker foundation", () => {
     ]);
   });
 
+  it("accepts more than twenty seed topics and updates personal AI instructions", async () => {
+    const client = await login();
+    const setup = await exports.default.fetch(
+      "https://later-gator.test/api/setup/complete",
+      {
+        method: "POST",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({
+          relevantTags: Array.from({ length: 25 }, (_, index) => `Topic ${index.toString()}`),
+          careerContext: "Engineer",
+          aspirationContext: "Researcher",
+          personalInstructions: "Prefer practical sources.",
+          timezone: "Asia/Kolkata",
+        }),
+      },
+    );
+    expect(setup.status).toBe(200);
+
+    const update = await exports.default.fetch(
+      "https://later-gator.test/api/profile/personal-instructions",
+      {
+        method: "PUT",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({ personalInstructions: "Prefer rigorous primary sources." }),
+      },
+    );
+    expect(update.status).toBe(200);
+
+    const bootstrap = await exports.default.fetch("https://later-gator.test/api/bootstrap", {
+      headers: { cookie: client.cookie },
+    });
+    expect(await bootstrap.json()).toMatchObject({
+      state: { personalInstructions: "Prefer rigorous primary sources." },
+    });
+    const seeds = await env.DB
+      .prepare(
+        "SELECT COUNT(*) AS count FROM tags WHERE created_by = 'seed' AND normalized_name LIKE 'topic-%'",
+      )
+      .first();
+    expect(seeds).toEqual({ count: 25 });
+  });
+
   it("protects edits with the bookmark revision", async () => {
     const client = await login();
     await finishSetup(client);
@@ -522,7 +595,159 @@ describe("v6 Worker foundation", () => {
     expect(conflict.status).toBe(409);
   });
 
-  it("imports both full-library and folder-only Raindrop CSV exports into Unsorted", async () => {
+  it("searches existing bookmarks for extension linking and rejects manual organization in Unsorted", async () => {
+    const client = await login();
+    await finishSetup(client);
+    await exports.default.fetch("https://later-gator.test/api/automation/pause", {
+      method: "PUT",
+      headers: mutationHeaders(client),
+      body: JSON.stringify({ paused: true, reason: "test" }),
+    });
+    const suffix = crypto.randomUUID();
+    const targetResponse = await exports.default.fetch("https://later-gator.test/api/bookmarks", {
+      method: "POST",
+      headers: mutationHeaders(client),
+      body: JSON.stringify({
+        url: `https://target.example/${suffix}`,
+        title: `Extension target ${suffix}`,
+        folderId: "folder_articles",
+        organizationPolicy: "none",
+      }),
+    });
+    expect(targetResponse.status).toBe(201);
+    const target = await targetResponse.json<{ bookmark: { id: string; url: string } }>();
+
+    const credentialResponse = await exports.default.fetch(
+      "https://later-gator.test/api/capture/credentials",
+      {
+        method: "POST",
+        headers: mutationHeaders(client),
+        body: JSON.stringify({ kind: "extension", name: "Test extension" }),
+      },
+    );
+    expect(credentialResponse.status).toBe(201);
+    const credential = await credentialResponse.json<{
+      credential: { token: string; scopes: string[] };
+    }>();
+    expect(credential.credential.scopes).toContain("capture:bookmark-search");
+    const captureHeaders = {
+      authorization: `Bearer ${credential.credential.token}`,
+      "content-type": "application/json",
+    };
+
+    const searchResponse = await exports.default.fetch(
+      "https://later-gator.test/api/capture/bookmark-search",
+      {
+        method: "POST",
+        headers: captureHeaders,
+        body: JSON.stringify({ query: `Extension target ${suffix}` }),
+      },
+    );
+    expect(searchResponse.status).toBe(200);
+    const search = await searchResponse.json<{
+      bookmarks: { id: string; title: string; url: string; hostname: string; folder_name: string }[];
+    }>();
+    expect(search.bookmarks).toContainEqual({
+      id: target.bookmark.id,
+      title: `Extension target ${suffix}`,
+      url: target.bookmark.url,
+      hostname: "target.example",
+      folder_name: "Articles",
+    });
+
+    const savedStatus = await exports.default.fetch(
+      "https://later-gator.test/api/capture/bookmark-status",
+      {
+        method: "POST",
+        headers: captureHeaders,
+        body: JSON.stringify({ url: target.bookmark.url + "#section" }),
+      },
+    );
+    expect(savedStatus.status).toBe(200);
+    expect(await savedStatus.json()).toEqual({ ok: true, saved: true });
+    const unsavedStatus = await exports.default.fetch(
+      "https://later-gator.test/api/capture/bookmark-status",
+      {
+        method: "POST",
+        headers: captureHeaders,
+        body: JSON.stringify({ url: `https://unknown.example/${suffix}` }),
+      },
+    );
+    expect(await unsavedStatus.json()).toEqual({ ok: true, saved: false });
+
+    const unsortedResponse = await exports.default.fetch(
+      "https://later-gator.test/api/capture/bookmarks",
+      {
+        method: "POST",
+        headers: captureHeaders,
+        body: JSON.stringify({
+          requestId: crypto.randomUUID(),
+          url: `https://source.example/unsorted-${suffix}`,
+          folderId: "folder_unsorted",
+          tags: ["should-be-ignored"],
+          linkedUrl: target.bookmark.url,
+        }),
+      },
+    );
+    expect(unsortedResponse.status).toBe(201);
+    const unsorted = await unsortedResponse.json<{ bookmarkId: string; result: string }>();
+    expect(unsorted.result).toBe("saved");
+    const unsortedOrganization = await env.DB
+      .prepare(
+        `SELECT b.folder_id,
+                (SELECT COUNT(*) FROM bookmark_tags bt WHERE bt.bookmark_id = b.id) AS tag_count,
+                (SELECT COUNT(*) FROM bookmark_relationships r
+                  WHERE r.left_bookmark_id = b.id OR r.right_bookmark_id = b.id) AS relationship_count
+           FROM bookmarks b
+          WHERE b.id = ?`,
+      )
+      .bind(unsorted.bookmarkId)
+      .first<{ folder_id: string; tag_count: number; relationship_count: number }>();
+    expect(unsortedOrganization).toEqual({
+      folder_id: "folder_unsorted",
+      tag_count: 0,
+      relationship_count: 0,
+    });
+
+    const organizedResponse = await exports.default.fetch(
+      "https://later-gator.test/api/capture/bookmarks",
+      {
+        method: "POST",
+        headers: captureHeaders,
+        body: JSON.stringify({
+          requestId: crypto.randomUUID(),
+          url: `https://source.example/organized-${suffix}`,
+          folderId: "folder_articles",
+          tags: ["#new topic"],
+          linkedUrl: target.bookmark.url,
+        }),
+      },
+    );
+    expect(organizedResponse.status).toBe(201);
+    const organized = await organizedResponse.json<{ bookmarkId: string; result: string }>();
+    expect(organized.result).toBe("saved_and_linked");
+    const organizedCounts = await env.DB
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM bookmark_tags bt
+             JOIN tags t ON t.id = bt.tag_id
+            WHERE bt.bookmark_id = ? AND t.normalized_name = 'new-topic') AS tag_count,
+           (SELECT COUNT(*) FROM bookmark_relationships r
+            WHERE (r.left_bookmark_id = ? AND r.right_bookmark_id = ?)
+               OR (r.left_bookmark_id = ? AND r.right_bookmark_id = ?)) AS relationship_count`,
+      )
+      .bind(
+        organized.bookmarkId,
+        organized.bookmarkId,
+        target.bookmark.id,
+        target.bookmark.id,
+        organized.bookmarkId,
+      )
+      .first<{ tag_count: number; relationship_count: number }>();
+    expect(organizedCounts).toEqual({ tag_count: 1, relationship_count: 1 });
+  });
+
+  it("supports both import modes and keeps every imported bookmark in Unsorted", async () => {
     const client = await login();
     await finishSetup(client);
     await exports.default.fetch("https://later-gator.test/api/automation/pause", {
@@ -532,83 +757,84 @@ describe("v6 Worker foundation", () => {
     });
     const fullLibraryCsv = [
       "id,title,note,excerpt,url,folder,tags,created,cover,highlights,favorite",
-      'r-1,"Full export title","A note","An excerpt","https://example.com/from-full-csv","Old folder","alpha, beta",46224,"","","true"',
+      'r-1,"Full export title","A note","An excerpt","https://x.com/from-full-csv","Old folder","alpha, beta",46224,"","","true"',
     ].join("\n");
     const folderOnlyCsv = [
       "id,title,note,excerpt,url,tags,created,cover,highlights,favorite",
       'r-2,"Folder export title","","","https://example.com/from-folder-csv","research",46225,"","","false"',
     ].join("\n");
 
-    for (const [name, csv, option] of [
-      ["full-library.csv", fullLibraryCsv, "preserve"],
-      ["folder-only.csv", folderOnlyCsv, "reorganize"],
-    ] as const) {
-      const form = new FormData();
-      form.set("option", option);
-      form.set("file", new File([csv], name, { type: "text/csv" }));
-      const preview = await exports.default.fetch("https://later-gator.test/api/imports/preview", {
-        method: "POST",
-        headers: {
-          cookie: client.cookie,
-          origin: "https://later-gator.test",
-          "x-csrf-token": client.csrf,
-        },
-        body: form,
-      });
-      expect(preview.status, await preview.clone().text()).toBe(201);
-      const previewBody = await preview.json<{
-        preview: { importId: string; validRows: number; duplicateRows: number };
-      }>();
-      expect(previewBody.preview).toMatchObject({ validRows: 1, duplicateRows: 0 });
-
-      const paused = await env.DB
-        .prepare("SELECT owner_ai_paused FROM app_state WHERE id = 1")
-        .first();
-      expect(paused).toEqual({ owner_ai_paused: 0 });
-
-      const commit = await exports.default.fetch(
-        `https://later-gator.test/api/imports/${previewBody.preview.importId}/commit`,
-        {
-          method: "POST",
-          headers: mutationHeaders(client),
-          body: JSON.stringify({ duplicateDecisions: [] }),
-        },
-      );
-      expect(commit.status, await commit.clone().text()).toBe(200);
-      expect(await commit.json()).toMatchObject({ import: { status: "committed" } });
-      expect(await processImportWork(env, previewBody.preview.importId)).toBe("complete");
-    }
+    await importRaindropCsv(client, fullLibraryCsv, "full-library.csv", "preserve");
+    await importRaindropCsv(client, folderOnlyCsv, "folder-only.csv");
+    const bootstrapAfterImport = await exports.default.fetch(
+      "https://later-gator.test/api/bootstrap",
+      { headers: { cookie: client.cookie } },
+    );
+    expect(bootstrapAfterImport.status).toBe(200);
 
     const imported = await env.DB
       .prepare(
-        `SELECT b.title, b.favorite, f.slug AS folder, b.description
+        `SELECT b.title, b.favorite, f.slug AS folder, b.description, b.note,
+                b.organization_policy, b.ai_state
            FROM bookmarks b JOIN folders f ON f.id = b.folder_id
           WHERE b.normalized_url IN (?, ?)
           ORDER BY b.normalized_url`,
       )
-      .bind("https://example.com/from-folder-csv", "https://example.com/from-full-csv")
+      .bind("https://example.com/from-folder-csv", "https://x.com/from-full-csv")
       .all();
     expect(imported.results).toEqual([
-      expect.objectContaining({
+      {
         title: "Folder export title",
         favorite: 0,
         folder: "unsorted",
         description: null,
-      }),
-      expect.objectContaining({
+        note: null,
+        organization_policy: "full",
+        ai_state: "pending",
+      },
+      {
         title: "Full export title",
         favorite: 0,
         folder: "unsorted",
         description: "An excerpt",
-      }),
+        note: null,
+        organization_policy: "preserve",
+        ai_state: "pending",
+      },
     ]);
-    const resumed = await env.DB
+    const importedSideEffects = await env.DB
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*)
+              FROM background_jobs j
+              JOIN bookmarks b ON b.id = j.bookmark_id
+             WHERE b.normalized_url IN (?, ?)) AS jobs,
+           (SELECT COUNT(*)
+              FROM thumbnail_jobs j
+              JOIN bookmarks b ON b.id = j.bookmark_id
+             WHERE b.normalized_url IN (?, ?)) AS thumbnail_jobs,
+           (SELECT COUNT(*)
+              FROM bookmark_tags bt
+              JOIN bookmarks b ON b.id = bt.bookmark_id
+             WHERE b.normalized_url IN (?, ?)) AS tag_links`,
+      )
+      .bind(
+        "https://example.com/from-folder-csv",
+        "https://x.com/from-full-csv",
+        "https://example.com/from-folder-csv",
+        "https://x.com/from-full-csv",
+        "https://example.com/from-folder-csv",
+        "https://x.com/from-full-csv",
+      )
+      .first();
+    expect(importedSideEffects).toEqual({ jobs: 2, thumbnail_jobs: 2, tag_links: 2 });
+    const ownerState = await env.DB
       .prepare("SELECT owner_ai_paused FROM app_state WHERE id = 1")
       .first();
-    expect(resumed).toEqual({ owner_ai_paused: 0 });
+    expect(ownerState).toEqual({ owner_ai_paused: 0 });
   });
 
-  it("bulk imports a larger CSV without changing the owner's AI pause", async () => {
+  it("inserts a larger CSV in chunks with persisted row progress", async () => {
     const client = await login();
     await finishSetup(client);
     const pause = await exports.default.fetch(
@@ -624,101 +850,69 @@ describe("v6 Worker foundation", () => {
     const csv = [
       "id,title,note,excerpt,url,tags,created,cover,highlights,favorite",
       ...Array.from(
-        { length: 75 },
+        { length: 205 },
         (_, index) =>
-          `row-${index.toString()},"Imported ${index.toString()}","","","https://example.com/import-chunk-${index.toString()}","ai",46225,"","","false"`,
+          `row-${index.toString()},"Imported ${index.toString()}","","","https://example.com/import-chunk-${index.toString()}","ignored",46225,"","","false"`,
       ),
     ].join("\n");
-    const form = new FormData();
-    form.set("option", "reorganize");
-    form.set("file", new File([csv], "large-folder-export.csv", { type: "text/csv" }));
-    const preview = await exports.default.fetch(
-      "https://later-gator.test/api/imports/preview",
-      {
-        method: "POST",
-        headers: {
-          cookie: client.cookie,
-          origin: "https://later-gator.test",
-          "x-csrf-token": client.csrf,
-        },
-        body: form,
-      },
-    );
-    expect(preview.status, await preview.clone().text()).toBe(201);
-    const previewBody = await preview.json<{ preview: { importId: string } }>();
-
-    // A staged preview is unconfirmed work and must NOT hold the library
-    // read-only. Previously it did, so an abandoned preview bricked the
-    // deployment until its 24-hour expiry.
-    const mutationDuringPreview = await exports.default.fetch(
-      "https://later-gator.test/api/bookmarks",
-      {
-        method: "POST",
-        headers: mutationHeaders(client),
-        body: JSON.stringify({
-          url: "https://example.com/allowed-during-preview",
-          organizationPolicy: "none",
-        }),
-      },
-    );
-    expect(mutationDuringPreview.status).toBe(201);
-
-    const commit = await exports.default.fetch(
-      `https://later-gator.test/api/imports/${previewBody.preview.importId}/commit`,
-      {
-        method: "POST",
-        headers: mutationHeaders(client),
-        body: JSON.stringify({ duplicateDecisions: [] }),
-      },
-    );
-    expect(commit.status).toBe(200);
-    expect(await processImportWork(env, previewBody.preview.importId)).toBe("complete");
+    const importId = await importRaindropCsv(client, csv, "large-folder-export.csv");
 
     const completed = await env.DB
       .prepare(
-        "SELECT status, committed_rows, failed_rows FROM import_sessions WHERE id = ?",
+        `SELECT status, total_rows, committed_rows, duplicate_rows, invalid_rows,
+                file_sha256
+           FROM import_sessions WHERE id = ?`,
       )
-      .bind(previewBody.preview.importId)
+      .bind(importId)
       .first();
     expect(completed).toEqual({
       status: "committed",
-      committed_rows: 75,
-      failed_rows: 0,
+      total_rows: 205,
+      committed_rows: 205,
+      duplicate_rows: 0,
+      invalid_rows: 0,
+      file_sha256: "",
     });
-    const importTimestamps = await env.DB
+    const imported = await env.DB
       .prepare(
-        `SELECT COUNT(DISTINCT b.added_at) AS count
-           FROM bookmarks b
-           JOIN import_rows r ON r.committed_bookmark_id = b.id
-          WHERE r.import_id = ?`,
+        `SELECT COUNT(*) AS count, COUNT(DISTINCT added_at) AS timestamps
+           FROM bookmarks
+          WHERE normalized_url LIKE 'https://example.com/import-chunk-%'`,
       )
-      .bind(previewBody.preview.importId)
       .first();
-    expect(importTimestamps).toEqual({ count: 1 });
-    const ownerState = await env.DB
-      .prepare("SELECT owner_ai_paused, owner_pause_reason FROM app_state WHERE id = 1")
+    expect(imported).toEqual({ count: 205, timestamps: 1 });
+    const stagedRows = await env.DB
+      .prepare("SELECT COUNT(*) AS count FROM import_rows WHERE import_id = ?")
+      .bind(importId)
       .first();
-    expect(ownerState).toMatchObject({ owner_ai_paused: 1 });
+    expect(stagedRows).toEqual({ count: 0 });
     const importedJobs = await env.DB
       .prepare(
-        `SELECT state, COUNT(*) AS count
-           FROM background_jobs
-          WHERE idempotency_key LIKE ?
-          GROUP BY state`,
+        `SELECT COUNT(*) AS count
+           FROM background_jobs j
+           JOIN bookmarks b ON b.id = j.bookmark_id
+          WHERE b.normalized_url LIKE 'https://example.com/import-chunk-%'`,
       )
-      .bind(`import:${previewBody.preview.importId}:row:%`)
-      .all();
-    expect(importedJobs.results).toEqual([{ state: "paused_owner", count: 75 }]);
+      .first();
+    expect(importedJobs).toEqual({ count: 205 });
+    const importedThumbnailJobs = await env.DB
+      .prepare(
+        `SELECT COUNT(*) AS count
+           FROM thumbnail_jobs j
+           JOIN bookmarks b ON b.id = j.bookmark_id
+          WHERE b.normalized_url LIKE 'https://example.com/import-chunk-%'`,
+      )
+      .first();
+    expect(importedThumbnailJobs).toEqual({ count: 205 });
+    const ownerState = await env.DB
+      .prepare("SELECT owner_ai_paused FROM app_state WHERE id = 1")
+      .first();
+    expect(ownerState).toEqual({ owner_ai_paused: 1 });
   });
 
-  it("keeps existing library bookmarks and skips duplicate URLs within a CSV", async () => {
+  it("uses normalized URLs to skip CSV and existing-library duplicates", async () => {
     const client = await login();
     await finishSetup(client);
-    await exports.default.fetch("https://later-gator.test/api/automation/pause", {
-      method: "PUT",
-      headers: mutationHeaders(client),
-      body: JSON.stringify({ paused: false }),
-    });
     await exports.default.fetch("https://later-gator.test/api/bookmarks", {
       method: "POST",
       headers: mutationHeaders(client),
@@ -730,123 +924,118 @@ describe("v6 Worker foundation", () => {
     });
     const csv = [
       "id,title,note,excerpt,url,tags,created,cover,highlights,favorite",
-      'r-duplicate,"Imported title","","","https://example.com/import-duplicate","ai",46225,"","","false"',
-      'r-new,"First CSV title","","","https://example.com/import-new","AI Research",46225,"","","false"',
-      'r-new-copy,"Second CSV title","","","https://example.com/import-new","Ignored",46225,"","","false"',
+      'r-duplicate,"Imported title","","","https://example.com/import-duplicate","ignored",46225,"","","false"',
+      'r-new,"First CSV title","","","https://example.com/import-new","ignored",46225,"","","false"',
+      'r-new-copy,"Second CSV title","","","https://example.com/import-new#fragment","ignored",46225,"","","false"',
     ].join("\n");
-    const form = new FormData();
-    form.set("option", "preserve");
-    form.set("file", new File([csv], "folder-export.csv", { type: "text/csv" }));
-    const preview = await exports.default.fetch("https://later-gator.test/api/imports/preview", {
-      method: "POST",
-      headers: {
-        cookie: client.cookie,
-        origin: "https://later-gator.test",
-        "x-csrf-token": client.csrf,
-      },
-      body: form,
-    });
-    const previewBody = await preview.json<{
-      preview: {
-        importId: string;
-        duplicateRows: number;
-        duplicates: { rowNumber: number; existingTitle: string }[];
-      };
-    }>();
-    expect(previewBody.preview.duplicateRows).toBe(1);
-    expect(previewBody.preview.duplicates).toEqual([]);
+    const importId = await importRaindropCsv(client, csv, "folder-export.csv");
 
-    const started = await exports.default.fetch(
-      `https://later-gator.test/api/imports/${previewBody.preview.importId}/commit`,
-      {
-        method: "POST",
-        headers: mutationHeaders(client),
-        body: JSON.stringify({ duplicateDecisions: [] }),
-      },
+    const progress = await exports.default.fetch(
+      `https://later-gator.test/api/imports/${importId}`,
+      { headers: { cookie: client.cookie } },
     );
-    expect(started.status).toBe(200);
-    expect(await processImportWork(env, previewBody.preview.importId)).toBe("complete");
-    const current = await env.DB
+    expect(await progress.json()).toMatchObject({
+      import: {
+        status: "committed",
+        total_rows: 3,
+        valid_rows: 2,
+        committed_rows: 1,
+        duplicate_rows: 2,
+        invalid_rows: 0,
+        processed_rows: 3,
+      },
+    });
+    const existing = await env.DB
       .prepare("SELECT title FROM bookmarks WHERE normalized_url = ?")
       .bind("https://example.com/import-duplicate")
       .first();
-    expect(current).toEqual({ title: "Current title" });
+    expect(existing).toEqual({ title: "Current title" });
     const imported = await env.DB
       .prepare(
-        `SELECT b.title, t.normalized_name
+        `SELECT b.title, b.description, f.slug AS folder
            FROM bookmarks b
-           LEFT JOIN bookmark_tags bt ON bt.bookmark_id = b.id
-           LEFT JOIN tags t ON t.id = bt.tag_id
+           JOIN folders f ON f.id = b.folder_id
           WHERE b.normalized_url = ?`,
       )
       .bind("https://example.com/import-new")
       .first();
     expect(imported).toEqual({
       title: "First CSV title",
-      normalized_name: "ai-research",
+      description: null,
+      folder: "unsorted",
     });
-    const existingOutcome = await env.DB
-      .prepare(
-        `SELECT safe_error_code
-           FROM import_rows
-          WHERE import_id = ? AND row_number = 2`,
-      )
-      .bind(previewBody.preview.importId)
-      .first();
-    expect(existingOutcome).toEqual({ safe_error_code: "existing_library_skipped" });
   });
 
-  it("lets the user cancel a wedged import even after its preview expired", async () => {
+  it("requires only a URL column and makes re-upload the recovery path", async () => {
     const client = await login();
     await finishSetup(client);
     const csv = [
-      "id,title,note,excerpt,url,tags,created,cover,highlights,favorite",
-      'w-1,"Wedged row","","","https://example.com/wedged","",46225,"","","false"',
+      "url,title",
+      "not-a-url,Invalid",
+      "https://example.com/minimal,Minimal export",
     ].join("\n");
-    const form = new FormData();
-    form.set("option", "reorganize");
-    form.set("file", new File([csv], "wedged.csv", { type: "text/csv" }));
-    const preview = await exports.default.fetch("https://later-gator.test/api/imports/preview", {
+    const firstImportId = await importRaindropCsv(client, csv, "minimal.csv");
+    const first = await env.DB
+      .prepare(
+        `SELECT committed_rows, duplicate_rows, invalid_rows,
+                committed_rows + duplicate_rows + invalid_rows AS processed_rows
+           FROM import_sessions WHERE id = ?`,
+      )
+      .bind(firstImportId)
+      .first();
+    expect(first).toEqual({
+      committed_rows: 1,
+      duplicate_rows: 0,
+      invalid_rows: 1,
+      processed_rows: 2,
+    });
+
+    const secondImportId = await importRaindropCsv(client, csv, "minimal-again.csv");
+    const second = await env.DB
+      .prepare(
+        "SELECT committed_rows, duplicate_rows, invalid_rows FROM import_sessions WHERE id = ?",
+      )
+      .bind(secondImportId)
+      .first();
+    expect(second).toEqual({
+      committed_rows: 0,
+      duplicate_rows: 1,
+      invalid_rows: 1,
+    });
+
+    const wrongFile = new FormData();
+    wrongFile.set("file", new File(["title\nNo URL"], "wrong.csv", { type: "text/csv" }));
+    wrongFile.set("option", "reorganize");
+    const rejected = await exports.default.fetch("https://later-gator.test/api/imports", {
       method: "POST",
       headers: {
         cookie: client.cookie,
         origin: "https://later-gator.test",
         "x-csrf-token": client.csrf,
       },
-      body: form,
+      body: wrongFile,
     });
-    const { preview: staged } = await preview.json<{ preview: { importId: string } }>();
+    expect(rejected.status).toBe(422);
 
-    // Simulate the wedge: a commit that died mid-flight, then expiry elapsed.
     await env.DB
       .prepare(
-        "UPDATE import_sessions SET status = 'committing', expires_at = ? WHERE id = ?",
+        `INSERT INTO import_sessions (
+          id, status, option, file_name, file_size, file_sha256, total_rows,
+          valid_rows, created_at, expires_at
+        ) VALUES (?, 'committing', 'reorganize', 'legacy.csv', 100, ?, 1, 1, ?, ?)`,
       )
-      .bind(new Date(Date.now() - 60_000).toISOString(), staged.importId)
+      .bind(
+        crypto.randomUUID(),
+        "legacy-preview-hash",
+        new Date().toISOString(),
+        new Date(Date.now() + 60_000).toISOString(),
+      )
       .run();
-
-    // An expired hold must not keep the library read-only.
-    const mutation = await exports.default.fetch("https://later-gator.test/api/bookmarks", {
-      method: "POST",
-      headers: mutationHeaders(client),
-      body: JSON.stringify({
-        url: "https://example.com/after-wedge",
-        organizationPolicy: "none",
-      }),
+    const bootstrap = await exports.default.fetch("https://later-gator.test/api/bootstrap", {
+      headers: { cookie: client.cookie },
     });
-    expect(mutation.status).toBe(201);
-
-    // Cancel is the escape hatch and must succeed on a stuck, expired session.
-    const cancelled = await exports.default.fetch(
-      `https://later-gator.test/api/imports/${staged.importId}/cancel`,
-      { method: "POST", headers: mutationHeaders(client), body: "{}" },
-    );
-    expect(cancelled.status).toBe(200);
-    const finalState = await env.DB
-      .prepare("SELECT status FROM import_sessions WHERE id = ?")
-      .bind(staged.importId)
-      .first();
-    expect(finalState).toEqual({ status: "cancelled" });
+    expect(bootstrap.status).toBe(200);
+    expect(await bootstrap.json()).toMatchObject({ state: { activeImport: null } });
   });
 
   it("serves standard library dialogs and expires unauthenticated API cookies", async () => {
@@ -866,6 +1055,9 @@ describe("v6 Worker foundation", () => {
     expect(html).toContain('id="filterDialog"');
     expect(html).toContain('id="tagSuggestions"');
     expect(html).toContain('id="topicsDialog"');
+    expect(html).toContain('id="topicDeleteSelected"');
+    expect(html).not.toContain('id="selectModeButton"');
+    expect(html).not.toContain('class="busy-overlay"');
     expect(html).toContain('id="detailExternalLink"');
     expect(html).not.toContain('id="editModeButton"');
 
@@ -949,16 +1141,19 @@ describe("v6 Worker foundation", () => {
     });
 
     const preview = await exports.default.fetch(
-      `https://later-gator.test/api/thumbnails/${created.bookmark.id}`,
+      `https://later-gator.test/api/thumbnails/${created.bookmark.id}/${thumbnailId}`,
       { headers: { cookie: client.cookie } },
     );
     expect(preview.status).toBe(200);
     expect(preview.headers.get("content-type")).toBe("image/webp");
     expect(preview.headers.get("etag")).toBe('"sha256-test"');
+    expect(preview.headers.get("cache-control")).toBe(
+      "private, max-age=31536000, immutable",
+    );
     expect(new Uint8Array(await preview.arrayBuffer())).toEqual(thumbnailBytes);
 
     const unchangedPreview = await exports.default.fetch(
-      `https://later-gator.test/api/thumbnails/${created.bookmark.id}`,
+      `https://later-gator.test/api/thumbnails/${created.bookmark.id}/${thumbnailId}`,
       {
         headers: {
           cookie: client.cookie,
@@ -967,6 +1162,12 @@ describe("v6 Worker foundation", () => {
       },
     );
     expect(unchangedPreview.status).toBe(304);
+
+    const unversionedPreview = await exports.default.fetch(
+      `https://later-gator.test/api/thumbnails/${created.bookmark.id}`,
+      { headers: { cookie: client.cookie } },
+    );
+    expect(unversionedPreview.status).toBe(404);
 
     const related = await exports.default.fetch(
       `https://later-gator.test/api/bookmarks/${created.bookmark.id}/relationships`,

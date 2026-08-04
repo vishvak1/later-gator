@@ -10,8 +10,10 @@ import {
   type CaptureKind,
 } from "../security/capture-credentials";
 import { ingestThumbnailCandidate } from "../application/thumbnails";
+import { dispatchThumbnailJob } from "../application/thumbnail-jobs";
 import { apiError, json, readJson } from "./responses";
 import { sha256Base64 } from "../security/encoding";
+import { normalizeBookmarkUrl } from "../domain/url";
 
 const extensionCaptureSchema = z.strictObject({
   requestId: z.uuid(),
@@ -28,6 +30,14 @@ const extensionCaptureSchema = z.strictObject({
 
 const iosCaptureSchema = z.strictObject({
   requestId: z.uuid(),
+  url: z.string().trim().min(1).max(8192),
+});
+
+const captureBookmarkSearchSchema = z.strictObject({
+  query: z.string().trim().min(1).max(200),
+});
+
+const captureBookmarkStatusSchema = z.strictObject({
   url: z.string().trim().min(1).max(8192),
 });
 
@@ -131,6 +141,73 @@ export async function captureOptions(request: Request, env: Env): Promise<Respon
   return cors(json({ ok: true, folders: folders.results, tags: tags.results }));
 }
 
+export async function captureBookmarkSearch(request: Request, env: Env): Promise<Response> {
+  const credential = await authenticateCapture(request, env.DB, "capture:bookmark-search");
+  if (credential === null) return cors(apiError(401, "capture_unauthorized", "Reconnect Later Gator."));
+  let parsed;
+  try {
+    parsed = captureBookmarkSearchSchema.safeParse(await readJson(request, 4 * 1024));
+  } catch {
+    return cors(apiError(400, "invalid_capture_search", "Enter a bookmark search."));
+  }
+  if (!parsed.success) {
+    return cors(apiError(400, "invalid_capture_search", "Enter a bookmark search."));
+  }
+  const query = parsed.data.query.toLocaleLowerCase("en-US");
+  const rows = await env.DB
+    .prepare(
+      `SELECT b.id, b.title, b.url, b.hostname, f.name AS folder_name
+         FROM bookmarks b
+         JOIN folders f ON f.id = b.folder_id
+        WHERE b.deleted_at IS NULL
+          AND (
+            INSTR(LOWER(b.title), ?) > 0
+            OR INSTR(LOWER(b.hostname), ?) > 0
+            OR INSTR(LOWER(b.url), ?) > 0
+          )
+        ORDER BY CASE
+                   WHEN INSTR(LOWER(b.title), ?) = 1 THEN 0
+                   WHEN INSTR(LOWER(b.hostname), ?) = 1 THEN 1
+                   ELSE 2
+                 END,
+                 b.modified_at DESC,
+                 b.id
+        LIMIT 12`,
+    )
+    .bind(query, query, query, query, query)
+    .all();
+  return cors(json({ ok: true, bookmarks: rows.results }));
+}
+
+export async function captureBookmarkStatus(request: Request, env: Env): Promise<Response> {
+  const credential = await authenticateCapture(request, env.DB, "capture:options");
+  if (credential === null) return cors(apiError(401, "capture_unauthorized", "Reconnect Later Gator."));
+  let parsed;
+  try {
+    parsed = captureBookmarkStatusSchema.safeParse(await readJson(request, 12 * 1024));
+  } catch {
+    return cors(apiError(400, "invalid_capture_status", "The current page URL could not be read."));
+  }
+  if (!parsed.success) {
+    return cors(apiError(400, "invalid_capture_status", "The current page URL could not be read."));
+  }
+  try {
+    const normalized = normalizeBookmarkUrl(parsed.data.url);
+    const bookmark = await env.DB
+      .prepare(
+        `SELECT 1
+           FROM bookmarks
+          WHERE normalized_url = ? AND deleted_at IS NULL
+          LIMIT 1`,
+      )
+      .bind(normalized.normalizedUrl)
+      .first();
+    return cors(json({ ok: true, saved: bookmark !== null }));
+  } catch {
+    return cors(apiError(400, "invalid_capture_status", "The current page URL could not be read."));
+  }
+}
+
 export async function captureBookmark(
   request: Request,
   env: Env,
@@ -177,6 +254,11 @@ export async function captureBookmark(
   }
 
   try {
+    const extensionFolderId =
+      extensionData?.success === true
+        ? extensionData.data.folderId ?? "folder_unsorted"
+        : "folder_unsorted";
+    const extensionAllowsManualOrganization = extensionFolderId !== "folder_unsorted";
     const sourceInput =
       kind === "ios"
         ? {
@@ -189,11 +271,11 @@ export async function captureBookmark(
             title: extensionData?.success === true ? extensionData.data.title : null,
             description: extensionData?.success === true ? extensionData.data.description : null,
             note: extensionData?.success === true ? extensionData.data.note : null,
-            folderId:
-              extensionData?.success === true
-                ? extensionData.data.folderId ?? "folder_unsorted"
-                : "folder_unsorted",
-            tags: extensionData?.success === true ? extensionData.data.tags : [],
+            folderId: extensionFolderId,
+            tags:
+              extensionData?.success === true && extensionAllowsManualOrganization
+                ? extensionData.data.tags
+                : [],
             favorite: extensionData?.success === true ? extensionData.data.favorite : false,
             organizationPolicy:
               extensionData?.success !== true ||
@@ -205,8 +287,13 @@ export async function captureBookmark(
     const source = await createBookmark(env.DB, sourceInput, kind === "ios" ? "ios" : "extension");
     let linked = false;
     let linkFailed = false;
-    const linkedUrl = extensionData?.success === true ? extensionData.data.linkedUrl : null;
+    const linkedUrl =
+      extensionData?.success === true && extensionAllowsManualOrganization
+        ? extensionData.data.linkedUrl
+        : null;
     const linkedJobs: string[] = [];
+    const thumbnailJobs: string[] =
+      source.thumbnailJobId === null ? [] : [source.thumbnailJobId];
     if (linkedUrl !== null && linkedUrl !== undefined) {
       try {
         const linkedBookmark = await createBookmark(
@@ -216,6 +303,9 @@ export async function captureBookmark(
         );
         linked = await relateBookmarks(env.DB, source.bookmark.id, linkedBookmark.bookmark.id);
         if (linkedBookmark.jobId !== null) linkedJobs.push(linkedBookmark.jobId);
+        if (linkedBookmark.thumbnailJobId !== null) {
+          thumbnailJobs.push(linkedBookmark.thumbnailJobId);
+        }
       } catch {
         linkFailed = true;
       }
@@ -237,6 +327,10 @@ export async function captureBookmark(
     const jobs = [...(source.jobId === null ? [] : [source.jobId]), ...linkedJobs];
     const dispatches = await Promise.all(
       jobs.map((jobId) => dispatchJob(env.DB, env.BACKGROUND_QUEUE, jobId)),
+    );
+    await Promise.all(
+      thumbnailJobs.map(jobId =>
+        dispatchThumbnailJob(env.DB, env.THUMBNAIL_QUEUE, jobId)),
     );
     const automationPending = dispatches.some((result) => !result);
     const result = linkFailed

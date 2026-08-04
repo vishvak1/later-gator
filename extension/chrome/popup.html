@@ -2,22 +2,30 @@
 <html lang="en">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Later Gator</title><link rel="stylesheet" href="popup.css"></head>
 <body>
-  <header><span class="gator">🐊</span><div><strong>Later Gator</strong><small>Save bookmark</small></div></header>
-  <section id="connectionPanel" hidden>
-    <h1>Connect</h1><label>Deployment URL<input id="deploymentUrl" type="url" placeholder="https://later-gator.example.workers.dev"></label><label>Extension token<input id="captureToken" type="password"></label><button id="connectButton">Connect</button>
+  <header id="popupHeader"><img class="gator" src="icons/icon-48.png" alt=""><div class="brand"><strong>Later Gator</strong><small>Save bookmark</small></div><button id="connectionSettings" class="icon-button secondary" type="button" title="Connection settings" aria-label="Connection settings" hidden>⚙</button></header>
+  <section id="loadingPanel" aria-live="polite">
+    <p id="loadingStatus">Connecting to Later Gator…</p><button id="retryButton" type="button" hidden>Retry</button>
   </section>
-  <form id="captureForm">
+  <form id="connectionPanel" hidden>
+    <h1>Connect</h1><p class="helper">Generate one browser-extension connection code in Later Gator Settings, then paste it below.</p><label>Connection code<textarea id="connectionCode" placeholder="later-gator-v1.…" autocomplete="off" spellcheck="false" required></textarea></label><p id="connectionStatus" class="status" role="status"></p><div class="actions"><button id="cancelConnection" type="button" class="secondary" hidden>Cancel</button><button id="connectButton" type="submit">Connect</button></div>
+  </form>
+  <form id="captureForm" hidden>
     <img id="preview" alt="" hidden>
     <h1 id="pageTitle">Current page</h1><p id="pageDescription"></p>
     <label>Note<textarea id="note"></textarea></label>
     <label>Folder<select id="folder"></select></label>
-    <label>Tags<input id="tags" placeholder="Add tags…"></label>
-    <label>Source URL<input id="sourceUrl" type="url" required></label>
-    <label>Linked to<input id="linkedUrl" type="url" placeholder="Optional related bookmark"></label>
+    <fieldset id="tagFieldset" disabled><legend>Tags</legend><div id="selectedTags" class="tag-chips"></div><div class="autocomplete"><input id="tagInput" placeholder="Type # to add tags" autocomplete="off" spellcheck="false" aria-controls="tagSuggestions" aria-expanded="false"><div id="tagSuggestions" class="suggestions" role="listbox" hidden></div></div><small id="tagHelp" class="field-help">Choose a permanent folder to add tags.</small></fieldset>
+    <fieldset id="linkedFieldset" disabled><legend>Linked to</legend><div id="selectedLinkedBookmark" class="selected-link" hidden><span id="selectedLinkedLabel"></span><button id="clearLinkedBookmark" class="chip-remove" type="button" aria-label="Remove linked bookmark">×</button></div><div class="autocomplete"><input id="linkedSearch" type="search" placeholder="Search existing bookmarks…" autocomplete="off" aria-controls="linkedSuggestions" aria-expanded="false"><div id="linkedSuggestions" class="suggestions" role="listbox" hidden></div></div><small id="linkedHelp" class="field-help">Choose a permanent folder to link an existing bookmark.</small></fieldset>
     <label class="check"><input id="favorite" type="checkbox"> Favorite</label>
-    <p id="status" role="status"></p>
-    <footer><button id="reconnectButton" type="button" class="secondary">Connection</button><button id="saveButton" type="submit">Save</button></footer>
+    <p id="status" class="status" role="status"></p>
+    <footer><button id="saveButton" type="submit">Save</button></footer>
   </form>
+  <section id="successPanel" class="success-panel" aria-live="polite" hidden>
+    <div class="success-art" aria-hidden="true"><span class="confetti one"></span><span class="confetti two"></span><span class="confetti three"></span><span class="confetti four"></span><span class="success-check">✓</span></div>
+    <div><h1 id="successTitle">Bookmark saved!</h1><p id="successMessage">Your bookmark is safely in Later Gator.</p></div>
+    <a id="openLaterGator" class="success-action" target="_blank" rel="noreferrer">Open Later Gator</a>
+    <button id="closeSuccess" class="secondary" type="button">Done</button>
+  </section>
   <script src="popup.js"></script>
 </body>
 </html>

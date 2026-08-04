@@ -51,6 +51,7 @@ export interface CreatedBookmark {
   bookmark: BookmarkRow;
   created: boolean;
   jobId: string | null;
+  thumbnailJobId: string | null;
 }
 
 async function getAppState(db: D1Database): Promise<AppStateRow> {
@@ -158,6 +159,21 @@ export async function completeSetup(
   await db.batch(statements);
 }
 
+export async function updatePersonalInstructions(
+  db: D1Database,
+  personalInstructions: string | null,
+): Promise<void> {
+  const result = await db
+    .prepare(
+      `UPDATE profile
+          SET personal_instructions = ?, updated_at = ?
+        WHERE id = 1`,
+    )
+    .bind(personalInstructions === "" ? null : personalInstructions, new Date().toISOString())
+    .run();
+  if (result.meta.changes !== 1) throw new Error("profile_not_configured");
+}
+
 export async function createBookmark(
   db: D1Database,
   input: CreateBookmarkInput,
@@ -178,15 +194,20 @@ export async function createBookmark(
     )
     .bind(normalized.normalizedUrl)
     .first<BookmarkRow>();
-  if (existing !== null) return { bookmark: existing, created: false, jobId: null };
+  if (existing !== null) {
+    return { bookmark: existing, created: false, jobId: null, thumbnailJobId: null };
+  }
 
   const appState = await getAppState(db);
   const provider = await getProvider(db);
   const id = crypto.randomUUID();
-  const jobId = input.organizationPolicy === "none" ? null : crypto.randomUUID();
   const now = new Date().toISOString();
-  const organizationPolicy = input.organizationPolicy ?? "full";
   const folderId = input.folderId ?? UNSORTED_FOLDER_ID;
+  const organizationPolicy =
+    folderId === UNSORTED_FOLDER_ID
+      ? input.organizationPolicy === "preserve" ? "preserve" : "full"
+      : "none";
+  const jobId = organizationPolicy === "none" ? null : crypto.randomUUID();
   const aiState =
     organizationPolicy === "none"
       ? "complete"
@@ -233,6 +254,13 @@ export async function createBookmark(
         now,
         now,
       ),
+    db
+      .prepare(
+        `INSERT INTO thumbnail_jobs (
+          id, bookmark_id, state, created_at, updated_at
+        ) VALUES (?, ?, 'pending_dispatch', ?, ?)`,
+      )
+      .bind(id, id, now, now),
   ];
 
   if (jobId !== null) {
@@ -294,7 +322,7 @@ export async function createBookmark(
   await db.batch(statements);
   const bookmark = await getBookmark(db, id);
   if (bookmark === null) throw new Error("bookmark_commit_missing");
-  return { bookmark, created: true, jobId };
+  return { bookmark, created: true, jobId, thumbnailJobId: id };
 }
 
 const SORT_COLUMNS = {
@@ -540,6 +568,18 @@ export async function updateBookmark(
               title = COALESCE(?, title),
               description = CASE WHEN ? = 1 THEN ? ELSE description END,
               note = CASE WHEN ? = 1 THEN ? ELSE note END,
+              organization_policy = CASE
+                WHEN ? IS NULL THEN organization_policy
+                WHEN ? = 'folder_unsorted' AND folder_id != 'folder_unsorted' THEN 'full'
+                WHEN ? != 'folder_unsorted' THEN 'none'
+                ELSE organization_policy
+              END,
+              ai_state = CASE
+                WHEN ? IS NULL THEN ai_state
+                WHEN ? = 'folder_unsorted' AND folder_id != 'folder_unsorted' THEN 'pending'
+                WHEN ? != 'folder_unsorted' THEN 'complete'
+                ELSE ai_state
+              END,
               folder_id = COALESCE(?, folder_id),
               favorite = COALESCE(?, favorite),
               modified_at = ?,
@@ -555,12 +595,38 @@ export async function updateBookmark(
       input.note !== undefined ? 1 : 0,
       input.note ?? null,
       input.folderId ?? null,
+      input.folderId ?? null,
+      input.folderId ?? null,
+      input.folderId ?? null,
+      input.folderId ?? null,
+      input.folderId ?? null,
+      input.folderId ?? null,
       input.favorite === undefined ? null : input.favorite ? 1 : 0,
       now,
       id,
       input.expectedRevision,
     ),
   ];
+
+  if (input.folderId !== undefined && input.folderId !== UNSORTED_FOLDER_ID) {
+    statements.push(
+      db
+        .prepare(
+          `UPDATE background_jobs
+              SET state = 'cancelled',
+                  last_safe_error_code = 'bookmark_left_unsorted',
+                  completed_at = ?,
+                  updated_at = ?
+            WHERE bookmark_id = ?
+              AND state IN ('pending_dispatch', 'queued', 'running', 'waiting_provider', 'paused_edit', 'paused_owner')
+              AND EXISTS (
+                SELECT 1 FROM bookmarks
+                 WHERE id = ? AND revision = ? AND modified_at = ?
+              )`,
+        )
+        .bind(now, now, id, id, input.expectedRevision + 1, now),
+    );
+  }
 
   if (input.tags !== undefined) {
     const requestedTags = new Map(
@@ -643,6 +709,66 @@ export async function updateBookmark(
               SELECT COUNT(*) FROM bookmark_tags WHERE bookmark_tags.tag_id = tags.id
             )`,
       ),
+    );
+  }
+
+  if (normalized !== null) {
+    statements.push(
+      db
+        .prepare(
+          `UPDATE thumbnails
+              SET state = 'stale', updated_at = ?
+            WHERE bookmark_id = ?
+              AND source_type != 'user'
+              AND EXISTS (
+                SELECT 1 FROM bookmarks
+                 WHERE id = ? AND revision = ? AND modified_at = ?
+              )`,
+        )
+        .bind(now, id, id, input.expectedRevision + 1, now),
+      db
+        .prepare(
+          `UPDATE bookmarks
+              SET thumbnail_id = NULL
+            WHERE id = ? AND revision = ? AND modified_at = ?
+              AND EXISTS (
+                SELECT 1 FROM thumbnails
+                 WHERE bookmark_id = ? AND source_type != 'user'
+              )`,
+        )
+        .bind(id, input.expectedRevision + 1, now, id),
+      db
+        .prepare(
+          `INSERT INTO thumbnail_jobs (
+             id, bookmark_id, state, attempt_count, created_at, updated_at
+           )
+           SELECT ?, ?, 'pending_dispatch', 0, ?, ?
+            WHERE EXISTS (
+              SELECT 1 FROM bookmarks
+               WHERE id = ? AND revision = ? AND modified_at = ?
+            )
+              AND NOT EXISTS (
+                SELECT 1 FROM thumbnails
+                 WHERE bookmark_id = ? AND source_type = 'user'
+              )
+           ON CONFLICT(bookmark_id) DO UPDATE SET
+             state = 'pending_dispatch',
+             attempt_count = 0,
+             next_attempt_at = NULL,
+             last_safe_error_code = NULL,
+             updated_at = excluded.updated_at,
+             completed_at = NULL`,
+        )
+        .bind(
+          id,
+          id,
+          now,
+          now,
+          id,
+          input.expectedRevision + 1,
+          now,
+          id,
+        ),
     );
   }
 
@@ -821,6 +947,7 @@ async function canonicalizeStoredTags(db: D1Database): Promise<void> {
 export async function getBootstrapState(db: D1Database): Promise<{
   setupStatus: string;
   ownerAiPaused: boolean;
+  personalInstructions: string | null;
   activeImport: Record<string, unknown> | null;
   folders: D1Result<Record<string, unknown>>["results"];
   tags: D1Result<Record<string, unknown>>["results"];
@@ -846,7 +973,7 @@ export async function getBootstrapState(db: D1Database): Promise<{
 }> {
   await canonicalizeStoredTags(db);
   const state = await getAppState(db);
-  const [folders, tags, sites, provider, activeImport, trash, automationProgress] =
+  const [folders, tags, sites, provider, profile, activeImport, trash, automationProgress] =
     await Promise.all([
     db
       .prepare(
@@ -884,12 +1011,16 @@ export async function getBootstrapState(db: D1Database): Promise<{
         last_safe_error_code: string | null;
       }>(),
     db
+      .prepare("SELECT personal_instructions FROM profile WHERE id = 1")
+      .first<{ personal_instructions: string | null }>(),
+    db
       .prepare(
         `SELECT id, status, option, file_name, total_rows, valid_rows, invalid_rows,
                 duplicate_rows, committed_rows, failed_rows, created_at, expires_at,
-                committed_rows + failed_rows AS processed_rows
+                committed_rows + duplicate_rows + invalid_rows + failed_rows AS processed_rows
            FROM import_sessions
-          WHERE status IN ('preview', 'committing')
+          WHERE status = 'committing'
+            AND file_sha256 = ''
             AND expires_at > ?
           ORDER BY created_at DESC
           LIMIT 1`,
@@ -931,6 +1062,7 @@ export async function getBootstrapState(db: D1Database): Promise<{
   return {
     setupStatus: state.setup_status,
     ownerAiPaused: state.owner_ai_paused === 1,
+    personalInstructions: profile?.personal_instructions ?? null,
     activeImport,
     folders: folders.results,
     tags: tags.results,

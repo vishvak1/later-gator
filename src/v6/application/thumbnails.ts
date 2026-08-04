@@ -77,11 +77,56 @@ function metadataImage(html: string, pageUrl: string): string | null {
   return null;
 }
 
+function attribute(tag: string, name: string): string | null {
+  const match = new RegExp(`${name}\\s*=\\s*["']([^"']+)["']`, "iu").exec(tag);
+  return match?.[1] ?? null;
+}
+
+function iconImages(html: string, pageUrl: string): string[] {
+  const icons: string[] = [];
+  for (const match of html.matchAll(/<link\b[^>]*>/giu)) {
+    const tag = match[0];
+    const rel = attribute(tag, "rel")?.toLocaleLowerCase("en-US") ?? "";
+    const href = attribute(tag, "href");
+    if (href === null || !rel.split(/\s+/u).some(value => value.includes("icon"))) continue;
+    try {
+      icons.push(new URL(href.replaceAll("&amp;", "&"), pageUrl).toString());
+    } catch {
+      // Ignore malformed page metadata and continue to the conventional favicon.
+    }
+  }
+  return icons;
+}
+
+export interface ThumbnailCandidate {
+  url: string;
+  source: "page_metadata" | "favicon";
+}
+
+export async function findPageThumbnailCandidates(
+  pageUrl: string,
+): Promise<ThumbnailCandidate[]> {
+  const candidates: ThumbnailCandidate[] = [];
+  try {
+    const response = await safeFetch(pageUrl, "text/html,application/xhtml+xml");
+    if (response.ok && response.headers.get("content-type")?.includes("text/html")) {
+      const bytes = await boundedBytes(response, MAX_HTML_BYTES);
+      const html = new TextDecoder().decode(bytes);
+      const metadata = metadataImage(html, pageUrl);
+      if (metadata !== null) candidates.push({ url: metadata, source: "page_metadata" });
+      for (const icon of iconImages(html, pageUrl).slice(0, 3)) {
+        candidates.push({ url: icon, source: "favicon" });
+      }
+    }
+  } catch {
+    // A page that cannot be fetched may still expose the conventional favicon.
+  }
+  candidates.push({ url: new URL("/favicon.ico", pageUrl).toString(), source: "favicon" });
+  return [...new Map(candidates.map(candidate => [candidate.url, candidate])).values()];
+}
+
 export async function findPageThumbnail(pageUrl: string): Promise<string | null> {
-  const response = await safeFetch(pageUrl, "text/html,application/xhtml+xml");
-  if (!response.ok || !response.headers.get("content-type")?.includes("text/html")) return null;
-  const bytes = await boundedBytes(response, MAX_HTML_BYTES);
-  return metadataImage(new TextDecoder().decode(bytes), pageUrl);
+  return (await findPageThumbnailCandidates(pageUrl))[0]?.url ?? null;
 }
 
 export async function ingestThumbnailCandidate(
@@ -173,20 +218,10 @@ export async function ingestThumbnailCandidate(
         env.DB
           .prepare(
             `UPDATE bookmarks
-                SET thumbnail_id = ?, revision = revision + 1, modified_at = ?
+                SET thumbnail_id = ?
               WHERE id = ? AND deleted_at IS NULL`,
           )
-          .bind(thumbnailId, now, bookmarkId),
-        env.DB
-          .prepare(
-            `UPDATE background_jobs
-                SET expected_revision = expected_revision + 1, updated_at = ?
-              WHERE bookmark_id = ?
-                AND state IN (
-                  'pending_dispatch', 'queued', 'waiting_provider', 'paused_edit', 'paused_owner'
-                )`,
-          )
-          .bind(now, bookmarkId),
+          .bind(thumbnailId, bookmarkId),
       ]);
     } catch (error) {
       await env.THUMBNAILS.delete(objectKey);

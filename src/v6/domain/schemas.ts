@@ -9,11 +9,15 @@ export const loginInputSchema = z.strictObject({
 });
 
 export const completeSetupInputSchema = z.strictObject({
-  relevantTags: z.array(trimmedText(64)).min(5).max(20),
+  relevantTags: z.array(trimmedText(64)).min(5).max(500),
   careerContext: trimmedText(2000),
   aspirationContext: trimmedText(2000),
   personalInstructions: optionalText(5000),
   timezone: trimmedText(100),
+});
+
+export const updatePersonalInstructionsInputSchema = z.strictObject({
+  personalInstructions: z.union([z.string().trim().max(5000), z.null()]),
 });
 
 export const createBookmarkInputSchema = z.strictObject({
@@ -112,18 +116,6 @@ export const relationshipInputSchema = z.strictObject({
   linkedUrl: trimmedText(8192),
 });
 
-export const importStartInputSchema = z.strictObject({
-  duplicateDecisions: z
-    .array(
-      z.strictObject({
-        rowNumber: z.number().int().positive(),
-        action: z.enum(["replace", "use_current"]),
-      }),
-    )
-    .max(5000)
-    .default([]),
-});
-
 export const resetApplicationInputSchema = z.strictObject({
   confirmation: z.literal("DELETE EVERYTHING"),
 });
@@ -145,16 +137,6 @@ export const backgroundMessageSchema = z.union([
   }),
   z.strictObject({
     version: z.literal(1),
-    type: z.literal("import"),
-    importId: z.uuid(),
-  }),
-  z.strictObject({
-    version: z.literal(1),
-    type: z.literal("import_thumbnails"),
-    importId: z.uuid(),
-  }),
-  z.strictObject({
-    version: z.literal(1),
     type: z.literal("reset_storage"),
   }),
   z.strictObject({
@@ -168,3 +150,17 @@ export const backgroundMessageSchema = z.union([
 ]);
 
 export type BackgroundMessage = z.infer<typeof backgroundMessageSchema>;
+
+export const thumbnailMessageSchema = z.union([
+  z.strictObject({
+    version: z.literal(1),
+    type: z.literal("dispatch_thumbnail_pending"),
+  }),
+  z.strictObject({
+    version: z.literal(1),
+    type: z.literal("thumbnail"),
+    jobId: z.uuid(),
+  }),
+]);
+
+export type ThumbnailMessage = z.infer<typeof thumbnailMessageSchema>;

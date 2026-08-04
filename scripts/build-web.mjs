@@ -2,7 +2,10 @@
 // writes a manifest the Worker imports. The hash is the cache key, so there is
 // no manual asset version to forget to bump.
 import esbuild from "esbuild";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 const PUBLIC_DIR = "web/public";
 const OUT_DIR = `${PUBLIC_DIR}/assets`;
@@ -12,19 +15,37 @@ rmSync(PUBLIC_DIR, { recursive: true, force: true });
 mkdirSync(OUT_DIR, { recursive: true });
 mkdirSync("src/v6/generated", { recursive: true });
 
-const result = await esbuild.build({
-  entryPoints: ["web/src/main.ts", "web/src/app.css"],
-  outdir: OUT_DIR,
-  bundle: true,
-  minify: true,
-  sourcemap: false,
-  format: "esm",
-  target: ["es2022"],
-  platform: "browser",
-  entryNames: "[name].[hash]",
-  metafile: true,
-  logLevel: "warning",
-});
+const temporaryDirectory = mkdtempSync(join(tmpdir(), "later-gator-web-"));
+const compiledCss = join(temporaryDirectory, "app.css");
+const tailwindExecutable = join(
+  "node_modules",
+  ".bin",
+  process.platform === "win32" ? "tailwindcss.cmd" : "tailwindcss",
+);
+
+let result;
+try {
+  execFileSync(
+    tailwindExecutable,
+    ["--input", "web/src/app.css", "--output", compiledCss, "--minify"],
+    { stdio: "inherit" },
+  );
+  result = await esbuild.build({
+    entryPoints: ["web/src/main.ts", compiledCss],
+    outdir: OUT_DIR,
+    bundle: true,
+    minify: true,
+    sourcemap: false,
+    format: "esm",
+    target: ["es2022"],
+    platform: "browser",
+    entryNames: "[name].[hash]",
+    metafile: true,
+    logLevel: "warning",
+  });
+} finally {
+  rmSync(temporaryDirectory, { recursive: true, force: true });
+}
 
 const entries = {};
 for (const [outputPath, meta] of Object.entries(result.metafile.outputs)) {

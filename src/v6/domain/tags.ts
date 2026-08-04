@@ -3,6 +3,10 @@ export interface CanonicalTagName {
   display: string;
 }
 
+const TAG_ALIASES: Readonly<Record<string, string>> = {
+  ai: "artificial-intelligence",
+};
+
 export function normalizeTagName(value: string): CanonicalTagName {
   const normalized = value
     .normalize("NFKC")
@@ -13,7 +17,8 @@ export function normalizeTagName(value: string): CanonicalTagName {
     .replace(/-{2,}/gu, "-")
     .slice(0, 64)
     .replace(/-+$/gu, "");
-  return { normalized, display: normalized };
+  const canonical = TAG_ALIASES[normalized] ?? normalized;
+  return { normalized: canonical, display: canonical };
 }
 
 export function normalizeTagNames(values: Iterable<string>, limit = 50): string[] {

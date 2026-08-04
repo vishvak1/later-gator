@@ -59,7 +59,8 @@ Later Gator v6 uses one Worker deployment with these entry surfaces:
 1. Authenticated dashboard, setup, settings, and JSON API routes.
 2. Scoped browser-extension and iOS capture routes.
 3. A stateless Streamable HTTP MCP route.
-4. One Queue consumer that handles one bookmark pipeline at a time.
+4. One sequential AI/background Queue consumer and one independently bounded
+   thumbnail Queue consumer.
 
 Cloudflare resources:
 
@@ -67,7 +68,8 @@ Cloudflare resources:
 |---|---|---|
 | D1 | `DB` | Bookmarks, tags, folders, relationships, setup, jobs, imports, sessions, and encrypted settings |
 | Workers KV | `THUMBNAILS` | Private optimized thumbnail values |
-| Queue | `BACKGROUND_QUEUE` | Durable ID-only notification that a stored bookmark job is ready |
+| Queue | `BACKGROUND_QUEUE` | Durable ID-only AI, embedding, and maintenance notifications |
+| Queue | `THUMBNAIL_QUEUE` | Durable ID-only thumbnail notifications, isolated from AI latency |
 | Workers AI | `AI` | Default organization provider and `@cf/baai/bge-m3` embeddings |
 | Vectorize | `VECTORS` | Bookmark embedding index powering semantic search |
 | Static assets | `ASSETS` | Dashboard, setup, and settings frontend |
@@ -115,7 +117,7 @@ This provides sequential AI work, delivery retries, and continuation after the d
 | Application topology | One Worker and static asset bundle | Simplifies one-click deployment and same-origin security |
 | Bookmark database | D1 | Relational integrity, indexed filtering, FTS search, transactions, and portable SQL export |
 | Thumbnail storage | Private Workers KV | Keeps bounded preview bytes outside D1 without requiring an R2 subscription |
-| Background work | One Queue, one message per bookmark job | Durable continuation without polling or lease machinery |
+| Background work | Separate AI/background and thumbnail Queues carrying D1 job IDs | Durable continuation without coupling thumbnail throughput to AI latency |
 | Sequential AI | Queue consumer concurrency one | Preserves deterministic vocabulary updates |
 | Application coordination | D1 state and optimistic bookmark revisions | Protects user edits without leases |
 | MCP | Stateless `createMcpHandler` with Streamable HTTP | Read-only tools do not need session state or a Durable Object |
@@ -138,8 +140,10 @@ flowchart LR
 
     WORKER <--> DB["D1 database"]
     WORKER <--> KV["Private Workers KV thumbnails"]
-    WORKER --> Q["Background Queue"]
-    Q --> WORKER
+    WORKER --> AQ["AI/background Queue"]
+    AQ --> WORKER
+    WORKER --> TQ["Thumbnail Queue"]
+    TQ --> WORKER
     WORKER --> AI["Workers AI"]
     WORKER --> OA["OpenAI"]
     WORKER --> AN["Anthropic"]
@@ -266,6 +270,10 @@ Illustrative target configuration:
       {
         "binding": "BACKGROUND_QUEUE",
         "queue": "later-gator-background"
+      },
+      {
+        "binding": "THUMBNAIL_QUEUE",
+        "queue": "later-gator-thumbnails"
       }
     ],
     "consumers": [
@@ -275,6 +283,13 @@ Illustrative target configuration:
         "max_batch_timeout": 1,
         "max_retries": 5,
         "max_concurrency": 1
+      },
+      {
+        "queue": "later-gator-thumbnails",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 3
       }
     ]
   },
@@ -354,11 +369,11 @@ New work is created by:
 | `GET` | `/api/tags` | Active and retired tags |
 | `POST` | `/api/tags` | Create tag |
 | `DELETE` | `/api/tags/:id` | Global retirement and removal |
-| `POST` | `/api/imports/preview` | Validate and stage CSV |
-| `POST` | `/api/imports/:id/commit` | Commit staged rows in chunks |
+| `POST` | `/api/imports` | Start a direct CSV import |
 | `GET` | `/api/imports/:id` | Progress and report |
+| `PUT` | `/api/profile/personal-instructions` | Update future AI guidance |
 | `POST` | `/api/testing/reset` | Strongly confirmed reset to setup |
-| `GET` | `/api/thumbnails/:bookmarkId` | Private thumbnail response |
+| `GET` | `/api/thumbnails/:bookmarkId/:thumbnailId` | Versioned private thumbnail response |
 | `GET` | `/api/usage` | Account-wide Workers AI usage entry point and authoritative dashboard link |
 
 All mutation endpoints require:
@@ -367,13 +382,14 @@ All mutation endpoints require:
 - Same-origin check.
 - CSRF token.
 - Zod-validated request.
-- Explicit idempotency key for create/import actions.
+- Explicit idempotency key for bookmark-creation actions.
 
 ### 7.3 Capture API
 
 | Method | Route | Scope |
 |---|---|---|
 | `GET` | `/api/capture/options` | `capture:options` |
+| `POST` | `/api/capture/bookmark-search` | `capture:bookmark-search` |
 | `POST` | `/api/capture/bookmarks` | `capture:create` |
 | `GET` | `/api/capture/results/:requestId` | `capture:result:self` |
 
@@ -381,7 +397,9 @@ Capture routes:
 
 - Never accept dashboard cookies as authorization.
 - Require a scoped bearer token.
-- Never return arbitrary bookmark content.
+- Return no arbitrary bookmark content. The bookmark-search route returns only
+  a bounded active-bookmark projection: ID, title, URL, hostname, and folder
+  name.
 - Apply stricter body-size and rate limits.
 
 The iOS token receives only `capture:create:minimal`. It cannot call the options route and the request schema rejects note, tags, folder, favorite, and linked URL.
@@ -405,16 +423,18 @@ Message schema is an ID-only discriminated union:
 ```ts
 type BackgroundMessage =
   | { version: 1; type: "organize"; jobId: string }
-  | { version: 1; type: "import"; importId: string }
-  | { version: 1; type: "import_thumbnails"; importId: string }
   | { version: 1; type: "dispatch_pending" }
   | { version: 1; type: "embed_pending" }
   | { version: 1; type: "reset_storage" };
+
+type ThumbnailMessage =
+  | { version: 1; type: "thumbnail"; jobId: string }
+  | { version: 1; type: "dispatch_thumbnail_pending" };
 ```
 
 No bookmark title, URL, description, note, tags, provider key, or thumbnail URL appears in a Queue message.
-`import` and `import_thumbnails` remain accepted only so messages produced by an
-older deployment are harmless during rollout; new CSV commits do not send them.
+CSV import commits both pending-job records before sending one dispatcher signal
+to each Queue; bookmark content never appears in Queue messages.
 
 ---
 
@@ -661,20 +681,41 @@ Remote source URLs are not retained in logs. Retaining the source URL in the dat
 
 Only one non-terminal organization job may exist per bookmark.
 
+#### `thumbnail_jobs`
+
+- `id` (the bookmark UUID)
+- `bookmark_id`
+- `state`: `pending_dispatch | queued | running | completed | cancelled | failed`
+- `attempt_count`
+- `next_attempt_at`
+- `last_safe_error_code`
+- `created_at`
+- `updated_at`
+- `completed_at`
+
+Thumbnail jobs are independent of organization jobs. D1 uniqueness permits one
+recoverable thumbnail job per bookmark.
+
 ### 9.3 Import tables
 
 #### `import_sessions`
 
 - `id`
-- `status`: `preview | committing | committed | cancelled | expired`
-- `option`: `reorganize | preserve`
+- active statuses: `committing | committed | cancelled`
 - `file_name`
 - `file_size`
-- `file_sha256`
+- `file_sha256`: legacy required column; direct imports store an empty value
 - aggregate counts
 - `created_at`
 - `expires_at`
 - `committed_at`
+
+The `option` column records the explicit `reorganize | preserve` choice made in
+setup or Settings.
+
+Bootstrap exposes only active direct-import sessions whose legacy hash field is
+empty. Stuck preview/Queue-era sessions are ignored so an upgrade cannot revive
+the retired attention or resume screen.
 
 #### `import_rows`
 
@@ -685,7 +726,8 @@ Only one non-terminal organization job may exist per bookmark.
 - `safe_error_code`
 - `committed_bookmark_id`
 
-Preview rows expire after 24 hours. The original CSV file is not stored.
+`import_rows` is retained for schema compatibility, but direct imports never
+write staged rows. The original CSV file is not stored.
 
 ### 9.4 Security and connection tables
 
@@ -762,7 +804,10 @@ Duplicate creation is idempotent:
 
 Each bookmark has a monotonically increasing `revision`.
 
-Any mutation to URL, title, description, note, tags, folder, favorite, deletion state, thumbnail selection, or relationship membership increments the revision in the same D1 transaction.
+Any mutation to URL, title, description, note, tags, folder, favorite, deletion
+state, or relationship membership increments the revision in the same D1
+transaction. Attaching derived thumbnail bytes does not increment the bookmark
+revision, so an independent preview cannot invalidate in-flight AI work.
 
 An AI job captures:
 
@@ -854,9 +899,14 @@ Authenticated bootstrap performs an idempotent repair before returning status:
 2. Convert legacy `paused_edit` work to owner-pause, provider-wait, or
    `pending_dispatch`.
 3. Recover stale `queued` or `running` jobs after 15 minutes.
-4. Create a replacement job for any pending bookmark without an active job.
-5. Synchronize revisions for deterministic X/Twitter folder correction.
-6. Emit one `dispatch_pending` notification when dispatchable work exists.
+4. Enforce that every live Unsorted bookmark has full or preservation
+   organization policy.
+5. Create a replacement AI job for any pending bookmark without an active job.
+6. Create a thumbnail job for any live bookmark without a thumbnail or job.
+7. Cancel organization jobs whose bookmark has left Unsorted.
+8. Emit `dispatch_pending` to the background Queue and
+   `dispatch_thumbnail_pending` to the thumbnail Queue when the corresponding
+   pending records exist.
 
 This repairs old deployments and prevents a Queue retry exhaustion, stale
 revision, or removed edit-mode transition from leaving a permanently pending
@@ -864,7 +914,7 @@ bookmark.
 
 ---
 
-## 13. Background consumer
+## 13. Background consumers
 
 ### 13.1 Consumer algorithm
 
@@ -877,13 +927,32 @@ For each job ID:
 5. Atomically transition eligible job from `queued` to `running`.
 6. Recheck bookmark revision and generation.
 7. Refresh and retry the job if either value is stale.
-8. Resolve bounded metadata and thumbnail candidate.
-9. If organization policy requires AI, invoke exactly one provider.
-10. Validate and normalize the result.
-11. Apply bookmark, tags, deterministic folder override, thumbnail metadata,
-    and job completion in guarded D1 operations.
-12. Store normalized thumbnail bytes in Workers KV before referencing them from the bookmark.
-13. Acknowledge the Queue message.
+8. Resolve bounded page context and verify objectively that at least one primary
+   content field exists beyond title, URL, host metadata, or link-only material.
+9. If primary content is absent, record an insufficient-evidence attempt without
+   invoking AI. Otherwise invoke exactly one provider and let it decide whether
+   the evidence is semantically sufficient or generic/ambiguous.
+10. Validate the provider result as either `organized` or
+    `insufficient_evidence`. The latter cannot contain a description or tags.
+11. On the first insufficient result from either layer, retry retrieval through
+    a later Queue delivery. On the second, move the bookmark to Need for Review.
+12. Normalize an organized result.
+13. Apply bookmark, tags, deterministic folder override, and job completion in
+    guarded D1 operations.
+14. Acknowledge the Queue message.
+
+A thumbnail Queue message independently resolves bounded page metadata, tries the
+page image, declared icons, and conventional favicon in order, normalizes the
+first supported image into Workers KV, and updates only thumbnail state. It
+retries three times without changing bookmark revision or AI state. Thumbnail
+consumer concurrency is bounded separately, so a slow AI request cannot delay
+thumbnail generation.
+
+Page-context and thumbnail discovery share the same safe remote fetcher. It uses
+browser-compatible public-page request headers without cookies or credentials;
+this avoids reduced bot-only HTML while retaining SSRF, redirect, size, and
+timeout controls. A review outcome is terminal only for its own AI job and is
+acknowledged, so it cannot hold later Unsorted messages.
 
 Duplicate Queue delivery is harmless because only an eligible non-terminal job can transition to `running`.
 
@@ -926,6 +995,27 @@ Behavior:
 - At the configured limit, move the bookmark to Need for Review and retain a safe review reason.
 
 Provider structured-output features do not remove application Zod validation because refusals, truncation, model compatibility, and future API changes remain possible.
+
+#### Insufficient source evidence
+
+Primary content means an article or page body, post text or caption, transcript,
+document text, repository content, or equivalent retrieved source material.
+Titles, URLs, hostnames, authors, engagement counts, thumbnails, and link-only
+placeholders do not qualify by themselves. Generic access/login copy is primary
+text that the AI must evaluate rather than a semantic decision made by Worker
+heuristics.
+
+Behavior:
+
+- When no primary content exists, do not invoke an organization provider or
+  change bookmark content; persist `content_unavailable`.
+- When primary content exists but AI determines that it is generic, ambiguous,
+  or inadequate, accept a valid `insufficient_evidence` result and persist the
+  safe `ai_insufficient_evidence` code without applying model content.
+- Both codes share one attempt lifecycle. Retry the complete retrieval after the
+  first; if the next completed result is insufficient through either route,
+  move the bookmark to Need for Review.
+- Do not count transport failures as completed content attempts.
 
 #### Systemic configuration failure
 
@@ -981,21 +1071,27 @@ The application validates `proposal` with one shared Zod schema after every prov
 
 Required result:
 
+- `status` — `organized | insufficient_evidence`
 - `description`
 - `tags`
 - `folder`
 - `confidence`
 - `reviewReason`
 
-Folder is one of the fixed permanent destinations. Tags are suggestions, not database IDs.
+For `organized`, description and tags are non-empty and folder is one of the
+fixed permanent destinations. For `insufficient_evidence`, description and tags
+are empty, confidence is low, notes contains a concise reason, and the folder is
+an ignored structured-output placeholder. Tags are suggestions, not database
+IDs.
 
 Deterministic code:
 
 - Normalizes tags.
+- Canonicalizes known aliases such as `ai` to `artificial-intelligence`.
 - Rejects retired tags.
+- Allows the global vocabulary to grow without a product-level tag-count cap.
 - Prevents folder names and operational terms from becoming tags.
 - Applies deterministic source-domain folder rules.
-- Preserves imported tags in preservation mode.
 - Routes low-confidence results to Need for Review.
 
 ### 14.3 Prompt inputs
@@ -1003,7 +1099,7 @@ Deterministic code:
 The prompt may include:
 
 - Bookmark title.
-- Description or imported excerpt.
+- Description.
 - URL and hostname.
 - User note only when explicitly approved by product behavior.
 - Active tags and usage counts.
@@ -1070,8 +1166,9 @@ Database constraints and route authorization—not disabled buttons alone—prev
 
 Before applying any model-selected folder, normalize the hostname. `x.com`,
 `twitter.com`, and their subdomains always resolve to `folder_social_posts`.
-Authenticated bootstrap corrects older X/Twitter records and synchronizes the
-revision captured by any active job.
+This override is applied only while committing a successful organization result
+for a bookmark still in Unsorted. Bootstrap and import never pre-route X/Twitter
+records.
 
 ### 15.2 Tag deletion
 
@@ -1118,11 +1215,10 @@ Implemented v6 defaults:
 
 ### 16.2 Candidate order
 
-1. Imported Raindrop `cover`.
-2. Extension-supplied page preview URL.
-3. Server-resolved Open Graph or equivalent image.
-4. Favicon.
-5. Application placeholder; not stored in Workers KV.
+1. Extension-supplied page preview URL.
+2. Server-resolved Open Graph or equivalent image.
+3. Favicon.
+4. Application placeholder; not stored in Workers KV.
 
 ### 16.3 Safe retrieval
 
@@ -1167,12 +1263,14 @@ Permanent bookmark deletion:
 
 Workers KV has no public value URL.
 
-`GET /api/thumbnails/:bookmarkId`:
+`GET /api/thumbnails/:bookmarkId/:thumbnailId`:
 
 - Requires dashboard session or an explicitly supported scoped client.
 - Looks up the object key in D1.
-- Reads the bounded KV value with an edge-cache TTL and returns it from the authenticated route.
-- Sets `Content-Type`, `ETag`, `X-Content-Type-Options: nosniff`, and private cache headers.
+- Requires the versioned thumbnail ID to match the bookmark's current ready thumbnail.
+- Reads the immutable KV value with a long edge-cache TTL and returns it from the authenticated route.
+- Sets `Content-Type`, `ETag`, `X-Content-Type-Options: nosniff`, and
+  `Cache-Control: private, max-age=31536000, immutable`.
 - Supports conditional requests.
 
 MCP returns thumbnail availability, not raw image bytes or a permanent public URL.
@@ -1183,91 +1281,54 @@ MCP returns thumbnail availability, not raw image bytes or a permanent public UR
 
 ### 17.1 Limits and parsing
 
-Provisional maximum upload: 10 MiB.
+The maximum upload is 10 MiB and 5,000 rows. The server accepts multipart CSV,
+parses quoted commas, multiline cells, and Unicode, and supports full-library
+and collection Raindrop exports. Only the `url` header is required; `title` is
+optional. Preserve mode additionally reads `tags` and `excerpt`; all other
+fields are ignored. CSV cells are always rendered as text and are never
+evaluated as HTML or formulas.
 
-The server:
+### 17.2 Direct chunked import
 
-- Accepts multipart CSV only.
-- Computes SHA-256.
-- Parses quoted commas, multiline fields, and Unicode.
-- Accepts full-library exports with `folder` and single-folder/collection
-  exports without it.
-- Requires UTF-8 when encoding is ambiguous.
-- Applies the exact field mapping in PRD section 10.2.
-- Treats cells as text; never evaluates formulas or HTML.
+`POST /api/imports` parses the bounded file, creates one lightweight
+`import_sessions` progress record, and returns `202`. The request registers the
+remaining insertion promise with the Worker's execution context so navigation
+does not abort it.
 
-### 17.2 Preview
+The insertion path:
 
-Preview creates an expiring `import_session` and validated `import_rows`.
+1. Normalizes each valid HTTP(S) URL and keeps the first occurrence in the CSV.
+2. Uses the supplied title or URL hostname fallback.
+3. In preserve mode, normalizes imported tags and retains excerpt as the
+   description; reorganize mode discards both.
+4. Inserts candidates into Unsorted in bounded JSON-backed D1 chunks with
+   `INSERT OR IGNORE ... RETURNING id`.
+5. Treats D1 active-URL uniqueness as the final duplicate guard.
+6. Updates committed and duplicate counts after each chunk; invalid and
+   within-file duplicate counts are known after parsing.
+7. Creates one AI job and one independent thumbnail job for each returned ID.
+8. Marks the session committed when every candidate has been attempted and
+   emits a general ID-only background-dispatch signal.
 
-It does not create bookmarks, Queue messages, tags, thumbnails, or Workers KV values.
+Imported rows have `organization_policy = full | preserve` according to the
+selected mode and an AI state derived from owner pause and provider availability.
+Import does not pause AI, make the library read-only, write `import_rows`, or
+fetch remote descriptions or thumbnails in the import request. Preserve mode
+creates normalized imported tags and associations locally.
+The file name and aggregate counts are retained temporarily; the original CSV
+bytes and ignored fields are not stored.
 
-Preview counts and samples are derived from staged rows. Duplicate detection is
-limited to normalized URLs repeated inside the CSV; the first valid row wins.
-Unknown columns are reported. Non-empty unsupported highlights require
-acknowledgement.
+If processing fails, the session is cancelled with a safe error code. The user
+re-uploads the same CSV; normalized URL uniqueness skips earlier successful
+inserts and fills only missing bookmarks.
 
-### 17.3 Commit
-
-Commit is one user-visible set-based D1 operation. Large JSON bindings are split
-only to remain under D1 parameter-size limits; no per-bookmark application loop
-or Queue-driven import pass is used.
-
-Before commit:
-
-1. Record whether AI was already owner-paused.
-2. Pause new AI work, make library mutations read-only, and show progress without
-   blocking library browsing.
-
-The D1 transaction:
-
-1. Inserts accepted bookmarks into Unsorted with `INSERT OR IGNORE` and a single
-   import timestamp.
-2. Keeps an existing active normalized URL unchanged and marks that CSV row
-   `existing_library_skipped`.
-3. Inserts canonical imported tags and associations only for preserve-mode
-   bookmarks actually created by this import.
-4. Creates paused AI job rows with one `INSERT ... SELECT` operation after all
-   bookmark rows exist.
-5. Marks staged rows and the import session committed.
-
-All imported bookmarks start in Unsorted. After commit, restore the pre-import
-AI pause state; when AI was previously running, send one dispatch signal and
-process eligible jobs sequentially.
-
-Raindrop cover values are not imported. Normal page-thumbnail discovery remains
-independent background work and cannot delay CSV commit.
-
-### 17.4 Test reset
+### 17.3 Test reset
 
 `POST /api/testing/reset` requires session, origin, CSRF, and the literal
 confirmation `DELETE EVERYTHING`. D1 user content and settings are deleted in
 one bounded batch while `auth_config` and the current session remain. A
 `reset_storage` Queue chain deletes private thumbnail KV keys in pages and old
 ID-only messages become harmless after their D1 rows disappear.
-
-### 17.5 Import options
-
-#### Reorganize
-
-- Preserve URL and title.
-- Discard imported tags and description from the active bookmark.
-- Place in Unsorted.
-- Full AI organization.
-
-#### Preserve
-
-- Preserve URL, title, description, and normalized tags.
-- Place in Unsorted.
-- AI selects folder and may add tags.
-- Imported tags are not removed.
-
-### 17.5 Cleanup and reports
-
-- Preview rows expire after 24 hours.
-- Committed reports retain safe row outcomes but not unnecessary full bookmark duplicates.
-- Original CSV bytes are never retained.
-- User-downloadable reports use safe row number, source ID, outcome, and error code.
 
 ---
 
@@ -1288,14 +1349,43 @@ Do not request browsing history or all-sites persistent access.
 
 ### 18.2 Popup lifecycle
 
-1. Read active tab URL and title.
-2. Best-effort read description and preview-image metadata from the active tab.
-3. Load folders and active tag suggestions from the scoped capture options endpoint.
-4. Let user edit Source URL and optional fields.
-5. Validate Source URL and Linked to independently.
-6. Generate a client request ID.
-7. POST capture.
-8. Render the exact committed result.
+1. Start with connection and capture forms hidden behind a neutral loading state.
+2. Read and validate the extension-local deployment URL and token previously
+   decoded from a versioned one-part connection code.
+3. Confirm host permission and call the scoped capture options endpoint.
+4. POST the active URL to the scoped bookmark-status endpoint. On a normalized
+   URL match, render **Already saved** and add a per-tab tick badge over the
+   normal extension icon; otherwise clear the badge and render capture.
+   A minimal background listener repeats only this status check when the active
+   tab changes or completes navigation. It does not store or enumerate history.
+5. On success, render only the applicable saved or capture view. On a rejected or malformed
+   credential, remove it and render only the connection form. On a transient
+   network or deployment failure, preserve it and render a Retry state.
+6. In parallel with options validation, read the active tab URL/title and
+   best-effort description/preview-image metadata so metadata does not add a
+   second serial startup wait.
+7. Load folders and active tag suggestions from the validated options response.
+8. Keep Tags and Linked to disabled and empty for Unsorted. For a permanent
+   folder, enable `#` tag completion and a debounced existing-bookmark search.
+9. Keep the active-tab source URL internal and require Linked to selection from
+   the search results rather than accepting a free-form URL.
+10. Generate a client request ID.
+11. POST capture.
+12. Replace the entire capture form with a dedicated result screen after a
+    confirmed commit. It includes the exact saved/already-saved/linked outcome,
+    a dashboard link, and a Done action.
+
+The Worker repeats the Unsorted invariant at the trust boundary: extension
+payload tags and `linkedUrl` are ignored whenever `folderId` is Unsorted. The
+bookmark-search request uses POST so the search text is not placed in the URL,
+queries only non-deleted bookmarks, returns at most 12 results, and exposes no
+notes, descriptions, tags, or relationship data. Existing extension credentials
+receive the search scope through migration; iOS credentials remain URL-only.
+
+The capture form uses a compact settings control when the owner deliberately
+wants to replace a valid connection. It does not render a persistent full-size
+Connection action. A newly entered credential is tested before it replaces the
+stored credential.
 
 The popup distinguishes:
 
@@ -1308,11 +1398,25 @@ The popup distinguishes:
 
 ### 18.3 Pairing
 
-Settings generates a one-time token and deployment URL.
+Settings receives a one-time token from the credential endpoint and combines it
+with `location.origin` into one versioned, base64url-encoded connection code.
+Encoding is a transfer format, not encryption; the complete code remains a
+one-time secret. Settings shows a dedicated Copy action.
 
-The extension stores them in extension-local storage. It never receives dashboard cookies, password, provider credentials, or MCP URL.
+The extension accepts one connection-code field, decodes and validates the
+deployment origin and token, requests permission for that origin, and tests the
+credential before storing the decoded values in extension-local storage. It
+never receives dashboard cookies, password, provider credentials, or MCP URL.
+
+Capture credentials do not expire on a timer or through inactivity. The
+server-side credential stops working after explicit revocation, application
+reset, or replacement of the deployment's credential data. Loss of extension
+storage or host permission requires local reconnection but does not revoke the
+server-side credential.
 
 The initial release uses documented self-installation for Chrome and Firefox.
+Settings renders the browser-specific steps in a modal dialog without opening a
+new tab or placing the secret connection code in a URL.
 Official browser-store packaging is a future distribution improvement.
 
 ---
@@ -1356,14 +1460,19 @@ or:
 
 ### 19.2 Installation
 
-Initial v6 uses guided installation:
+Initial v6 uses guided creation:
 
-1. User creates or installs the project-maintained Shortcut.
+1. Settings opens Apple's new-Shortcut editor with
+   `shortcuts://create-shortcut`; this URL cannot prefill actions.
 2. Settings displays the deployment capture endpoint and a newly generated iOS token.
-3. User enters those values into the Shortcut's setup prompts.
+3. User adds the documented actions and enters those values in their separate fields.
 4. Settings provides a connection test.
 
-A user-specific automatically signed Shortcut package is not assumed.
+Settings presents endpoint and token with separate Copy actions and opens
+the maintained setup steps in an in-page dialog. It does not navigate away from
+Settings. A user-specific automatically signed Shortcut package is not assumed.
+One-tap installation is deferred until the project publishes an Apple-validated
+iCloud Shortcut link; that Shortcut can use import questions for the two values.
 
 ### 19.3 Feedback
 
@@ -1440,6 +1549,13 @@ MCP is read-only in v6. Tool handlers cannot:
 - No hidden prompt content.
 - No provider keys, capture credentials, sessions, internal job errors, or thumbnail storage keys.
 
+### 20.5 Pairing UI
+
+Settings shows a newly rotated MCP URL once, provides a direct Copy action, and
+opens an in-page tutorial for adding the complete URL to a supported client.
+Only the path-secret hash is persisted, so a previously revealed URL cannot be
+reconstructed or reused from D1 after the user loses it.
+
 ---
 
 ## 21. Search, sorting, and pagination
@@ -1459,8 +1575,11 @@ Cursor is signed or encoded and validated so users cannot inject SQL or unsuppor
 
 The dashboard requests 48 bookmarks per page, defaults to
 `added_at DESC, id DESC`, displays `shown of total`, and exposes a Load more
-control while a next cursor exists. Folder counts are returned by the bootstrap
-query with one grouped aggregate rather than one query per folder.
+control while a next cursor exists. **Select all** traverses the same validated
+cursor query with the current folder, search, and filters and selects every
+matching bookmark, including results not yet rendered. Folder counts are
+returned by the bootstrap query with one grouped aggregate rather than one
+query per folder.
 
 ### 21.2 Sort mapping
 
@@ -1561,7 +1680,7 @@ Prohibited:
 - job dispatched/started/retried/completed/reviewed/paused
 - provider candidate tested/activated/failed
 - thumbnail stored/failed/orphan cleanup required
-- import previewed/committed/completed
+- import started/progressed/completed
 - capture paired/revoked/succeeded/failed
 - MCP authenticated/tool completed/tool failed
 
@@ -1600,7 +1719,7 @@ Application-level bounded windows protect:
 - Login.
 - Capture endpoints per credential.
 - MCP per secret.
-- Import preview.
+- Import upload.
 - Thumbnail regeneration.
 
 Rate-limit state may use D1 for the single-user scale. Cloudflare-native rate limiting can replace it later if deployment support is reliable.
@@ -1697,7 +1816,7 @@ Provider contracts use recorded redacted fixtures by default. Live tests require
 - Owner pause and provider switch.
 - Global tag deletion.
 - Thumbnail copy and orphan cleanup.
-- CSV preview, commit interruption, and resume.
+- Direct CSV chunking, normalized duplicate skipping, and safe re-upload.
 - Linked bookmark existing/new/partial automation outcomes.
 - Capture credential rotation.
 - MCP secret rotation.
@@ -1779,7 +1898,7 @@ The v6 rewrite should proceed behind a branch and deployment boundary.
 
 ### Phase 4 — Import and thumbnails
 
-- Implement CSV preview/commit.
+- Implement direct chunked CSV import with real progress.
 - Implement Workers KV thumbnail pipeline and private delivery.
 
 ### Phase 5 — Capture surfaces
@@ -1853,7 +1972,8 @@ Before a destructive migration:
 
 ## 29. Accepted tradeoffs
 
-- One Queue remains even though Raindrop leases are removed; durable continuation is worth one small transport dependency.
+- Two workload-specific Queues isolate thumbnail throughput from sequential AI
+  work; both carry only recoverable D1 job IDs.
 - Queue and D1 cannot commit atomically; the visible `pending_dispatch` state makes that boundary recoverable.
 - Sequential processing favors consistency over throughput.
 - Vectorize semantic search is additive: embedding or query failures silently degrade to FTS-only results.
@@ -1867,11 +1987,13 @@ Before a destructive migration:
 
 ## 30. Final implementation selections
 
-1. Setup accepts 5–20 distinct normalized topics.
+1. Setup accepts at least five distinct normalized topics. Seed topics guide
+   early organization but do not cap the library vocabulary.
 2. Career and aspiration are required.
 3. CSV uploads are capped at 10 MiB and 5,000 rows.
 4. Browser Rendering is not bound in the current deployment. Thumbnail
-   candidates come from imports, capture input, and bounded page metadata.
+   candidates come from capture input, bounded page metadata, declared icons,
+   and conventional favicons.
 5. Chrome and Firefox use documented self-installation initially.
 6. Workers AI defaults to
    `@cf/meta/llama-3.3-70b-instruct-fp8-fast`. Provider model names are not

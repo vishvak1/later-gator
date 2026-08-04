@@ -80,7 +80,11 @@ export async function safeFetch(raw: string, accept: string): Promise<Response> 
       redirect: "manual",
       headers: {
         accept,
-        "user-agent": "LaterGator/6.0 metadata fetcher",
+        "accept-language": "en-US,en;q=0.9",
+        "user-agent":
+          "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 " +
+          "LaterGator/6.0",
       },
       signal: AbortSignal.timeout(10_000),
     });
@@ -97,7 +101,13 @@ export async function resolveRedirectTarget(raw: string): Promise<string | null>
   const target = safeRemoteUrl(raw);
   const response = await fetch(target, {
     redirect: "manual",
-    headers: { "user-agent": "LaterGator/6.0 metadata fetcher" },
+    headers: {
+      "accept-language": "en-US,en;q=0.9",
+      "user-agent":
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 " +
+        "LaterGator/6.0",
+    },
     signal: AbortSignal.timeout(5_000),
   });
   await response.body?.cancel();

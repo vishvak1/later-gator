@@ -23,19 +23,17 @@
       "id": "local-test-thumbnails"
     }
   ],
+  "assets": {
+    "directory": "./web/public",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
   "ai": { "binding": "AI" },
   "queues": {
     "producers": [
-      { "binding": "BACKGROUND_QUEUE", "queue": "later-gator-test-background" }
-    ],
-    "consumers": [
-      {
-        "queue": "later-gator-test-background",
-        "max_batch_size": 1,
-        "max_batch_timeout": 1,
-        "max_retries": 5,
-        "max_concurrency": 1
-      }
+      { "binding": "BACKGROUND_QUEUE", "queue": "later-gator-test-background" },
+      { "binding": "THUMBNAIL_QUEUE", "queue": "later-gator-test-thumbnails" }
     ]
   }
 }

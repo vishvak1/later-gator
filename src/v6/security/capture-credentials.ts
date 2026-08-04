@@ -18,7 +18,12 @@ export async function issueCaptureCredential(
   const scopes =
     kind === "ios"
       ? ["capture:create:minimal"]
-      : ["capture:options", "capture:create", "capture:result:self"];
+      : [
+          "capture:options",
+          "capture:create",
+          "capture:result:self",
+          "capture:bookmark-search",
+        ];
   await db
     .prepare(
       `INSERT INTO capture_credentials (

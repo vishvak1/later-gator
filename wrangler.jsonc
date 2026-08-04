@@ -42,7 +42,8 @@
   ],
   "queues": {
     "producers": [
-      { "binding": "BACKGROUND_QUEUE", "queue": "later-gator-background" }
+      { "binding": "BACKGROUND_QUEUE", "queue": "later-gator-background" },
+      { "binding": "THUMBNAIL_QUEUE", "queue": "later-gator-thumbnails" }
     ],
     "consumers": [
       {
@@ -51,6 +52,13 @@
         "max_batch_timeout": 1,
         "max_retries": 5,
         "max_concurrency": 1
+      },
+      {
+        "queue": "later-gator-thumbnails",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 3
       }
     ]
   }

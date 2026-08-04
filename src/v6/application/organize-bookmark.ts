@@ -9,12 +9,18 @@ import { importHoldsAi } from "../domain/import-state";
 import { normalizeTagName } from "../domain/tags";
 import { createBookmark, dispatchJob, relateBookmarks } from "../adapters/library-repository";
 import { upsertBookmarkVector } from "./embeddings";
-import { resolvePageContext, type PageContext } from "./page-content";
-import { findPageThumbnail, ingestThumbnailCandidate } from "./thumbnails";
+import {
+  hasPrimaryContentText,
+  hasPrimaryPageContent,
+  resolvePageContext,
+  type PageContext,
+} from "./page-content";
+import { dispatchThumbnailJob } from "./thumbnail-jobs";
 
 const organizationResultSchema = z.strictObject({
-  tags: z.array(z.string().trim().min(1).max(64)).min(1).max(8),
-  description: z.string().trim().min(1).max(1000),
+  status: z.enum(["organized", "insufficient_evidence"]),
+  tags: z.array(z.string().trim().min(1).max(64)).max(8),
+  description: z.string().trim().max(1000),
   folder: z.enum([
     "Social Posts",
     "Articles",
@@ -26,6 +32,31 @@ const organizationResultSchema = z.strictObject({
   ]),
   confidence: z.enum(["high", "medium", "low"]),
   notes: z.string().trim().max(1000),
+}).superRefine((result, context) => {
+  if (result.status === "organized") {
+    if (result.tags.length === 0) {
+      context.addIssue({ code: "custom", path: ["tags"], message: "organized result needs tags" });
+    }
+    if (result.description.length === 0) {
+      context.addIssue({ code: "custom", path: ["description"], message: "organized result needs a description" });
+    }
+    return;
+  }
+  if (result.tags.length !== 0) {
+    context.addIssue({ code: "custom", path: ["tags"], message: "insufficient result cannot contain tags" });
+  }
+  if (result.description.length !== 0) {
+    context.addIssue({ code: "custom", path: ["description"], message: "insufficient result cannot contain a description" });
+  }
+  if (result.folder !== "Websites & Apps") {
+    context.addIssue({ code: "custom", path: ["folder"], message: "insufficient result uses the ignored placeholder folder" });
+  }
+  if (result.confidence !== "low") {
+    context.addIssue({ code: "custom", path: ["confidence"], message: "insufficient result must be low confidence" });
+  }
+  if (result.notes.length === 0) {
+    context.addIssue({ code: "custom", path: ["notes"], message: "insufficient result needs a reason" });
+  }
 });
 
 const workersEnvelopeSchema = z.looseObject({ response: z.unknown() });
@@ -33,13 +64,14 @@ const workersEnvelopeSchema = z.looseObject({ response: z.unknown() });
 const organizationJsonSchema = {
   type: "object",
   properties: {
+    status: { type: "string", enum: ["organized", "insufficient_evidence"] },
     tags: {
       type: "array",
-      minItems: 1,
+      minItems: 0,
       maxItems: 8,
       items: { type: "string" },
     },
-    description: { type: "string", minLength: 1, maxLength: 1000 },
+    description: { type: "string", minLength: 0, maxLength: 1000 },
     folder: {
       type: "string",
       enum: [
@@ -55,7 +87,7 @@ const organizationJsonSchema = {
     confidence: { type: "string", enum: ["high", "medium", "low"] },
     notes: { type: "string", maxLength: 1000 },
   },
-  required: ["tags", "description", "folder", "confidence", "notes"],
+  required: ["status", "tags", "description", "folder", "confidence", "notes"],
   additionalProperties: false,
 } as const;
 
@@ -65,6 +97,7 @@ interface JobContext {
   expected_revision: number;
   organization_generation: number;
   quality_attempt_count: number;
+  last_safe_error_code: string | null;
   provider: string;
   model: string;
   bookmark_id: string;
@@ -72,6 +105,7 @@ interface JobContext {
   hostname: string;
   title: string;
   description: string | null;
+  ai_managed_description: number;
   note: string | null;
   folder_id: string;
   organization_policy: "full" | "preserve" | "none";
@@ -94,6 +128,10 @@ interface TagRow {
 }
 
 type OrganizationResult = z.infer<typeof organizationResultSchema>;
+
+interface OrganizationDependencies {
+  resolvePageContext?: (rawUrl: string) => Promise<PageContext | null>;
+}
 
 export type OrganizationOutcome =
   | "completed"
@@ -138,7 +176,17 @@ function buildPrompt(
     "You organize a private personal bookmark library so its owner can retrieve anything months later.",
     "Return only the requested JSON object.",
     "",
+    "Evidence sufficiency rules:",
+    "- The Worker retrieved at least one primary content field, but that content may still be generic, blocked, ambiguous, or inadequate for reliable organization.",
+    "- First decide whether the retrieved source content is sufficient to support a factual description and subject tags.",
+    "- Return status insufficient_evidence for login prompts, access shells, generic platform boilerplate, ambiguous fragments, or any material that does not support reliable subject claims.",
+    "- For insufficient_evidence return tags [], description \"\", folder \"Websites & Apps\", confidence \"low\", and put a concise reason in notes. The folder is an ignored transport placeholder.",
+    "- For organized, return a non-empty description and tags supported by the retrieved source content.",
+    "",
     "Description rules:",
+    "- Use the title only as supporting context, never as the sole basis for classification.",
+    "- Base every subject claim and tag on the retrieved source content. Do not infer a topic from the owner's career, aspirations, or personal instructions.",
+    "- Apply a conditional personal instruction only after the source content independently establishes that its condition is true.",
     "- Write 2 to 4 full sentences (roughly 40 to 90 words) describing what this page actually contains and why it is worth returning to.",
     "- Name the concrete subjects, technologies, tools, people, and organizations involved so a search for any of them finds this bookmark.",
     "- Never open with filler such as 'This is a bookmark about' or 'This page contains'. State the substance directly.",
@@ -149,6 +197,8 @@ function buildPrompt(
     "- Choose 3 to 6 tags mixing one or two broad subjects with precise specifics.",
     "- The active tag registry is a convenience, not a closed taxonomy.",
     "- Reuse an active tag only when it accurately fits. Create precise new subject tags whenever the bookmark introduces a topic that is missing from the registry.",
+    "- Treat setup seed tags as examples and preferences, never as a target vocabulary or a limit on how many tags the library may contain.",
+    "- Do not create synonymous or abbreviated duplicates. Reuse the registry's canonical wording; for example, use artificial-intelligence rather than also creating ai.",
     "- Do not force bookmarks into the user's setup interests. For example, create tags such as history or religion when the content calls for them.",
     "- Every tag must be lowercase and contain one word or hyphen-separated words only.",
     "- Never return a retired tag.",
@@ -212,6 +262,7 @@ async function loadContext(db: D1Database, jobId: string): Promise<JobContext | 
          j.expected_revision,
          j.organization_generation,
          j.quality_attempt_count,
+         j.last_safe_error_code,
          j.provider,
          j.model,
          b.id AS bookmark_id,
@@ -219,6 +270,7 @@ async function loadContext(db: D1Database, jobId: string): Promise<JobContext | 
          b.hostname,
          b.title,
          b.description,
+         b.ai_managed_description,
          b.note,
          b.folder_id,
          b.organization_policy,
@@ -264,6 +316,59 @@ async function markState(
   ]);
 }
 
+const INSUFFICIENT_EVIDENCE_CODES = new Set([
+  "content_unavailable",
+  "ai_insufficient_evidence",
+]);
+
+async function recordInsufficientEvidence(
+  db: D1Database,
+  context: JobContext,
+  safeErrorCode: "content_unavailable" | "ai_insufficient_evidence",
+): Promise<OrganizationOutcome> {
+  const now = new Date().toISOString();
+  if (
+    context.last_safe_error_code !== null &&
+    INSUFFICIENT_EVIDENCE_CODES.has(context.last_safe_error_code)
+  ) {
+    await db.batch([
+      db
+        .prepare(
+          `UPDATE background_jobs
+              SET state = 'review', last_safe_error_code = ?,
+                  completed_at = ?, updated_at = ?
+            WHERE id = ? AND state = 'running'`,
+        )
+        .bind(safeErrorCode, now, now, context.job_id),
+      db
+        .prepare(
+          `UPDATE bookmarks
+              SET folder_id = 'folder_need_review', ai_state = 'review',
+                  modified_at = ?, revision = revision + 1
+            WHERE id = ? AND revision = ? AND deleted_at IS NULL`,
+        )
+        .bind(now, context.bookmark_id, context.expected_revision),
+    ]);
+    return "review";
+  }
+  await db.batch([
+    db
+      .prepare(
+        `UPDATE background_jobs
+            SET state = 'queued', last_safe_error_code = ?, updated_at = ?
+          WHERE id = ? AND state = 'running'`,
+      )
+      .bind(safeErrorCode, now, context.job_id),
+    db
+      .prepare(
+        `UPDATE bookmarks SET ai_state = 'pending'
+          WHERE id = ? AND revision = ? AND deleted_at IS NULL`,
+      )
+      .bind(context.bookmark_id, context.expected_revision),
+  ]);
+  return "retry";
+}
+
 async function applyResult(
   db: D1Database,
   context: JobContext,
@@ -279,18 +384,22 @@ async function applyResult(
 
   const tagRows = new Map(allTags.map((tag) => [tag.normalized_name, tag]));
   const selected = new Map<string, { id: string; display: string; exists: boolean }>();
-  for (const value of result.tags) {
-    const tag = normalizeTagName(value);
-    if (tag.normalized === "") continue;
-    const known = tagRows.get(tag.normalized);
-    if (known?.status === "retired") continue;
-    selected.set(tag.normalized, {
-      id: crypto.randomUUID(),
-      display: known?.display_name ?? tag.display,
-      exists: known !== undefined,
-    });
+  if (context.organization_policy === "full") {
+    for (const value of result.tags) {
+      const tag = normalizeTagName(value);
+      if (tag.normalized === "") continue;
+      const known = tagRows.get(tag.normalized);
+      if (known?.status === "retired") continue;
+      selected.set(tag.normalized, {
+        id: crypto.randomUUID(),
+        display: known?.display_name ?? tag.display,
+        exists: known !== undefined,
+      });
+    }
   }
-  if (selected.size === 0) throw new Error("no_valid_tags");
+  if (context.organization_policy === "full" && selected.size === 0) {
+    throw new Error("no_valid_tags");
+  }
 
   const now = new Date().toISOString();
   const nextRevision = context.expected_revision + 1;
@@ -300,13 +409,11 @@ async function applyResult(
         `UPDATE bookmarks
             SET folder_id = ?,
                 description = CASE
-                  WHEN organization_policy = 'full' OR description IS NULL OR description = ''
-                    THEN ?
+                  WHEN organization_policy = 'full' THEN ?
                   ELSE description
                 END,
                 ai_managed_description = CASE
-                  WHEN organization_policy = 'full' OR description IS NULL OR description = ''
-                    THEN 1
+                  WHEN organization_policy = 'full' THEN 1
                   ELSE ai_managed_description
                 END,
                 ai_state = 'complete',
@@ -328,53 +435,54 @@ async function applyResult(
       ),
   ];
 
-  for (const [normalized, tag] of selected) {
-    if (!tag.exists) {
-      statements.push(
-        db
-          .prepare(
-            `INSERT INTO tags (
-              id, normalized_name, display_name, status, created_by, usage_count, created_at
+  if (context.organization_policy === "full") {
+    for (const [normalized, tag] of selected) {
+      if (!tag.exists) {
+        statements.push(
+          db
+            .prepare(
+              `INSERT INTO tags (
+                id, normalized_name, display_name, status, created_by, usage_count, created_at
+              )
+              SELECT ?, ?, ?, 'active', 'ai', 0, ?
+               WHERE EXISTS (
+                 SELECT 1 FROM bookmarks
+                  WHERE id = ? AND revision = ? AND modified_at = ?
+               )
+              ON CONFLICT(normalized_name) DO NOTHING`,
             )
-            SELECT ?, ?, ?, 'active', 'ai', 0, ?
-             WHERE EXISTS (
-               SELECT 1 FROM bookmarks
-                WHERE id = ? AND revision = ? AND modified_at = ?
-             )
-            ON CONFLICT(normalized_name) DO NOTHING`,
-          )
-          .bind(tag.id, normalized, tag.display, now, context.bookmark_id, nextRevision, now),
-      );
+            .bind(tag.id, normalized, tag.display, now, context.bookmark_id, nextRevision, now),
+        );
+      }
     }
-  }
-
-  statements.push(
-    db
-      .prepare(
-        `DELETE FROM bookmark_tags
-          WHERE bookmark_id = ? AND source = 'ai'
-            AND EXISTS (
-              SELECT 1 FROM bookmarks
-               WHERE id = ? AND revision = ? AND modified_at = ?
-            )`,
-      )
-      .bind(context.bookmark_id, context.bookmark_id, nextRevision, now),
-  );
-  for (const normalized of selected.keys()) {
     statements.push(
       db
         .prepare(
-          `INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id, source, created_at)
-           SELECT ?, t.id, 'ai', ?
-             FROM tags t
-            WHERE t.normalized_name = ? AND t.status = 'active'
+          `DELETE FROM bookmark_tags
+            WHERE bookmark_id = ? AND source = 'ai'
               AND EXISTS (
                 SELECT 1 FROM bookmarks
                  WHERE id = ? AND revision = ? AND modified_at = ?
               )`,
         )
-        .bind(context.bookmark_id, now, normalized, context.bookmark_id, nextRevision, now),
+        .bind(context.bookmark_id, context.bookmark_id, nextRevision, now),
     );
+    for (const normalized of selected.keys()) {
+      statements.push(
+        db
+          .prepare(
+            `INSERT OR IGNORE INTO bookmark_tags (bookmark_id, tag_id, source, created_at)
+             SELECT ?, t.id, 'ai', ?
+               FROM tags t
+              WHERE t.normalized_name = ? AND t.status = 'active'
+                AND EXISTS (
+                  SELECT 1 FROM bookmarks
+                   WHERE id = ? AND revision = ? AND modified_at = ?
+                )`,
+          )
+          .bind(context.bookmark_id, now, normalized, context.bookmark_id, nextRevision, now),
+      );
+    }
   }
   statements.push(
     db.prepare(
@@ -429,6 +537,9 @@ async function linkXPostDestinations(
       if (linked.jobId !== null && "BACKGROUND_QUEUE" in env) {
         await dispatchJob(env.DB, env.BACKGROUND_QUEUE, linked.jobId);
       }
+      if (linked.thumbnailJobId !== null && "THUMBNAIL_QUEUE" in env) {
+        await dispatchThumbnailJob(env.DB, env.THUMBNAIL_QUEUE, linked.thumbnailJobId);
+      }
     } catch {
       // The X post itself is already organized; a failed link never fails the job.
     }
@@ -438,6 +549,7 @@ async function linkXPostDestinations(
 export async function organizeBookmarkJob(
   env: Env,
   jobId: string,
+  dependencies: OrganizationDependencies = {},
 ): Promise<OrganizationOutcome> {
   const context = await loadContext(env.DB, jobId);
   if (context === null || ["completed", "review", "cancelled", "failed"].includes(context.job_state)) {
@@ -445,6 +557,10 @@ export async function organizeBookmarkJob(
   }
   if (context.deleted_at !== null || context.organization_policy === "none") {
     await markState(env.DB, context, "cancelled", "complete", "job_no_longer_needed");
+    return "acknowledged";
+  }
+  if (context.folder_id !== "folder_unsorted") {
+    await markState(env.DB, context, "cancelled", "complete", "bookmark_left_unsorted");
     return "acknowledged";
   }
   if (
@@ -509,6 +625,23 @@ export async function organizeBookmarkJob(
     .bind(context.bookmark_id, context.expected_revision)
     .run();
 
+  const environment = (env as { ENVIRONMENT?: string }).ENVIRONMENT;
+  const pageContextResolver =
+    dependencies.resolvePageContext ??
+    (environment !== undefined && environment !== "test" ? resolvePageContext : null);
+  const pageContext =
+    pageContextResolver === null ? null : await pageContextResolver(context.url);
+  const preservedSourceDescription =
+    context.ai_managed_description === 0 && context.organization_policy === "preserve"
+      ? context.description
+      : null;
+  const hasPrimaryContent =
+    hasPrimaryPageContent(pageContext, context.title) ||
+    hasPrimaryContentText(preservedSourceDescription);
+  if (!hasPrimaryContent) {
+    return recordInsufficientEvidence(env.DB, context, "content_unavailable");
+  }
+
   const tags = await env.DB
     .prepare(
       `SELECT normalized_name, display_name, status, usage_count
@@ -516,11 +649,6 @@ export async function organizeBookmarkJob(
         ORDER BY status, usage_count DESC, normalized_name`,
     )
     .all<TagRow>();
-  const environment = (env as { ENVIRONMENT?: string }).ENVIRONMENT;
-  const remoteAllowed = environment !== undefined && environment !== "test";
-  const pageContext = remoteAllowed ? await resolvePageContext(context.url) : null;
-  const thumbnailCandidate =
-    "IMAGES" in env ? await findPageThumbnail(context.url).catch(() => null) : null;
 
   let result: OrganizationResult | null = null;
   try {
@@ -621,17 +749,13 @@ export async function organizeBookmarkJob(
     return "retry";
   }
 
+  if (result.status === "insufficient_evidence") {
+    return recordInsufficientEvidence(env.DB, context, "ai_insufficient_evidence");
+  }
+
   try {
     const applied = await applyResult(env.DB, context, result, tags.results);
     if (applied) {
-      if (thumbnailCandidate !== null) {
-        await ingestThumbnailCandidate(
-          env,
-          context.bookmark_id,
-          thumbnailCandidate,
-          "page_metadata",
-        );
-      }
       if (pageContext?.xPost !== null && pageContext?.xPost !== undefined) {
         await linkXPostDestinations(env, context.bookmark_id, pageContext.xPost.externalUrls);
       }

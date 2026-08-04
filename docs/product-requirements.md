@@ -45,7 +45,7 @@ Raindrop is supported only as an optional source of a user-uploaded CSV import. 
   editor or confirms a destructive tag action.
 - The fixed folder taxonomy cannot be renamed or deleted.
 - Tags remain user-controlled and may be added, removed from individual bookmarks, or deleted globally.
-- Imported data is previewed before it is committed.
+- Raindrop import is a direct append into Unsorted with visible row progress and an explicit metadata policy.
 - Thumbnail binaries are stored separately from bookmark records.
 - Capture surfaces confirm whether the bookmark was actually saved or failed.
 - Later Gator does not maintain its own OpenAI or Anthropic usage ledger.
@@ -61,7 +61,7 @@ Raindrop is supported only as an optional source of a user-uploaded CSV import. 
 
 - Replace the dependency on Raindrop with a complete Later Gator bookmark library.
 - Let the user manage bookmarks from a private web dashboard.
-- Organize new and imported bookmarks with AI.
+- Organize only bookmarks that are currently in Unsorted, including CSV imports.
 - Maintain a coherent, personalized tag vocabulary.
 - Keep folder classification stable through an immutable source-type taxonomy.
 - Make ordinary manual edits safe and predictable.
@@ -73,7 +73,7 @@ Raindrop is supported only as an optional source of a user-uploaded CSV import. 
 ### 3.2 Secondary goals
 
 - Import a Raindrop CSV without recreating the user's old folder hierarchy.
-- Offer a migration choice between full AI reorganization and preservation-oriented organization.
+- Skip duplicate URLs and place imported bookmarks directly in Unsorted.
 - Support natural-language bookmark retrieval through MCP.
 - Allow seamless AI provider and model switching for future work.
 - Make provider usage and processing state understandable from the dashboard.
@@ -93,11 +93,12 @@ Raindrop is supported only as an optional source of a user-uploaded CSV import. 
 - Deleting a tag globally removes it from every bookmark without deleting any bookmark.
 - Deleted tags are not silently recreated by the AI.
 - Fixed folders cannot be renamed or deleted through the application.
-- Import preview reports valid rows, invalid rows, duplicates, and the chosen transformation before confirmation.
+- Import reports rows processed, bookmarks added, duplicate URLs skipped, and invalid URLs skipped.
 - AI provider switching affects the next eligible bookmark and does not rewrite completed bookmarks.
 - Usage displays never present a rough token estimate as actual neurons or actual cost.
 - The application remains usable for viewing and export when AI is unavailable.
 - A missing or failed thumbnail never prevents a bookmark from being saved.
+- Thumbnail generation proceeds independently from sequential AI processing.
 - Browser-extension capture confirms success only after Later Gator commits the bookmark.
 - The iOS Shortcut always displays a clear saved or failed result.
 - Saving a source URL with a linked-to URL preserves two distinct bookmarks and their relationship.
@@ -138,7 +139,7 @@ Later Gator:
 - The user initiates and downloads their Raindrop export.
 - The user retains any original export they want to keep as a backup.
 - Later Gator does not create, verify, retain indefinitely, or restore Raindrop backup files.
-- The user reviews the import preview and chooses the import behavior before committing it.
+- The user explicitly selects a CSV and chooses whether imported tags and descriptions are retained.
 
 ---
 
@@ -253,6 +254,9 @@ Requirements:
 - The user can remove and replace selections before continuing.
 - Selected tags become starting interests, not a closed vocabulary or allowlist.
 - AI must create precise new tags when later bookmarks introduce subjects absent from the starting interests.
+- There is no product-level limit of 20 topics or global cap on the tag vocabulary.
+- Canonical aliases and the active registry prevent synonymous duplicates such
+  as `ai` and `artificial-intelligence` from becoming separate topics.
 - These tags do not need to be attached to a bookmark immediately.
 - Tag browsing, filtering, creation through bookmark editing, and global deletion live in the Library rather than Settings.
 
@@ -313,6 +317,17 @@ Actions:
 
 - **Import from Raindrop now**
 - **Skip for now**
+
+When importing, setup and Settings expose the same two choices:
+
+- **Reorganize everything:** import URL and title; AI creates the description,
+  tags, and permanent folder.
+- **Keep tags and descriptions:** import URL, title, normalized tags, and
+  excerpt-as-description; AI chooses only the permanent folder.
+
+Both choices initially keep every imported bookmark in Unsorted. Imported
+Raindrop folders are ignored, and no deterministic source rule moves a bookmark
+before its Unsorted AI job completes.
 
 Skipping does not reduce Later Gator functionality. The same importer remains available in Settings.
 
@@ -537,6 +552,9 @@ The folder sidebar displays the total non-trashed bookmark count for All
 Bookmarks and each fixed folder, plus the deleted-bookmark count for Trash.
 Library results use cursor pagination and display `shown of total`; a fixed
 100-result window must never be presented as the full library.
+In selection mode, **Select all** selects every bookmark matching the current
+folder, search, and filter state across all cursor pages, not only the currently
+rendered page.
 
 ### 7.8 Bookmark deletion
 
@@ -557,10 +575,9 @@ Every bookmark may have one Later Gator-owned thumbnail.
 
 Thumbnail source order:
 
-1. A valid Raindrop `cover` image supplied during CSV import.
-2. A valid preview image exposed by the saved page, such as Open Graph or equivalent metadata.
-3. A bounded page-generated preview when the configured Cloudflare allowance and destination safety rules permit it.
-4. A site icon or standard Later Gator placeholder.
+1. A valid preview image exposed by the saved page, such as Open Graph or equivalent metadata.
+2. A bounded page-generated preview when the configured Cloudflare allowance and destination safety rules permit it.
+3. A site icon or standard Later Gator placeholder.
 
 Requirements:
 
@@ -572,6 +589,8 @@ Requirements:
 - Dashboard cards use a responsive masonry layout so portrait, landscape, and document-shaped previews remain legible.
 - The bookmark database stores only the thumbnail storage key, media type, dimensions, byte size, source type, and timestamps.
 - The dashboard serves thumbnails only to an authenticated application request or another explicitly authorized Later Gator client.
+- Thumbnail delivery uses a versioned private URL so the browser may cache an
+  immutable rendition for one year without serving an older rendition after regeneration.
 - Changing a bookmark URL marks its existing automatically generated thumbnail as stale and offers regeneration.
 - A user-uploaded replacement thumbnail is not overwritten automatically.
 - Moving a bookmark to Trash retains its thumbnail for restoration.
@@ -637,6 +656,11 @@ In the bookmark editor, the user may:
 - Remove a tag from one bookmark.
 - Replace all tags on a bookmark.
 
+Tag entry uses the same `#` picker as extension capture. Existing suggestions
+are displayed simply as `#tag`; only a missing normalized value is prefixed
+with **Create**. Selected tags are removable chips rather than a comma-separated
+text field.
+
 These edits update the current Later Gator library directly. No external registry resynchronization is required.
 
 ### 8.3 Global tag deletion
@@ -688,6 +712,10 @@ For a bookmark requiring full organization, the AI proposes:
 
 The application validates the proposal before saving it.
 
+Seed tags are reference context only. AI may create as many distinct library
+tags as the bookmarks require, while reusing canonical existing wording instead
+of introducing abbreviations or synonyms for the same subject.
+
 ### 9.2 Sequential processing
 
 Later Gator processes at most one bookmark at a time.
@@ -695,9 +723,14 @@ Later Gator processes at most one bookmark at a time.
 Sequential processing applies to:
 
 - Newly added Unsorted bookmarks.
-- Full-reorganization CSV imports.
+- Full-reorganization CSV imports waiting in Unsorted.
 - Preservation-oriented CSV imports waiting in Unsorted.
 - Retried bookmarks.
+
+Unsorted is the complete eligibility boundary: the AI never starts or continues
+organization for a bookmark in a permanent folder. Moving a pending bookmark
+out of Unsorted cancels its organization job; moving one into Unsorted makes it
+eligible for a recoverable job.
 
 There is no user-visible 15-minute discovery schedule. A stored pending bookmark becomes eligible immediately.
 
@@ -734,28 +767,30 @@ The AI must never overwrite a newer user edit.
 
 ### 9.4 Full organization behavior
 
-For ordinary Unsorted bookmarks and full-reorganization imports:
+For ordinary Unsorted bookmarks queued for organization:
 
+- Require at least one primary content field before invoking AI. A title, URL,
+  hostname, author, engagement count, thumbnail, or link-only placeholder is
+  not sufficient by itself.
+- Let AI determine whether retrieved primary content is semantically sufficient
+  or is only generic access copy, platform boilerplate, or ambiguous material.
+- Accept `insufficient_evidence` as a valid structured AI result that cannot
+  contain a generated description or tags.
+- The first objective no-content result or AI insufficient-evidence result
+  retries content retrieval once later. If the next completed attempt is also
+  insufficient by either route, move the bookmark to Need for Review with a
+  safe reason.
 - Generate or replace the AI-managed description.
 - Choose normalized tags.
 - Choose one permanent content folder.
 - Route low-confidence or repeatedly invalid results to Need for Review.
 - Preserve the URL, user note, date added, and source creation date.
 
-### 9.5 Preservation-oriented behavior
+For preservation-oriented imports, AI follows the same Unsorted-only lifecycle
+but preserves imported descriptions and imported tags. Its only mutation is the
+validated permanent-folder assignment.
 
-For bookmarks imported through the preservation option:
-
-- Preserve the imported description.
-- Preserve the imported user note.
-- Preserve imported tags after normalization.
-- Allow the AI to add relevant new tags.
-- Never remove an imported tag merely because the AI did not suggest it.
-- Never reactivate a globally retired tag.
-- Choose one permanent content folder.
-- Remove the bookmark from Unsorted after successful classification.
-
-### 9.6 Folder routing
+### 9.5 Folder routing
 
 Folders describe source type. Tags describe topic and use.
 
@@ -769,6 +804,9 @@ Deterministic URL rules may override the AI for obvious source types, including:
   model cannot override.
 - Reddit, LinkedIn, and similar social sources → Social Posts.
 - Direct PDF documents → Papers unless a more specific supported rule applies.
+
+These rules are applied only while committing a successful AI result for an
+Unsorted bookmark. They are not a bootstrap or import-time pre-routing pass.
 
 Unknown or invalid classification falls back to Websites & Apps unless confidence requires Need for Review.
 
@@ -791,6 +829,17 @@ Temporary provider or network failure:
 - Retries through the background-processing mechanism.
 - Displays a concise provider status when the interruption persists.
 
+Insufficient source evidence is separate from transport failure:
+
+- A completed retrieval with no primary body, caption, transcript, document
+  text, repository content, or equivalent source material does not invoke AI.
+- When primary content exists, AI may return `insufficient_evidence` instead of
+  inventing a description or tags from generic or ambiguous material.
+- The first insufficient result from either layer schedules one delayed retry.
+- A second insufficient result from either layer moves the bookmark to Need for
+  Review.
+- Queue delivery failures do not consume either completed content attempt.
+
 Invalid structured AI output:
 
 - Receives one corrective retry for that processing attempt.
@@ -808,7 +857,7 @@ Authentication, billing, inaccessible-model, or persistent configuration failure
 The user may pause AI explicitly from Settings.
 
 - Owner pause persists until resumed.
-- Viewing, searching, importing for later processing, exporting, and manual editing remain available while AI is paused.
+- Viewing, searching, importing, exporting, and manual editing remain available while AI is paused.
 
 ---
 
@@ -848,172 +897,95 @@ Observed field coverage:
 
 | Field | Non-empty rows | Later Gator treatment |
 |---|---:|---|
-| `id` | 659 | Retain only as a source identifier in the import report; never use it as the Later Gator bookmark ID |
+| `id` | 659 | Ignore |
 | `title` | 659 | Import as title |
 | `note` | 13 | Ignore |
-| `excerpt` | 468 | Treat as imported description |
+| `excerpt` | 468 | Import only in **Keep tags and descriptions** mode |
 | `url` | 659 | Required bookmark URL |
-| `folder` | Optional; present in full-library exports | Show in preview/report but do not recreate the folder |
-| `tags` | 383 | Remove under Option A or normalize and retain under Option B |
+| `folder` | Optional; present in full-library exports | Ignore |
+| `tags` | 383 | Normalize and import only in **Keep tags and descriptions** mode |
 | `created` | 659 | Ignore |
-| `cover` | 607 | Ignore; normal thumbnail discovery runs independently |
-| `highlights` | 0 | Unsupported in v6.0; warn and report rather than silently discarding if a future import contains data |
+| `cover` | 607 | Ignore |
+| `highlights` | 0 | Ignore |
 | `favorite` | 659 | Ignore |
 
-The sample contains 656 unique non-empty URLs, so duplicate preview and deterministic duplicate handling are required.
+Duplicate identity is the normalized URL enforced by D1. Repeated CSV rows and
+URLs already present in the library are skipped without changing the existing bookmark.
 
 The importer may accept harmless additional export columns but must not silently treat an unknown column as a supported bookmark field.
 
 ### 10.3 File validation
 
-Before import:
+Import performs only the checks needed to add safe bookmark rows:
 
-- Validate that the upload is a CSV.
-- Enforce a documented file-size limit within the deployment's request and storage limits.
-- Detect character encoding where practical and require UTF-8 when ambiguous.
-- Require a recognizable URL column.
-- Validate every URL.
-- Parse quoted commas and multiline fields correctly.
-- Normalize tag delimiters and whitespace.
-- Treat `note`, `created`, `cover`, and `favorite` as ignored text fields.
-- Detect non-empty unsupported `highlights` and require the user to acknowledge that they are not imported.
-- Never execute spreadsheet formulas, HTML, or scripts from imported cells.
+- Enforce the 10 MiB and 5,000-row limits.
+- Decode UTF-8 CSV and parse quoted commas and multiline fields.
+- Require a recognizable `url` column; `title` is optional.
+- Accept only valid HTTP or HTTPS URLs.
+- Treat unsupported columns as ignored text and never evaluate cell content.
 
-### 10.4 Import preview
+### 10.4 Direct import
 
-Uploading a file does not immediately commit bookmarks.
+Selecting the CSV and submitting the setup or Settings form is the explicit
+import action. There is no separate preview or commit step.
 
-Preview shows:
+The request:
 
-- Total rows.
-- Valid bookmark rows.
-- Invalid rows and safe reasons.
-- Duplicate URLs within the file.
-- Number of folders represented in the export.
-- Number of unique imported tags.
-- Rows with descriptions.
-- Rows with notes.
-- Rows with usable created dates.
-- Rows with cover images.
-- Rows marked favorite.
-- Rows containing unsupported highlights.
-- A sample of the transformed result.
+1. Parses the bounded CSV.
+2. Reads URL and optional title, plus tags and excerpt only for preservation mode.
+3. Counts malformed URLs and duplicate normalized URLs inside the file.
+4. Creates one lightweight progress record.
+5. Returns immediately while small D1 insert chunks continue.
 
-The user may download an error report before committing.
+The CSV bytes and parsed bookmark rows are not persisted.
 
 ### 10.5 Duplicate behavior
 
-Default duplicate identity is normalized URL.
+The active-bookmark unique normalized-URL index is the final duplicate
+authority.
 
-- Within one CSV, keep the first valid occurrence and report later occurrences as duplicates.
-- If the URL already exists in Later Gator, keep the existing bookmark unchanged
-  and report the imported row as skipped after commit.
-- Import never opens a per-bookmark conflict-resolution workflow.
+- The first normalized URL inside one CSV is attempted; later copies are skipped.
+- The database keeps an existing library bookmark unchanged.
+- A fragment-only difference does not create another bookmark.
+- Meaningful path and query differences remain distinct.
+- Re-uploading the same CSV is safe and is the recovery path after an interruption.
 
-### 10.6 Imported folders
+### 10.6 Imported bookmark state
 
-Raindrop folder names and nested folder paths are never recreated as Later Gator folders.
+Every newly inserted row:
 
-The preview explains:
+- Preserves URL.
+- Uses the CSV title when present and the hostname otherwise.
+- Goes directly to Unsorted.
+- Never imports the Raindrop folder, note, favorite, source date, cover, or
+  other unsupported metadata; application timestamps use the import time.
+- Uses full organization when **Reorganize everything** is selected.
+- Uses preservation organization and retains normalized tags and the excerpt as
+  description when **Keep tags and descriptions** is selected.
+- Creates one recoverable AI job and one independent thumbnail job. Preserve
+  mode also creates active imported tags and bookmark-tag associations.
 
-> Later Gator uses a fixed folder system. Folder names from your CSV will not be created. Choose how the imported bookmarks should be reorganized.
+The import does not pause unrelated AI work and does not make library mutations
+read-only.
 
-The original folder column may be used only in the import preview and import report. It does not become a user-created folder or automatic tag.
+### 10.7 Progress and completion
 
-### 10.7 Import option A — Reorganize everything
+Bookmarks are inserted in bounded chunks rather than one atomic full-file batch.
+After every chunk, the progress record updates:
 
-User-facing option:
+- Rows processed.
+- Bookmarks added.
+- Duplicate URLs skipped.
+- Invalid URLs skipped.
 
-**Reorganize with Later Gator**
+The dashboard and Settings show these real counts in a non-blocking inline
+progress bar. A transient status-request failure is retried automatically and
+is not presented as an import failure.
 
-For every imported bookmark:
-
-- Preserve URL.
-- Preserve title when present.
-- Set date added to the Later Gator import time.
-- Remove imported tags.
-- Remove the imported description or excerpt.
-- Do not import note, favorite, source-created date, folder, cover, or other
-  Raindrop metadata.
-- Ignore the imported folder.
-- Place the bookmark in Unsorted.
-- Attempt to copy a valid imported cover into Later Gator thumbnail storage independently of AI organization.
-- Let the AI create the description, choose tags, and select the permanent folder.
-
-Before confirmation, warn clearly that imported tags and descriptions will not be retained in Later Gator. The user's original CSV remains their external backup.
-
-### 10.8 Import option B — Preserve and classify
-
-User-facing option:
-
-**Keep my tags and descriptions**
-
-For every imported bookmark:
-
-- Preserve URL.
-- Preserve title when present.
-- Preserve description or excerpt.
-- Normalize and retain imported tags.
-- Do not import note, favorite, source-created date, folder, cover, or other
-  Raindrop metadata.
-- Ignore the imported folder.
-- Place the bookmark in Unsorted.
-- Attempt to copy a valid imported cover into Later Gator thumbnail storage.
-- Ask the AI to choose a permanent folder.
-- Allow the AI to add relevant new tags.
-- Never delete an imported tag merely because the AI did not choose it.
-- Remove the bookmark from Unsorted after classification.
-
-If the AI cannot classify with sufficient confidence, move the bookmark to Need for Review while retaining its imported data.
-
-### 10.9 Import commit and progress
-
-Before commit, show:
-
-- Selected import option.
-- Number of bookmarks to create.
-- Number of within-file duplicates that will be skipped.
-- Number of invalid rows.
-- Exact preservation/removal behavior.
-
-Import commit:
-
-- Is one set-based D1 operation from the user's perspective.
-- Pauses AI before preview/commit and keeps it paused until every accepted row
-  reaches a terminal import outcome.
-- Keeps library mutations read-only while allowing the user to browse the
-  application. Progress is shown in a non-blocking status dock after confirmation.
-- Shows an in-progress state in setup and Settings, then the final imported,
-  duplicate, existing-library-skip, and invalid counts.
-- Stores every accepted bookmark in Unsorted before AI organization resumes.
-- Produces an import session with visible counts.
-- Does not call the normal per-bookmark creation repository, read provider or
-  application state per row, create one job per row through application code,
-  or use Queue messages to perform CSV insertion.
-- Creates all required AI job rows with one set-based post-insert D1 operation,
-  then signals background AI dispatch once after the import commits.
-- Does not require the browser to remain open for later AI organization.
-- Is transactionally committed or left uncommitted; retrying the same session is
-  idempotent because normalized URLs and job idempotency keys remain unique.
-- Allows the user to cancel uncommitted rows.
-- Does not delete already committed bookmarks when AI processing is stopped.
-
-### 10.10 Import completion
-
-Completion summary shows:
-
-- Imported.
-- Duplicate CSV rows skipped.
-- Existing library bookmarks kept.
-- Invalid.
-- Organized.
-- Waiting for AI.
-- Sent to Need for Review.
-- Thumbnails copied.
-- Thumbnails unavailable or failed.
-- Unsupported highlights detected.
-
-The user may download the import report.
+Completion reports only bookmarks added, duplicates skipped, and invalid rows
+skipped. If an import stops, bookmarks already added remain in Unsorted. The
+user uploads the same CSV again; database uniqueness skips completed rows and
+adds the remainder.
 
 ---
 
@@ -1031,8 +1003,7 @@ Clicking the toolbar icon opens a compact bookmark-capture popup inspired by the
 - Note.
 - Folder.
 - Tags.
-- Source URL.
-- Linked-to URL.
+- Linked-to bookmark search.
 - Favorite control.
 - Save action.
 
@@ -1040,20 +1011,19 @@ The Later Gator extension uses its own visual identity and does not copy another
 
 ### 11.2 Popup fields
 
-**Source URL**
+**Current page**
 
-- Required.
-- Automatically populated from the active browser tab.
-- Editable before save.
-- Must be a valid HTTP or HTTPS URL.
+- The active-tab HTTP or HTTPS URL is captured internally and is not rendered
+  as an editable popup field.
+- The title, description, and thumbnail remain a preview of that current page.
 
 **Linked to**
 
 - Optional.
-- Accepts one HTTP or HTTPS URL.
-- Creates the linked-bookmark behavior defined in Section 7.10.
-- Is labelled with explanatory help:
-  > Save another bookmark related to this page, such as the article linked from an X post.
+- Available only after the user chooses a permanent folder.
+- Searches active bookmarks by title, hostname, and URL as the user types.
+- Lets the user choose one existing bookmark and creates the relationship
+  defined in Section 7.10; it is not a free-form URL field.
 
 **Note**
 
@@ -1065,12 +1035,15 @@ The Later Gator extension uses its own visual identity and does not copy another
 - Defaults to Unsorted.
 - Offers only the immutable Later Gator folders.
 - Saving directly to a permanent content folder is treated as manual filing and does not allow AI to move that bookmark automatically.
+- While Unsorted is selected, Tags and Linked to are disabled and cleared.
 
 **Tags**
 
 - Optional.
-- Suggests active tags from the Later Gator library.
-- Allows new tags using the same normalization rules as the dashboard.
+- Available only after the user chooses a permanent folder.
+- Typing `#` suggests active tags from the Later Gator library.
+- The user may select an existing tag or create a new `#` tag using the same
+  normalization rules as the dashboard.
 
 **Favorite**
 
@@ -1081,7 +1054,12 @@ The Later Gator extension uses its own visual identity and does not copy another
 
 When the popup opens:
 
-- Show the active-tab URL immediately.
+- Capture the active-tab URL internally as the required source bookmark.
+- Check the normalized URL against the live library without loading bookmark
+  content. If it is already saved, show the successful **Already saved** view
+  and place a tick badge over the normal Later Gator toolbar icon for that tab.
+- Refresh that badge when the active tab changes or completes navigation; use
+  the current URL only for this status check and never retain browsing history.
 - Request title, description preview, and preview image when browser permissions allow.
 - Show a placeholder while metadata is unavailable.
 - Never delay URL capture indefinitely while waiting for metadata.
@@ -1109,6 +1087,8 @@ Requirements:
 - A failure message contains a safe reason such as authentication required, invalid URL, unavailable deployment, or storage limit reached.
 - Closing the popup after a confirmed save does not cancel AI processing.
 - Saving from the dashboard never pauses unrelated AI work.
+- A confirmed extension save replaces the capture form with a full-popup success
+  view containing an explicit result, a link to Later Gator, and a Done action.
 
 ### 11.5 Extension connection and security
 
@@ -1116,17 +1096,35 @@ The extension never stores the Later Gator password or MCP secret.
 
 Settings provides a dedicated browser-extension connection flow:
 
-- Pair extension.
+- Generate one versioned connection code containing the deployment origin and
+  the scoped extension token.
+- Copy the connection code with one action and paste it into one extension
+  field; pairing must not require switching away from the popup twice.
 - Show connected browser/device label.
 - Show last successful capture time.
 - Revoke one connection.
 - Revoke all capture connections.
 
+The popup validates a stored credential before rendering bookmark fields. During
+that check it shows a neutral loading state. A valid credential renders only the
+bookmark-capture form; a missing, rejected, malformed, or permission-less
+credential renders only the connection form. A temporary deployment or network
+failure preserves the credential and offers Retry instead of forcing a new
+connection. The capture form may expose connection management through a compact
+settings control, but it must not permanently display the connection form or a
+full-size Connection action.
+
+Extension credentials have no scheduled or inactivity-based expiry. The
+server-side credential remains valid until revoked or removed by an application
+reset. Lost extension storage or host permission removes the browser's usable
+connection and requires pairing again without expiring the server-side record.
+
 The capture credential is scoped only to the minimum extension actions required to:
 
 - Read fixed folders and active tags for the popup.
+- Search a bounded projection of active bookmarks for Linked to selection.
 - Save a bookmark.
-- Create the optional linked bookmark and relationship.
+- Relate the source to the selected existing bookmark.
 - Check the result of its own save.
 
 It cannot:
@@ -1134,14 +1132,20 @@ It cannot:
 - Delete bookmarks or tags.
 - Change AI provider or personalization.
 - Import CSV files.
+- Read bookmark notes, descriptions, tags, relationships, or deleted bookmarks.
 - Read arbitrary bookmark content.
 - Access MCP.
 
 ### 11.6 Extension installation
 
-Settings and the README provide Chrome and Firefox installation instructions.
+Settings presents Chrome and Firefox self-install instructions in an accessible
+in-page dialog. Opening setup must not navigate away from Settings or create a
+new browser tab.
 
-The final distribution channel—official browser stores or a documented self-install path—must be decided before implementation. The user-facing installation must explain permissions before installation and must not request browsing-history access beyond what capture requires.
+The initial release uses the documented self-install path. The user-facing
+installation explains permissions before installation and does not request
+browsing-history access beyond what capture requires. Official browser-store
+distribution remains a future improvement.
 
 ---
 
@@ -1189,14 +1193,19 @@ The Shortcut must not show success merely because it sent a network request. A c
 
 Settings provides:
 
-- **Install iOS Shortcut** instructions.
-- A generated capture endpoint or installation payload.
+- **Create in Shortcuts**, which opens Apple's new-Shortcut editor, plus exact
+  setup instructions in an in-page dialog without opening a separate tab.
+- A generated capture endpoint and one-time token, each with its own Copy action.
 - Connection test.
 - Connected/not-configured state.
 - Last successful iOS capture time.
 - Rotation or revocation.
 
 The Shortcut does not contain the Later Gator password or MCP secret. Its credential is scoped only to idempotently add one URL to Unsorted and receive that operation's result.
+
+The app does not claim that the `shortcuts://create-shortcut` URL can prefill
+actions. A future project-maintained, Apple-validated iCloud Shortcut may
+replace guided creation and use import questions for endpoint and token setup.
 
 ### 12.5 Offline and unavailable behavior
 
@@ -1236,7 +1245,7 @@ Rules:
 - An in-progress bookmark finishes under its captured provider/model unless a
   newer bookmark revision requires the stale result to be discarded and retried.
 - Switching never reprocesses completed bookmarks.
-- Switching never changes imported preserved data retroactively.
+- Switching never changes existing bookmark content retroactively.
 - Later Gator never silently falls back to another provider.
 
 ### 13.3 Usage reporting
@@ -1298,14 +1307,14 @@ Changes apply to bookmarks whose AI work starts afterward.
 ### 14.3 Import and export
 
 - Upload a Raindrop CSV.
-- Review prior import sessions and reports.
+- View active progress and the most recent import result.
 - Export the Later Gator library in a documented portable format.
 - Explain that Raindrop is an import source, not a synchronized connection.
 
 ### 14.4 MCP
 
 - Generate and copy the MCP URL.
-- Show ChatGPT and Claude setup instructions.
+- Show ChatGPT and Claude setup instructions in an in-page dialog.
 - Test the connection.
 - Rotate the MCP connection address.
 - Show connected/not-configured status.
@@ -1379,6 +1388,8 @@ Bookmark mutation tools are outside v6.0 unless separately approved.
 
 - Later Gator generates the machine secret.
 - The user copies one complete connection URL.
+- Settings reveals the URL in a one-time panel with an explicit Copy action and
+  an in-page client tutorial.
 - The secret can be rotated from Settings.
 - Invalid credentials reveal no library or account detail.
 - Raw MCP URLs and secrets are excluded from application logs.
@@ -1492,6 +1503,10 @@ Measure:
 - Destructive tag, bookmark, Trash, and import actions require clear confirmation.
 - Long imports expose progress without trapping keyboard or screen-reader users.
 - Empty, loading, waiting, paused, error, and success states are distinct.
+- Light, Dark, and System controls appear only in Settings. Other pages honor
+  the saved preference without repeating the controls in their headers.
+- Modal close controls remain fixed-size text buttons without a circular
+  background, including beside long titles.
 - Mobile layout supports viewing, search, simple edits, and bookmark creation.
 - Desktop layout supports efficient bulk selection and filtering.
 - Browser-extension popup controls are keyboard accessible and fit within common extension-popup dimensions without clipped actions.
@@ -1551,24 +1566,28 @@ Measure:
 
 ### 19.6 Import
 
-- CSV parsing supports quoted commas, multiline notes, Unicode, and common Raindrop headers.
-- Preview performs no bookmark commit.
-- Invalid rows, within-file duplicates, and existing-library conflicts are reported.
-- Option A removes imported tags/descriptions and queues Unsorted organization.
-- Option B retains imported tags/descriptions and uses Unsorted until classification.
-- Imported folders are not created.
-- Interrupted commit can resume without duplicates.
-- Closing the dashboard does not cancel already committed AI processing.
-- The supplied `id`, `excerpt`, `cover`, `favorite`, and empty `highlights` columns receive the documented treatment.
-- Valid covers are copied into private thumbnail storage without depending permanently on the remote URL.
-- Non-empty unsupported highlights produce a visible preview warning.
+- CSV parsing supports quoted commas, multiline cells, Unicode, and both full-library and collection Raindrop exports.
+- Only the `url` column is required; `title` is optional and falls back to the URL hostname.
+- Reorganize mode ignores every field except URL and title. Preserve mode also
+  retains normalized tags and excerpt-as-description.
+- Invalid URLs are counted and skipped without blocking valid rows.
+- Normalized URL duplicates inside the CSV and active-library conflicts are counted and skipped.
+- New bookmarks are inserted directly into Unsorted in bounded chunks with no preview or confirmation stage.
+- Progress reports actual processed, added, duplicate, and invalid counts.
+- Import does not pause AI or lock the library. Preserve mode may create tags;
+  neither mode performs remote metadata or thumbnail fetches in the import
+  request. Recoverable AI and thumbnail jobs run after each bookmark is stored.
+- Re-uploading the same CSV is the recovery path because normalized URL uniqueness makes it idempotent.
 
 ### 19.7 Browser-extension capture
 
-- Chrome and Firefox popups prefill the active-tab Source URL.
-- Source URL and Linked to are validated independently.
-- Saving a new linked-to URL creates a second Unsorted bookmark and a relationship.
-- Saving an existing linked-to URL reuses it without duplication.
+- Chrome and Firefox capture the active-tab source URL internally without an
+  editable Source URL field.
+- Tags and Linked to are disabled and cleared while Unsorted is selected.
+- Permanent folders enable `#` tag completion with existing-or-create behavior.
+- Permanent folders enable a bounded search over existing active bookmarks for
+  Linked to selection.
+- Selecting Linked to reuses the existing bookmark without duplication.
 - Identical source and linked URLs are rejected.
 - Partial source/link failure is reported accurately.
 - Duplicate clicks do not create duplicate bookmarks.
@@ -1662,8 +1681,10 @@ Measure:
 16. Per-bookmark revision checks protect user edits without a global edit mode.
 17. The 15-minute Raindrop discovery schedule is removed from the product.
 18. AI processing begins from stored pending state and remains sequential.
-19. Import option A removes imported tags/descriptions and organizes from Unsorted.
-20. Import option B retains imported tags/descriptions, allows additional AI tags, and classifies from Unsorted.
+19. CSV import inserts new bookmarks into Unsorted and exposes full-reorganization
+    and metadata-preservation choices in both setup and Settings.
+20. CSV import creates recoverable AI and thumbnail jobs for each new Unsorted
+    bookmark; preservation mode may also retain normalized tags and descriptions.
 21. Imported Raindrop folders are not recreated.
 22. Cloudflare Workers AI remains the default provider.
 23. OpenAI and Anthropic remain optional bring-your-own-key providers.
@@ -1672,15 +1693,21 @@ Measure:
 26. OpenAI and Anthropic have no Later Gator daily token budget.
 27. Free-tier operation is a measured target, not an unlimited-capacity promise.
 28. Bookmark thumbnail binaries are stored as private Workers KV values rather than in the bookmark database.
-29. Imported Raindrop `cover` values are candidate thumbnail sources.
+29. Imported Raindrop `cover` values are ignored.
 30. Chrome and Firefox extensions are in scope.
-31. The browser-extension popup contains separate Source URL and Linked to fields.
+31. The browser-extension popup captures the active-tab URL internally and
+    offers Linked to only as an existing-bookmark search for permanent folders.
 32. Linked URLs remain separate bookmarks connected by a relationship.
 33. For X handling, the X post and external destination are not collapsed into one bookmark.
 34. An iOS Share Sheet Shortcut saves one URL directly to Unsorted without note or tag input.
 35. Browser-extension and iOS capture surfaces must report confirmed success or failure.
 36. Capture credentials are separate from the Later Gator password and MCP secret.
-37. The supplied CSV's `excerpt`, `cover`, and `favorite` fields receive explicit import treatment.
+37. CSV folders and unsupported fields are ignored; only preservation mode also
+    reads `tags` and `excerpt`.
+38. AI/background and thumbnail work use separate Queue consumers while D1
+    pending-job records remain authoritative and recoverable.
+39. Ready thumbnails use authenticated, versioned URLs with long-lived private
+    browser caching.
 
 ---
 
@@ -1689,16 +1716,17 @@ Measure:
 The implemented product resolves the earlier open questions as follows:
 
 1. Career and aspiration answers are required during setup.
-2. Setup accepts 5–20 distinct normalized topics.
+2. Setup accepts at least five distinct normalized topics. They are seed
+   references, not a vocabulary ceiling.
 3. A Raindrop CSV may be at most 10 MiB and 5,000 rows.
-4. Reorganize import does not retain a hidden description, tags, notes, or
-   discarded CSV content after commit.
+4. Import retains tags and descriptions only when the user explicitly chooses
+   preservation mode; notes and discarded CSV content are never retained.
 5. Duplicate identity normalizes scheme/hostname case, fragments, default
    ports, and an empty path; it does not silently remove tracking parameters.
 6. Dashboard creation uses the supplied title or hostname fallback. It does not
    block saving on destination-title extraction.
-7. Imports is a hidden compatibility row, not a user-visible destination. New
-   imports of either type are stored in Unsorted.
+7. Imports is a hidden compatibility row, not a user-visible destination. All
+   new CSV bookmarks are stored in Unsorted.
 8. Saving directly into a permanent folder is a manual organization decision
    and does not create an AI organization job.
 9. Portable launch exports are JSON and CSV.

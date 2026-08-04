@@ -1,17 +1,18 @@
 import {
   backgroundMessageSchema,
+  thumbnailMessageSchema,
   automationPauseInputSchema,
   bookmarkListQuerySchema,
   completeSetupInputSchema,
   captureCredentialInputSchema,
   createBookmarkInputSchema,
   createTagInputSchema,
-  importStartInputSchema,
   loginInputSchema,
   providerActivationInputSchema,
   providerCandidateInputSchema,
   resetApplicationInputSchema,
   relationshipInputSchema,
+  updatePersonalInstructionsInputSchema,
   updateBookmarkInputSchema,
 } from "./domain/schemas";
 import {
@@ -31,6 +32,7 @@ import {
   setOwnerPause,
   unrelateBookmarks,
   updateBookmark,
+  updatePersonalInstructions,
 } from "./adapters/library-repository";
 import {
   dashboardPage,
@@ -51,14 +53,7 @@ import {
   type DashboardSession,
 } from "./security/sessions";
 import { organizeBookmarkJob } from "./application/organize-bookmark";
-import {
-  cancelImport,
-  getImportStatus,
-  processImportThumbnailWork,
-  processImportWork,
-  previewRaindropCsv,
-  startImport,
-} from "./application/imports";
+import { getImportStatus, startRaindropCsvImport } from "./application/imports";
 import {
   processResetStorage,
   resetApplication,
@@ -66,6 +61,8 @@ import {
 import { ingestThumbnailCandidate } from "./application/thumbnails";
 import {
   captureBookmark,
+  captureBookmarkSearch,
+  captureBookmarkStatus,
   captureOptions,
   capturePreflight,
 } from "./routes/capture";
@@ -84,8 +81,13 @@ import {
 import { handleMcp, rotateMcpCredential } from "./routes/mcp";
 import { sha256Base64 } from "./security/encoding";
 import { repairOrganizationBacklog } from "./application/automation";
+import {
+  dispatchThumbnailJob,
+  processThumbnailJob,
+  repairThumbnailBacklog,
+} from "./application/thumbnail-jobs";
 import { ASSET_MANIFEST } from "./generated/asset-manifest";
-import { importHoldsAi, importHoldsLibrary } from "./domain/import-state";
+import { importHoldsAi } from "./domain/import-state";
 import {
   deleteBookmarkVectors,
   hasEmbedBacklog,
@@ -98,6 +100,7 @@ interface RouteContext {
   env: Env;
   url: URL;
   session: DashboardSession;
+  executionContext: ExecutionContext;
 }
 
 async function setupComplete(db: D1Database): Promise<boolean> {
@@ -321,7 +324,7 @@ function installationGuide(kind: "chrome" | "firefox" | "ios"): Response {
   const copy =
     kind === "ios"
       ? `<h1>Install the iOS Share Sheet Shortcut</h1><ol><li>In Later Gator Settings, generate an iOS connection.</li><li>Create a Shortcut that accepts URLs from the Share Sheet.</li><li>Add “Get Contents of URL”: POST the shared URL and a generated UUID as JSON to the displayed endpoint.</li><li>Add the Authorization header as Bearer plus the displayed token.</li><li>If result is saved, show “Saved to Later Gator”; if already_saved, show “Already saved in Later Gator”; otherwise show “Failed to save to Later Gator”.</li></ol><p>The maintained request template is in <code>shortcuts/ios/request-template.json</code>.</p>`
-      : `<h1>Install the ${kind === "chrome" ? "Chrome" : "Firefox"} extension</h1><ol><li>Download or clone the Later Gator repository.</li><li>Open the browser's extension debugging page.</li><li>Load <code>extension/${kind}</code> as an unpacked or temporary extension.</li><li>Open the popup, enter this Later Gator deployment URL and the extension token generated in Settings.</li><li>Approve access only to this deployment host.</li></ol><p>The extension asks for the active tab only when you open it and does not request browsing history.</p>`;
+      : `<h1>Install the ${kind === "chrome" ? "Chrome" : "Firefox"} extension</h1><ol><li>Download or clone the Later Gator repository.</li><li>Open the browser's extension debugging page.</li><li>Load <code>extension/${kind}</code> as an unpacked or temporary extension.</li><li>In Settings, generate and copy one browser-extension connection code.</li><li>Open the toolbar popup, paste the code, select Connect, and approve access only to this deployment host.</li></ol><p>The extension asks for the active tab only when you open it and does not request browsing history.</p>`;
   return new Response(
     `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Later Gator installation</title><link rel="stylesheet" href="${ASSET_MANIFEST.css}"></head><body><main class="settings-shell"><section class="panel">${copy}<p><a href="/settings">Back to Settings</a></p></section></main></body></html>`,
     {
@@ -338,8 +341,16 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
   const { request, env, url } = context;
 
   if (request.method === "GET" && url.pathname === "/api/bootstrap") {
-    if (await repairOrganizationBacklog(env)) {
+    const organizationPending = await repairOrganizationBacklog(env);
+    const thumbnailPending = await repairThumbnailBacklog(env);
+    if (organizationPending) {
       await env.BACKGROUND_QUEUE.send({ version: 1, type: "dispatch_pending" }).catch(() => undefined);
+    }
+    if (thumbnailPending) {
+      await env.THUMBNAIL_QUEUE.send({
+        version: 1,
+        type: "dispatch_thumbnail_pending",
+      }).catch(() => undefined);
     }
     if (await hasEmbedBacklog(env).catch(() => false)) {
       await env.BACKGROUND_QUEUE.send({ version: 1, type: "embed_pending" }).catch(() => undefined);
@@ -363,20 +374,6 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     return json({ ok: true, redirectTo: "/setup" });
   }
 
-  const importControlRequest =
-    /^\/api\/imports\/[0-9a-f-]+\/(?:commit|cancel)$/iu.test(url.pathname);
-  if (
-    request.method !== "GET" &&
-    !importControlRequest &&
-    (await importHoldsLibrary(env.DB))
-  ) {
-    return apiError(
-      409,
-      "import_in_progress",
-      "The library is read-only until the active import finishes.",
-    );
-  }
-
   if (request.method === "POST" && url.pathname === "/api/setup/complete") {
     const securityError = await requireMutationSecurity(context);
     if (securityError !== null) return securityError;
@@ -398,6 +395,22 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
       }
       throw error;
     }
+  }
+
+  if (request.method === "PUT" && url.pathname === "/api/profile/personal-instructions") {
+    const securityError = await requireMutationSecurity(context);
+    if (securityError !== null) return securityError;
+    let parsed;
+    try {
+      parsed = updatePersonalInstructionsInputSchema.safeParse(await readJson(request));
+    } catch {
+      return apiError(400, "invalid_json", "The personal instructions could not be read.");
+    }
+    if (!parsed.success) {
+      return apiError(400, "invalid_personal_instructions", "Personal instructions must be 5,000 characters or fewer.");
+    }
+    await updatePersonalInstructions(env.DB, parsed.data.personalInstructions);
+    return json({ ok: true });
   }
 
   if (request.method === "GET" && url.pathname === "/api/bookmarks") {
@@ -443,6 +456,8 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
           : parsed.data;
       const created = await createBookmark(env.DB, createInput, "dashboard");
       const jobIds = created.jobId === null ? [] : [created.jobId];
+      const thumbnailJobIds =
+        created.thumbnailJobId === null ? [] : [created.thumbnailJobId];
       let linkedBookmarkId: string | null = null;
       if (parsed.data.linkedUrl !== undefined && parsed.data.linkedUrl !== null) {
         const linked = await createBookmark(
@@ -460,6 +475,7 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
         await relateBookmarks(env.DB, created.bookmark.id, linked.bookmark.id);
         linkedBookmarkId = linked.bookmark.id;
         if (linked.jobId !== null) jobIds.push(linked.jobId);
+        if (linked.thumbnailJobId !== null) thumbnailJobIds.push(linked.thumbnailJobId);
       }
       if (
         created.created &&
@@ -475,6 +491,10 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
       }
       const dispatches = await Promise.all(
         jobIds.map((jobId) => dispatchJob(env.DB, env.BACKGROUND_QUEUE, jobId)),
+      );
+      await Promise.all(
+        thumbnailJobIds.map(jobId =>
+          dispatchThumbnailJob(env.DB, env.THUMBNAIL_QUEUE, jobId)),
       );
       return json(
         {
@@ -542,6 +562,17 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
           "This bookmark changed. Reload it and try again.",
         );
       }
+      const organizationPending = await repairOrganizationBacklog(env);
+      const thumbnailPending = await repairThumbnailBacklog(env);
+      if (organizationPending) {
+        await env.BACKGROUND_QUEUE.send({ version: 1, type: "dispatch_pending" }).catch(() => undefined);
+      }
+      if (thumbnailPending) {
+        await env.THUMBNAIL_QUEUE.send({
+          version: 1,
+          type: "dispatch_thumbnail_pending",
+        }).catch(() => undefined);
+      }
       await env.BACKGROUND_QUEUE.send({ version: 1, type: "embed_pending" }).catch(() => undefined);
       return json({ ok: true, bookmark: result });
     }
@@ -582,6 +613,9 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
       const created = await relateBookmarks(env.DB, bookmarkId, linked.bookmark.id);
       if (linked.jobId !== null) {
         await dispatchJob(env.DB, env.BACKGROUND_QUEUE, linked.jobId);
+      }
+      if (linked.thumbnailJobId !== null) {
+        await dispatchThumbnailJob(env.DB, env.THUMBNAIL_QUEUE, linked.thumbnailJobId);
       }
       return json(
         { ok: true, created, relatedBookmarkId: linked.bookmark.id },
@@ -832,7 +866,7 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     return json({ ok: true });
   }
 
-  if (request.method === "POST" && url.pathname === "/api/imports/preview") {
+  if (request.method === "POST" && url.pathname === "/api/imports") {
     const securityError = await requireMutationSecurity(context);
     if (securityError !== null) return securityError;
     const declared = Number(request.headers.get("content-length") ?? "0");
@@ -843,17 +877,22 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
       const form = await request.formData();
       const file = form.get("file");
       const option = form.get("option");
-      if (!(file instanceof File) || (option !== "reorganize" && option !== "preserve")) {
-        return apiError(400, "invalid_import", "Choose a Raindrop CSV and import option.");
+      if (!(file instanceof File)) {
+        return apiError(400, "invalid_import", "Choose a Raindrop CSV.");
       }
+      if (option !== "reorganize" && option !== "preserve") {
+        return apiError(400, "invalid_import_option", "Choose how imported tags and descriptions should be handled.");
+      }
+      const started = await startRaindropCsvImport(env, file, option);
+      context.executionContext.waitUntil(started.completion);
       return json(
-        { ok: true, preview: await previewRaindropCsv(env.DB, file, option) },
-        { status: 201 },
+        { ok: true, import: started.status },
+        { status: 202 },
       );
     } catch (error) {
       const code = error instanceof Error ? error.message : "invalid_import";
       const status = code === "csv_too_large" || code === "csv_too_many_rows" ? 413 : 422;
-      return apiError(status, code, "The Raindrop CSV could not be previewed.");
+      return apiError(status, code, "The Raindrop CSV could not be imported.");
     }
   }
 
@@ -864,45 +903,6 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     const status = await getImportStatus(env.DB, importId);
     return status === null ? apiError(404, "not_found", "Import not found.") : json({ ok: true, import: status });
   }
-  const importCommitMatch = /^\/api\/imports\/([0-9a-f-]+)\/commit$/iu.exec(url.pathname);
-  if (request.method === "POST" && importCommitMatch !== null) {
-    const securityError = await requireMutationSecurity(context);
-    if (securityError !== null) return securityError;
-    const importId = importCommitMatch[1];
-    if (importId === undefined) return apiError(404, "not_found", "Import not found.");
-    try {
-      const parsed = importStartInputSchema.safeParse(await readJson(request, 512 * 1024));
-      if (!parsed.success) {
-        return apiError(400, "invalid_import", "The import request could not be read.");
-      }
-      return json({
-        ok: true,
-        import: await startImport(env, importId),
-      });
-    } catch (error) {
-      const code = error instanceof Error ? error.message : "import_failed";
-      return apiError(
-        code === "import_not_found" ? 404 : 409,
-        code,
-        "The import could not continue.",
-      );
-    }
-  }
-  const importCancelMatch = /^\/api\/imports\/([0-9a-f-]+)\/cancel$/iu.exec(url.pathname);
-  if (request.method === "POST" && importCancelMatch !== null) {
-    const securityError = await requireMutationSecurity(context);
-    if (securityError !== null) return securityError;
-    const importId = importCancelMatch[1];
-    if (importId === undefined) return apiError(404, "not_found", "Import not found.");
-    try {
-      await cancelImport(env, importId);
-      return json({ ok: true });
-    } catch (error) {
-      const code = error instanceof Error ? error.message : "import_cannot_cancel";
-      return apiError(code === "import_not_found" ? 404 : 409, code, "The import cannot be cancelled now.");
-    }
-  }
-
   if (request.method === "POST" && url.pathname === "/api/capture/credentials") {
     const securityError = await requireMutationSecurity(context);
     if (securityError !== null) return securityError;
@@ -978,18 +978,23 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     });
   }
 
-  const thumbnailMatch = /^\/api\/thumbnails\/([0-9a-f-]+)$/iu.exec(url.pathname);
+  const thumbnailMatch =
+    /^\/api\/thumbnails\/([0-9a-f-]+)\/([0-9a-f-]+)$/iu.exec(url.pathname);
   if (request.method === "GET" && thumbnailMatch !== null) {
     const bookmarkId = thumbnailMatch[1];
-    if (bookmarkId === undefined) return apiError(404, "not_found", "Thumbnail not found.");
+    const thumbnailId = thumbnailMatch[2];
+    if (bookmarkId === undefined || thumbnailId === undefined) {
+      return apiError(404, "not_found", "Thumbnail not found.");
+    }
     const thumbnail = await env.DB
       .prepare(
         `SELECT t.object_key, t.media_type, t.etag, t.byte_size
            FROM thumbnails t
            JOIN bookmarks b ON b.id = t.bookmark_id
-          WHERE t.bookmark_id = ? AND t.state = 'ready' AND b.deleted_at IS NULL`,
+          WHERE t.bookmark_id = ? AND t.id = ?
+            AND t.state = 'ready' AND b.deleted_at IS NULL`,
       )
-      .bind(bookmarkId)
+      .bind(bookmarkId, thumbnailId)
       .first<{
         object_key: string;
         media_type: string;
@@ -999,7 +1004,7 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     if (thumbnail === null) return apiError(404, "not_found", "Thumbnail not found.");
     const headers = new Headers({
       "content-type": thumbnail.media_type,
-      "cache-control": "private, max-age=3600",
+      "cache-control": "private, max-age=31536000, immutable",
       "content-length": thumbnail.byte_size.toString(),
       "x-content-type-options": "nosniff",
     });
@@ -1012,7 +1017,7 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     }
     const object = await env.THUMBNAILS.get(thumbnail.object_key, {
       type: "arrayBuffer",
-      cacheTtl: 3600,
+      cacheTtl: 31_536_000,
     });
     if (object === null) return apiError(404, "not_found", "Thumbnail not found.");
     return new Response(object, { headers });
@@ -1040,6 +1045,12 @@ async function handleFetch(
   }
   if (request.method === "POST" && url.pathname === "/api/capture/bookmarks") {
     return captureBookmark(request, env, "extension");
+  }
+  if (request.method === "POST" && url.pathname === "/api/capture/bookmark-search") {
+    return captureBookmarkSearch(request, env);
+  }
+  if (request.method === "POST" && url.pathname === "/api/capture/bookmark-status") {
+    return captureBookmarkStatus(request, env);
   }
   if (request.method === "POST" && url.pathname === "/api/capture/ios") {
     return captureBookmark(request, env, "ios");
@@ -1077,8 +1088,8 @@ async function handleFetch(
   }
 
   if (request.method === "POST" && url.pathname === "/auth/logout") {
-    const context = { request, env, url, session };
-    const securityError = await requireMutationSecurity(context);
+    const routeContext = { request, env, url, session, executionContext: context };
+    const securityError = await requireMutationSecurity(routeContext);
     if (securityError !== null) return securityError;
     await revokeSession(env.DB, session);
     const headers = new Headers({ location: "/" });
@@ -1088,7 +1099,7 @@ async function handleFetch(
   }
 
   if (url.pathname.startsWith("/api/")) {
-    return handleAuthenticatedApi({ request, env, url, session });
+    return handleAuthenticatedApi({ request, env, url, session, executionContext: context });
   }
   if (request.method === "GET" && url.pathname === "/setup") {
     return (await setupComplete(env.DB)) ? redirect(request, "/settings") : setupPage(themeFromCookie(request));
@@ -1113,36 +1124,57 @@ async function handleFetch(
 
 async function handleQueue(batch: MessageBatch, env: Env): Promise<void> {
   for (const message of batch.messages) {
-    const parsed = backgroundMessageSchema.safeParse(message.body);
-    if (!parsed.success) {
-      message.ack();
-      continue;
-    }
-
     try {
-      if ("type" in parsed.data && parsed.data.type === "import") {
-        await processImportWork(env, parsed.data.importId);
+      const thumbnailMessage = thumbnailMessageSchema.safeParse(message.body);
+      if (thumbnailMessage.success) {
+        if (thumbnailMessage.data.type === "dispatch_thumbnail_pending") {
+          const jobs = await env.DB
+            .prepare(
+              `SELECT id
+                 FROM thumbnail_jobs
+                WHERE state = 'pending_dispatch'
+                ORDER BY created_at
+                LIMIT 20`,
+            )
+            .all<{ id: string }>();
+          for (const job of jobs.results) {
+            if (!(await dispatchThumbnailJob(env.DB, env.THUMBNAIL_QUEUE, job.id))) {
+              throw new Error("thumbnail_queue_dispatch_failed");
+            }
+          }
+          if (jobs.results.length === 20) {
+            await env.THUMBNAIL_QUEUE.send({
+              version: 1,
+              type: "dispatch_thumbnail_pending",
+            });
+          }
+          message.ack();
+          continue;
+        }
+        const outcome = await processThumbnailJob(env, thumbnailMessage.data.jobId);
+        if (outcome === "retry") message.retry({ delaySeconds: 300 });
+        else message.ack();
+        continue;
+      }
+
+      const backgroundMessage = backgroundMessageSchema.safeParse(message.body);
+      if (!backgroundMessage.success) {
         message.ack();
         continue;
       }
-      if ("type" in parsed.data && parsed.data.type === "import_thumbnails") {
-        await processImportThumbnailWork(env, parsed.data.importId);
-        message.ack();
-        continue;
-      }
-      if ("type" in parsed.data && parsed.data.type === "reset_storage") {
+      if ("type" in backgroundMessage.data && backgroundMessage.data.type === "reset_storage") {
         await processResetStorage(env);
         message.ack();
         continue;
       }
-      if ("type" in parsed.data && parsed.data.type === "embed_pending") {
+      if ("type" in backgroundMessage.data && backgroundMessage.data.type === "embed_pending") {
         if (await processEmbedBacklog(env)) {
           await env.BACKGROUND_QUEUE.send({ version: 1, type: "embed_pending" });
         }
         message.ack();
         continue;
       }
-      if ("type" in parsed.data && parsed.data.type === "dispatch_pending") {
+      if ("type" in backgroundMessage.data && backgroundMessage.data.type === "dispatch_pending") {
         if (await importIsActive(env.DB)) {
           message.ack();
           continue;
@@ -1167,7 +1199,7 @@ async function handleQueue(batch: MessageBatch, env: Env): Promise<void> {
         message.ack();
         continue;
       }
-      const outcome = await organizeBookmarkJob(env, parsed.data.jobId);
+      const outcome = await organizeBookmarkJob(env, backgroundMessage.data.jobId);
       if (outcome === "retry") message.retry({ delaySeconds: 300 });
       else message.ack();
     } catch {

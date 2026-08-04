@@ -6,27 +6,27 @@ import type {
   BookmarkDetail,
   BookmarkPageResponse,
   BootstrapState,
-  ImportPreview,
   ImportSession,
 } from "./types";
+import { extensionConnectionCode } from "./extension-connection";
 
 /**
  * Non-null DOM lookups. A missing element is a programming error, not a
  * runtime condition to branch on, so these throw instead of returning null.
  * This is what removes ~230 unchecked `querySelector(...)!` hazards.
  */
-function el<T extends HTMLElement = HTMLElement>(selector: string): T {
-  const node = document.querySelector<T>(selector);
+function el<T = HTMLElement>(selector: string): T {
+  const node = document.querySelector(selector) as T | null;
   if (node === null) throw new Error("Missing element: " + selector);
   return node;
 }
 
-function maybe<T extends HTMLElement = HTMLElement>(selector: string): T | null {
-  return document.querySelector<T>(selector);
+function maybe<T = HTMLElement>(selector: string): T | null {
+  return document.querySelector(selector) as T | null;
 }
 
-function all<T extends HTMLElement = HTMLElement>(selector: string): T[] {
-  return [...document.querySelectorAll<T>(selector)];
+function all<T = HTMLElement>(selector: string): T[] {
+  return [...document.querySelectorAll(selector)] as T[];
 }
 
 /** Provider and network failures reach the UI as messages, never as `unknown`. */
@@ -67,6 +67,8 @@ function initThemeControls(): void {
 
 const page = document.body.dataset.page;
 const csrf = () => document.cookie.split("; ").find(value => value.startsWith("lg_csrf="))?.slice(8) ?? "";
+
+initThemeControls();
 
 class ApiError extends Error {
   readonly status: number;
@@ -124,12 +126,13 @@ function escapeHtml(value: string | null | undefined): string {
 }
 
 function normalizeTag(value: string): string {
-  return value.normalize("NFKC").trim().toLocaleLowerCase("en-US")
+  const normalized = value.normalize("NFKC").trim().toLocaleLowerCase("en-US")
     .replace(/[^\p{L}\p{N}]+/gu, "-")
     .replace(/^-+|-+$/g, "")
     .replace(/-{2,}/g, "-")
     .slice(0, 64)
     .replace(/-+$/g, "");
+  return normalized === "ai" ? "artificial-intelligence" : normalized;
 }
 
 function tagValues(value: string): string[] {
@@ -154,175 +157,155 @@ async function logout() {
   }
 }
 
-el<HTMLButtonElement>("#logoutButton")?.addEventListener("click", logout);
+maybe<HTMLButtonElement>("#logoutButton")?.addEventListener("click", logout);
 
 let currentImportId: string | null = null;
-let importRecoveryRequest: Promise<unknown> | null = null;
 
-function setImportOverlay(visible: boolean, title?: string, message?: string, mode: "modal" | "progress" = "modal"): void {
-  const overlay = el("#importOverlay");
-  if (!overlay) return;
-  overlay.hidden = !visible;
-  overlay.classList.toggle("import-progress", visible && mode === "progress");
-  document.body.classList.toggle("import-readonly", visible && mode === "progress");
-  const card = overlay.querySelector(".busy-card");
-  card.setAttribute("aria-modal", mode === "modal" ? "true" : "false");
-  if (title) el("#importOverlayTitle").textContent = title;
-  if (message !== undefined) el("#importOverlayMessage").textContent = message;
-  const settingsProgress = el("#settingsImportProgress");
-  const settingsForm = el<HTMLFormElement>("#importForm");
-  if (settingsProgress && settingsForm) {
-    const showProgress = visible && mode === "progress";
-    settingsProgress.hidden = !showProgress;
-    settingsForm.hidden = showProgress;
-    if (title) el("#settingsImportTitle").textContent = title;
+function setImportPanel(
+  visible: boolean,
+  title?: string,
+  message?: string,
+  busy = false,
+): void {
+  const panel = maybe("#importProgressPanel");
+  if (panel !== null) {
+    panel.hidden = !visible;
+    panel.setAttribute("aria-busy", visible && busy ? "true" : "false");
+    if (title !== undefined) el("#importPanelTitle").textContent = title;
+    if (message !== undefined) el("#importPanelMessage").textContent = message;
+  }
+  const spinner = maybe<HTMLSpanElement>("#importSpinner");
+  if (spinner !== null) spinner.hidden = !visible || !busy;
+  const settingsForm = maybe<HTMLFormElement>("#importForm");
+  if (settingsForm !== null) settingsForm.hidden = visible;
+  if (!visible) {
+    const wrap = maybe("#importProgressWrap");
+    const bar = maybe("#importProgressBar");
+    if (wrap !== null) wrap.hidden = true;
+    if (bar !== null) {
+      bar.style.width = "0%";
+    }
   }
 }
 
 function setImportProgress(status: ImportSession): void {
-  const wrap = el("#importProgressWrap");
-  const bar = el("#importProgressBar");
-  const label = el("#importProgressLabel");
-  const total = Number(status.valid_rows || 0);
-  const processed = Number(status.processed_rows || 0);
-  const percentage = total === 0 ? 100 : Math.min(100, Math.round(processed / total * 100));
+  const wrap = maybe("#importProgressWrap");
+  const bar = maybe("#importProgressBar");
+  const label = maybe("#importProgressLabel");
+  if (wrap === null || bar === null || label === null) return;
+  const total = Number(status.total_rows || 0);
+  const processed = Math.min(total, Number(status.processed_rows || 0));
+  const percentage = total === 0 ? 100 : Math.round(processed / total * 100);
+  const busy = status.status === "committing";
   wrap.hidden = false;
   bar.style.width = percentage.toString() + "%";
-  label.textContent = processed.toString() + " of " + total.toString() + " bookmarks processed" +
-    (Number(status.duplicate_rows || 0) > 0 ? " · " + status.duplicate_rows.toString() + " duplicate rows skipped" : "") +
-    (Number(status.invalid_rows || 0) > 0 ? " · " + status.invalid_rows.toString() + " invalid rows skipped" : "");
-  const settingsBar = el("#settingsImportProgressBar");
-  const settingsLabel = el("#settingsImportProgressLabel");
-  if (settingsBar && settingsLabel) {
-    settingsBar.style.width = percentage.toString() + "%";
-    settingsLabel.textContent = label.textContent;
-  }
+  wrap.setAttribute("aria-valuenow", percentage.toString());
+  wrap.setAttribute("aria-valuetext", percentage.toString() + "% complete");
+  const details = [
+    Number(status.committed_rows || 0).toString() + " added",
+    Number(status.duplicate_rows || 0) > 0
+      ? status.duplicate_rows.toString() + " duplicates skipped"
+      : "",
+    Number(status.invalid_rows || 0) > 0
+      ? status.invalid_rows.toString() + " invalid rows skipped"
+      : "",
+  ].filter(Boolean);
+  label.textContent = processed.toString() + " of " + total.toString() +
+    " rows processed · " + details.join(" · ");
+  const spinner = maybe<HTMLSpanElement>("#importSpinner");
+  if (spinner !== null) spinner.hidden = !busy;
+  maybe("#importProgressPanel")?.setAttribute("aria-busy", busy ? "true" : "false");
 }
 
 async function waitForImport(importId: string): Promise<ImportSession> {
-  let lastProcessed = -1;
-  let lastProgressAt = Date.now();
-  let lastRecoveryAt = 0;
-  const retry = el<HTMLButtonElement>("#retryImportButton");
-  const requestRecovery = async () => {
-    if (importRecoveryRequest !== null) return importRecoveryRequest;
-    importRecoveryRequest = api("/api/imports/" + importId + "/commit", {
-      method: "POST",
-      body: JSON.stringify({ duplicateDecisions: [] }),
-    }).finally(() => {
-      importRecoveryRequest = null;
-    });
-    return importRecoveryRequest;
-  };
-  retry.onclick = async () => {
-    retry.disabled = true;
-    el("#importOverlayMessage").textContent =
-      "Requesting another safe import pass…";
-    try {
-      await requestRecovery();
-      lastRecoveryAt = Date.now();
-    } catch (error) {
-      el("#importOverlayMessage").textContent = messageOf(error);
-    } finally {
-      retry.disabled = false;
-    }
-  };
+  let consecutiveStatusFailures = 0;
   for (;;) {
     try {
-      const result = await api<{ import: ImportSession }>("/api/imports/" + importId);
-      const status = result.import;
+      const status = (await api<{ import: ImportSession }>("/api/imports/" + importId)).import;
+      consecutiveStatusFailures = 0;
+      setImportPanel(
+        true,
+        "Importing bookmarks",
+        "New bookmarks are being added directly to Unsorted.",
+        status.status === "committing",
+      );
       setImportProgress(status);
-      const processed = Number(status.processed_rows || 0);
-      if (processed !== lastProcessed) {
-        lastProcessed = processed;
-        lastProgressAt = Date.now();
-        retry.hidden = true;
-        el("#importOverlayTitle").textContent = "Import in progress";
-        el("#importOverlayMessage").textContent =
-          "You can browse your library while changes remain read-only.";
-      }
       if (status.status === "committed") {
-        el("#importOverlayTitle").textContent = "Import complete";
-        el("#importOverlayMessage").textContent =
-          "Your bookmarks are ready. AI will follow your current pause setting.";
-        retry.hidden = true;
-        await delay(650);
-        setImportOverlay(false);
+        setImportPanel(
+          true,
+          "Import complete",
+          status.committed_rows.toString() + " bookmarks were added to Unsorted. " +
+            status.duplicate_rows.toString() + " duplicates were skipped.",
+        );
+        try { sessionStorage.removeItem("lg-import-id"); } catch {
+          // The completed D1 status is authoritative.
+        }
+        await delay(1500);
+        setImportPanel(false);
         currentImportId = null;
         return status;
       }
       if (status.status === "cancelled" || status.status === "expired") {
-        setImportOverlay(false);
+        setImportPanel(
+          true,
+          "Import stopped",
+          status.committed_rows.toString() +
+            " bookmarks were added. Upload the same CSV again to add anything that remains.",
+        );
+        try { sessionStorage.removeItem("lg-import-id"); } catch {
+          // The terminal D1 status is authoritative.
+        }
+        await delay(2500);
+        setImportPanel(false);
         currentImportId = null;
         return status;
       }
-      const stalledFor = Date.now() - lastProgressAt;
-      if (stalledFor >= 30000 && Date.now() - lastRecoveryAt >= 30000) {
-        lastRecoveryAt = Date.now();
-        el("#importOverlayTitle").textContent =
-          "Import is taking longer than expected";
-        el("#importOverlayMessage").textContent =
-          "No progress was reported for 30 seconds. Resume asks the queue to continue unfinished rows; it does not restart or duplicate the import.";
-        retry.hidden = false;
-        await requestRecovery().catch(() => undefined);
+    } catch {
+      consecutiveStatusFailures += 1;
+      if (consecutiveStatusFailures >= 3) {
+        setImportPanel(
+          true,
+          "Importing bookmarks",
+          "The progress check was interrupted. Later Gator is checking again automatically.",
+          true,
+        );
       }
-    } catch (error) {
-      el("#importOverlayTitle").textContent = "Import status unavailable";
-      el("#importOverlayMessage").textContent = messageOf(error);
-      retry.hidden = false;
     }
-    await delay(850);
+    await delay(500);
   }
 }
 
-async function continueImport(importState: ImportSession): Promise<ImportSession> {
-  currentImportId = importState.id;
-  // A staged preview is unconfirmed work. It must never be committed on the
-  // user's behalf just because they reloaded the page — PRD 10.4 requires an
-  // explicit confirmation. Offer it as a dismissible, non-blocking dock.
-  if (importState.status !== "committing") {
-    const valid = Number(importState.valid_rows || 0);
-    setImportOverlay(
-      true,
-      "Raindrop import ready",
-      valid.toString() + (valid === 1 ? " bookmark is" : " bookmarks are") +
-        " staged from " + (importState.file_name || "your CSV") +
-        ". Nothing has been added to your library yet.",
-      "progress",
-    );
-    el("#importProgressWrap").hidden = true;
-    el("#importProgressLabel").textContent = "";
-    el<HTMLButtonElement>("#cancelImportButton").hidden = false;
-    const resume = el<HTMLButtonElement>("#retryImportButton");
-    resume.hidden = false;
-    resume.textContent = "Import these bookmarks";
-    resume.onclick = async () => {
-      resume.disabled = true;
-      try {
-        await api("/api/imports/" + importState.id + "/commit", {
-          method: "POST",
-          body: JSON.stringify({ duplicateDecisions: [] }),
-        });
-        resume.hidden = true;
-        resume.textContent = "Resume import";
-        setImportOverlay(true, "Import in progress", "You can keep using your library while this finishes.", "progress");
-        await waitForImport(importState.id);
-        await refreshLibraryViews();
-      } catch (error) {
-        el("#importOverlayMessage").textContent = messageOf(error);
-      } finally {
-        resume.disabled = false;
-      }
-    };
-    return importState;
-  }
-  setImportOverlay(
+async function beginRaindropImport(
+  file: File | undefined,
+  option: "reorganize" | "preserve",
+  statusNode: HTMLElement | null,
+): Promise<ImportSession> {
+  if (!file) throw new Error("Choose a Raindrop CSV first.");
+  setImportPanel(
     true,
-    "Import in progress",
-    "You can keep using your library while this finishes.",
-    "progress",
+    "Reading your Raindrop CSV",
+    "Checking the URL column before adding bookmarks to Unsorted.",
+    true,
   );
-  return waitForImport(importState.id);
+  const progressWrap = maybe("#importProgressWrap");
+  if (progressWrap !== null) progressWrap.hidden = true;
+  const form = new FormData();
+  form.set("file", file);
+  form.set("option", option);
+  const started = await api<{ import: ImportSession }>("/api/imports", {
+    method: "POST",
+    body: form,
+  });
+  currentImportId = started.import.id;
+  setImportPanel(
+    true,
+    "Importing bookmarks",
+    "New bookmarks are being added directly to Unsorted.",
+    true,
+  );
+  setImportProgress(started.import);
+  if (statusNode !== null) statusNode.textContent = "Import started.";
+  return started.import;
 }
 
 /** Refreshes the Settings inline import panel without a full page reload. */
@@ -331,103 +314,17 @@ async function refreshImportStatusPanels(importId: string): Promise<void> {
     const result = await api<{ import: ImportSession }>("/api/imports/" + importId);
     setImportProgress(result.import);
   } catch {
-    // Transient polling failures are not user-actionable.
-  }
-}
-
-/**
- * Uploads and commits without waiting for completion. The caller navigates
- * immediately; whichever page loads next picks the session up from
- * state().activeImport and renders the non-blocking progress dock.
- */
-async function startImportInBackground(file: File | undefined, option: string): Promise<string> {
-  if (!file) throw new Error("Choose a Raindrop CSV first.");
-  const form = new FormData();
-  form.set("file", file);
-  form.set("option", option);
-  const preview = await api<{ preview: ImportPreview }>("/api/imports/preview", { method: "POST", body: form });
-  const importId = preview.preview.importId;
-  await api("/api/imports/" + importId + "/commit", {
-    method: "POST",
-    body: JSON.stringify({ duplicateDecisions: [] }),
-  });
-  return importId;
-}
-
-async function commitImport(file: File | undefined, option: string, statusNode: HTMLElement | null): Promise<ImportSession> {
-  if (!file) throw new Error("Choose a Raindrop CSV first.");
-  setImportOverlay(true, "Checking your Raindrop export", "Looking for valid bookmarks and duplicates…");
-  el<HTMLButtonElement>("#cancelImportButton").hidden = true;
-  el("#importProgressWrap").hidden = true;
-  const form = new FormData();
-  form.set("file", file);
-  form.set("option", option);
-  const preview = await api("/api/imports/preview", { method: "POST", body: form });
-  currentImportId = preview.preview.importId;
-  if (statusNode) {
-    statusNode.textContent = preview.preview.validRows.toString() + " ready, " +
-      preview.preview.duplicateRows.toString() + " duplicate rows skipped, " +
-      preview.preview.invalidRows.toString() + " invalid.";
-  }
-  el("#importOverlayTitle").textContent =
-    "Ready to import";
-  el("#importOverlayMessage").textContent =
-    "Duplicate URLs inside the CSV will be skipped. Existing library bookmarks are kept unchanged.";
-  el<HTMLButtonElement>("#cancelImportButton").hidden = true;
-  setImportOverlay(
-    true,
-    "Importing bookmarks",
-    "Adding every accepted bookmark to Unsorted in one database operation…",
-    "progress",
-  );
-  await api("/api/imports/" + currentImportId + "/commit", {
-    method: "POST",
-    body: JSON.stringify({ duplicateDecisions: [] }),
-  });
-  setImportOverlay(
-    true,
-    "Import in progress",
-    "You can browse your library while changes remain read-only.",
-    "progress",
-  );
-  return waitForImport(currentImportId);
-}
-
-el<HTMLButtonElement>("#cancelImportButton")?.addEventListener("click", async () => {
-  if (!currentImportId) return;
-  try {
-    await api("/api/imports/" + currentImportId + "/cancel", { method: "POST", body: "{}" });
-    setImportOverlay(false);
-    currentImportId = null;
-  } catch (error) {
-    el("#importOverlayMessage").textContent = messageOf(error);
-  }
-});
-
-async function restoreActiveImport() {
-  if (page === "login") return;
-  try {
-    const result = await api("/api/bootstrap");
-    if (!result.state.activeImport) return;
-    const status = await continueImport(result.state.activeImport);
-    if (page === "setup" && status && status.status === "committed") {
-      location.replace("/dashboard");
-    }
-  } catch {
-    // Never let a leftover import block the page it is being restored onto.
-    setImportOverlay(false);
-    currentImportId = null;
+    // A later poll will recover a transient status request failure.
   }
 }
 
 if (page === "setup") {
-  void restoreActiveImport();
-  const selectedTopics = new Set();
-  const customTopics = new Set();
+  const selectedTopics = new Set<string>();
+  const customTopics = new Set<string>();
   const typedTopics = () => tagValues(el<HTMLInputElement>("#customTopic").value);
   const allSelectedTopics = () => {
     const topics = new Set([...selectedTopics, ...customTopics, ...typedTopics()]);
-    return [...topics].slice(0, 20);
+    return [...topics];
   };
   const renderCustomTopics = () => {
     const container = el("#customTopicTokens");
@@ -435,8 +332,9 @@ if (page === "setup") {
       '<button type="button" class="topic-chip selected" data-custom-topic="' +
       escapeHtml(topic) + '">' + escapeHtml(topic) + " ×</button>"
     ).join("");
-    container.querySelectorAll("[data-custom-topic]").forEach(button => button.addEventListener("click", () => {
-      customTopics.delete(button.dataset.customTopic);
+    container.querySelectorAll<HTMLElement>("[data-custom-topic]").forEach(button => button.addEventListener("click", () => {
+      const topic = button.dataset.customTopic;
+      if (topic !== undefined) customTopics.delete(topic);
       renderCustomTopics();
       syncTopics();
     }));
@@ -444,29 +342,29 @@ if (page === "setup") {
   const syncTopics = () => {
     all(".topic-chip").forEach(button => {
       if (button.dataset.customTopic) return;
-      button.classList.toggle("selected", selectedTopics.has(button.dataset.topic));
-      button.setAttribute("aria-pressed", selectedTopics.has(button.dataset.topic) ? "true" : "false");
+      const topic = button.dataset.topic;
+      button.classList.toggle("selected", topic !== undefined && selectedTopics.has(topic));
+      button.setAttribute("aria-pressed", topic !== undefined && selectedTopics.has(topic) ? "true" : "false");
     });
     const count = allSelectedTopics().length;
     el("#topicSelectionCount").textContent =
       count.toString() + " selected" +
-      (count < 5 ? " · choose at least 5" : count >= 20 ? " · maximum 20" : " · ready");
+      (count < 5 ? " · choose at least 5" : " · ready");
     el<HTMLButtonElement>("#finishSetupButton").disabled = count < 5;
   };
   all(".topic-chip[data-topic]").forEach(button => button.addEventListener("click", () => {
     const topic = button.dataset.topic;
+    if (topic === undefined) return;
     if (selectedTopics.has(topic)) selectedTopics.delete(topic);
-    else if (allSelectedTopics().length < 20) selectedTopics.add(topic);
+    else selectedTopics.add(topic);
     syncTopics();
   }));
   el<HTMLInputElement>("#customTopic").addEventListener("input", syncTopics);
   el<HTMLButtonElement>("#addCustomTopic").addEventListener("click", () => {
     const input = el<HTMLInputElement>("#customTopic");
     const existingTopics = new Set([...selectedTopics, ...customTopics]);
-    const available = Math.max(0, 20 - existingTopics.size);
     typedTopics()
       .filter(topic => !existingTopics.has(topic))
-      .slice(0, available)
       .forEach(topic => customTopics.add(topic));
     input.value = "";
     renderCustomTopics();
@@ -482,6 +380,7 @@ if (page === "setup") {
   el<HTMLFormElement>("#setupForm").addEventListener("submit", async event => {
     event.preventDefault();
     const status = el("#setupStatus");
+    let setupCompleted = false;
     try {
       status.className = "status";
       status.textContent = "Saving profile…";
@@ -495,20 +394,32 @@ if (page === "setup") {
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
         }),
       });
-      const file = el<HTMLInputElement>("#setupImportFile").files[0];
+      setupCompleted = true;
+      const file = el<HTMLInputElement>("#setupImportFile").files?.[0];
       if (file) {
-        // Stage and start the import, then hand the user straight to the
-        // dashboard. Progress is reported there by the non-blocking dock, so
-        // setup never parks the user behind a modal waiting on a large CSV.
-        const option = el<HTMLInputElement>("input[name=setupImportOption]:checked").value;
         status.textContent = "Starting your Raindrop import…";
-        await startImportInBackground(file, option);
+        const option = el<HTMLInputElement>('input[name="setupImportOption"]:checked').value;
+        const started = await beginRaindropImport(
+          file,
+          option === "preserve" ? "preserve" : "reorganize",
+          status,
+        );
+        try { sessionStorage.setItem("lg-import-id", started.id); } catch {
+          // The dashboard can still discover an active import from D1.
+        }
       }
       location.replace("/dashboard");
     } catch (error) {
+      if (setupCompleted) {
+        try { sessionStorage.setItem("lg-import-error", messageOf(error)); } catch {
+          // Storage may be disabled; redirecting still keeps setup usable.
+        }
+        location.replace("/dashboard");
+        return;
+      }
       status.textContent = messageOf(error);
       status.className = "status error";
-      setImportOverlay(false);
+      setImportPanel(false);
       currentImportId = null;
     }
   });
@@ -554,10 +465,6 @@ function syncCardSelection(): void {
 function setSelectionMode(active: boolean): void {
   selectionMode = active;
   document.body.classList.toggle("selecting", active);
-  const button = el<HTMLButtonElement>("#selectModeButton");
-  button.classList.toggle("active", active);
-  button.setAttribute("aria-pressed", active ? "true" : "false");
-  button.textContent = active ? "Done" : "Select";
   if (!active) {
     selectedBookmarks.clear();
     lastSelectedId = null;
@@ -636,7 +543,8 @@ function state(): BootstrapState {
   return bootstrap;
 }
 let currentFolder: string | null = null;
-let selectedSearchTags = new Map<string, string>();
+const selectedSearchTags = new Map<string, string>();
+const selectedBookmarkTags = new Map<string, string>();
 let currentBookmark: BookmarkDetail | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
 let nextBookmarkCursor: string | null = null;
@@ -678,7 +586,7 @@ function renderFolders() {
   ).join("");
   nav.querySelectorAll("button").forEach(button => button.addEventListener("click", () => {
     currentFolder = button.dataset.folder || null;
-    el("#libraryTitle").textContent = button.dataset.folderName;
+    el("#libraryTitle").textContent = button.dataset.folderName ?? "Library";
     renderFolders();
     void loadBookmarks();
   }));
@@ -702,10 +610,12 @@ async function refreshLibraryViews() {
 }
 
 function bindTagNavigation(nav: HTMLElement): void {
-  nav.querySelectorAll("[data-filter-tag]").forEach(button => button.addEventListener("click", () => {
+  nav.querySelectorAll<HTMLElement>("[data-filter-tag]").forEach(button => button.addEventListener("click", () => {
     const key = button.dataset.filterTag;
+    const display = button.dataset.filterDisplay;
+    if (key === undefined || display === undefined) return;
     if (selectedSearchTags.has(key)) selectedSearchTags.delete(key);
-    else selectedSearchTags.set(key, button.dataset.filterDisplay);
+    else selectedSearchTags.set(key, display);
     renderTagNavigation();
     renderSelectedTags();
     el<HTMLDialogElement>("#topicsDialog")?.close();
@@ -811,11 +721,53 @@ function searchQuery(cursor: string | null = null): URLSearchParams {
   return params;
 }
 
+async function selectAllMatchingBookmarks(): Promise<void> {
+  const button = el<HTMLButtonElement>("#bulkSelectAll");
+  const status = el("#libraryStatus");
+  const baseQuery = searchQuery();
+  baseQuery.set("limit", "100");
+  baseQuery.delete("cursor");
+  const matchingIds = new Set<string>();
+  const seenCursors = new Set<string>();
+  let cursor: string | null = null;
+
+  button.disabled = true;
+  button.setAttribute("aria-busy", "true");
+  button.textContent = "Selecting…";
+  try {
+    do {
+      const query = new URLSearchParams(baseQuery);
+      if (cursor !== null) query.set("cursor", cursor);
+      const result = await api<BookmarkPageResponse>("/api/bookmarks?" + query.toString());
+      for (const bookmark of result.bookmarks) matchingIds.add(bookmark.id);
+      cursor = result.nextCursor;
+      if (cursor !== null) {
+        if (seenCursors.has(cursor)) throw new Error("The bookmark cursor repeated unexpectedly.");
+        seenCursors.add(cursor);
+      }
+    } while (cursor !== null);
+
+    selectedBookmarks.clear();
+    for (const id of matchingIds) selectedBookmarks.add(id);
+    syncCardSelection();
+    status.textContent = "";
+  } catch (error) {
+    status.textContent = messageOf(error);
+    status.className = "status error";
+  } finally {
+    button.disabled = false;
+    button.removeAttribute("aria-busy");
+    button.textContent = "Select all";
+  }
+}
+
 function previewImage(bookmark: Bookmark | BookmarkDetail, className = "thumbnail"): string {
-  if (bookmark.thumbnail_id || bookmark.thumbnailAvailable) {
+  if (bookmark.thumbnail_id || ("thumbnailAvailable" in bookmark && bookmark.thumbnailAvailable)) {
     const width = Number(bookmark.thumbnail_width) || 960;
     const height = Number(bookmark.thumbnail_height) || 540;
-    return '<img class="' + className + '" src="/api/thumbnails/' + bookmark.id + '" width="' +
+    const version = bookmark.thumbnail_id;
+    if (!version) return '<div class="' + className + ' placeholder" aria-hidden="true"></div>';
+    return '<img class="' + className + '" src="/api/thumbnails/' + bookmark.id + '/' + version + '" width="' +
       width.toString() + '" height="' + height.toString() + '" loading="lazy" decoding="async" alt="">';
   }
   return '<div class="' + className + ' placeholder" aria-hidden="true"></div>';
@@ -853,7 +805,9 @@ function setViewMode(mode: string): void {
   grid.classList.toggle("list-view", mode === "list");
   el<HTMLButtonElement>("#viewGridButton")?.classList.toggle("active", mode !== "list");
   el<HTMLButtonElement>("#viewListButton")?.classList.toggle("active", mode === "list");
-  try { localStorage.setItem("lg-view-mode", mode); } catch {}
+  try { localStorage.setItem("lg-view-mode", mode); } catch {
+    // View preference is optional when browser storage is unavailable.
+  }
 }
 
 function bindBookmarkCards() {
@@ -948,7 +902,8 @@ function renderSelectedTags() {
     '<button type="button" data-search-tag="' + escapeHtml(normalized) + '">#' + escapeHtml(display) + " ×</button>"
   ).join("");
   container.querySelectorAll("button").forEach(button => button.addEventListener("click", () => {
-    selectedSearchTags.delete(button.dataset.searchTag);
+    const tag = button.dataset.searchTag;
+    if (tag !== undefined) selectedSearchTags.delete(tag);
     renderSelectedTags();
     void loadBookmarks();
   }));
@@ -974,7 +929,10 @@ function updateTagSuggestions() {
   ).join("") || '<p class="muted">No matching tags</p>';
   menu.hidden = false;
   menu.querySelectorAll("button").forEach(button => button.addEventListener("click", () => {
-    selectedSearchTags.set(button.dataset.tagName, button.dataset.tagDisplay);
+    const name = button.dataset.tagName;
+    const display = button.dataset.tagDisplay;
+    if (name === undefined || display === undefined) return;
+    selectedSearchTags.set(name, display);
     input.value = input.value.replace(/(?:^|\s)#[^#\s]*$/, "").trim();
     menu.hidden = true;
     renderSelectedTags();
@@ -1002,6 +960,88 @@ function updateFilterCount() {
 function detailTags(detail: BookmarkDetail): string {
   return (detail.tags || []).map(tag => '<span class="chip">#' + escapeHtml(tag.display_name) + "</span>").join("") ||
     '<span class="muted">No tags</span>';
+}
+
+function renderBookmarkTags(): void {
+  const container = el("#bookmarkSelectedTags");
+  container.innerHTML = [...selectedBookmarkTags.entries()].map(([normalized, display]) =>
+    '<button type="button" data-bookmark-tag="' + escapeHtml(normalized) + '">#' +
+      escapeHtml(display) + " ×</button>"
+  ).join("");
+  container.querySelectorAll<HTMLButtonElement>("button").forEach(button => {
+    button.addEventListener("click", () => {
+      const normalized = button.dataset.bookmarkTag;
+      if (normalized !== undefined) selectedBookmarkTags.delete(normalized);
+      renderBookmarkTags();
+    });
+  });
+}
+
+function addBookmarkTag(normalized: string, display = normalized): void {
+  if (normalized === "" || selectedBookmarkTags.size >= 50) return;
+  selectedBookmarkTags.set(normalized, display);
+  el<HTMLInputElement>("#bookmarkTagInput").value = "";
+  el("#bookmarkTagSuggestions").hidden = true;
+  el<HTMLInputElement>("#bookmarkTagInput").setAttribute("aria-expanded", "false");
+  el("#bookmarkTagHelp").textContent = "Type # to choose an existing tag or create a new one.";
+  renderBookmarkTags();
+}
+
+function updateBookmarkTagSuggestions(): void {
+  const input = el<HTMLInputElement>("#bookmarkTagInput");
+  const menu = el("#bookmarkTagSuggestions");
+  const raw = input.value.trim();
+  if (!raw.startsWith("#")) {
+    menu.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    el("#bookmarkTagHelp").textContent = raw === ""
+      ? "Type # to choose an existing tag or create a new one."
+      : "Tags must start with #.";
+    return;
+  }
+  const query = normalizeTag(raw);
+  const matches = state().tags
+    .filter(tag => tag.status === "active" && !selectedBookmarkTags.has(tag.normalized_name))
+    .filter(tag => query === "" || tag.normalized_name.includes(query))
+    .sort((left, right) => Number(right.usage_count) - Number(left.usage_count) ||
+      left.display_name.localeCompare(right.display_name))
+    .slice(0, 8);
+  const exactExists = state().tags.some(tag =>
+    tag.status === "active" && tag.normalized_name === query,
+  );
+  menu.innerHTML = matches.map(tag =>
+    '<button type="button" role="option" data-tag-name="' + escapeHtml(tag.normalized_name) +
+      '" data-tag-display="' + escapeHtml(tag.display_name) + '">#' +
+      escapeHtml(tag.display_name) + "</button>"
+  ).join("") + (query !== "" && !exactExists && !selectedBookmarkTags.has(query)
+    ? '<button type="button" role="option" data-create-tag="' + escapeHtml(query) +
+      '">Create #' + escapeHtml(query) + "</button>"
+    : "");
+  menu.hidden = menu.childElementCount === 0;
+  input.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+  el("#bookmarkTagHelp").textContent = query === ""
+    ? "Keep typing after # to create a new tag."
+    : "Choose a suggestion or press Enter to add.";
+  menu.querySelectorAll<HTMLButtonElement>("[data-tag-name]").forEach(button => {
+    button.addEventListener("click", () => {
+      addBookmarkTag(button.dataset.tagName ?? "", button.dataset.tagDisplay);
+      input.focus();
+    });
+  });
+  menu.querySelectorAll<HTMLButtonElement>("[data-create-tag]").forEach(button => {
+    button.addEventListener("click", () => {
+      addBookmarkTag(button.dataset.createTag ?? "");
+      input.focus();
+    });
+  });
+}
+
+function resetBookmarkTagEditor(tags: BookmarkDetail["tags"] = []): void {
+  selectedBookmarkTags.clear();
+  for (const tag of tags) selectedBookmarkTags.set(tag.normalized_name, tag.display_name);
+  el<HTMLInputElement>("#bookmarkTagInput").value = "";
+  el("#bookmarkTagSuggestions").hidden = true;
+  renderBookmarkTags();
 }
 
 function showDetail(detail: BookmarkDetail): void {
@@ -1040,7 +1080,7 @@ function populateEditor(detail: BookmarkDetail | null): void {
   const related = detail?.relatedBookmarks?.[0] || null;
   const linkedInput = el<HTMLInputElement>("#bookmarkLinkedUrl");
   el<HTMLInputElement>("#bookmarkId").value = detail?.id || "";
-  el<HTMLInputElement>("#bookmarkRevision").value = detail?.revision || "";
+  el<HTMLInputElement>("#bookmarkRevision").value = String(detail?.revision ?? "");
   el<HTMLInputElement>("#relatedBookmarkId").value = related?.id || "";
   el<HTMLInputElement>("#bookmarkUrl").value = detail?.url || "";
   linkedInput.value = related?.url || "";
@@ -1050,7 +1090,7 @@ function populateEditor(detail: BookmarkDetail | null): void {
   el<HTMLTextAreaElement>("#bookmarkNote").value = detail?.note || "";
   el<HTMLSelectElement>("#bookmarkFolder").innerHTML = folderOptions();
   el<HTMLSelectElement>("#bookmarkFolder").value = detail?.folder_id || "folder_unsorted";
-  el<HTMLInputElement>("#bookmarkTags").value = (detail?.tags || []).map(tag => tag.display_name).join(", ");
+  resetBookmarkTagEditor(detail?.tags || []);
   el<HTMLInputElement>("#bookmarkFavorite").checked = Boolean(detail?.favorite);
   el("#bookmarkDialogTitle").textContent = detail ? "Edit bookmark" : "Add bookmark";
   el<HTMLButtonElement>("#saveBookmarkButton").textContent = detail ? "Save changes" : "Add bookmark";
@@ -1059,18 +1099,16 @@ function populateEditor(detail: BookmarkDetail | null): void {
 
 if (page === "dashboard") {
   let storedView = "grid";
-  try { storedView = localStorage.getItem("lg-view-mode") || "grid"; } catch {}
+  try { storedView = localStorage.getItem("lg-view-mode") || "grid"; } catch {
+    // Fall back to the grid when browser storage is unavailable.
+  }
   setViewMode(storedView);
-  el<HTMLButtonElement>("#selectModeButton").addEventListener("click", () => {
-    setSelectionMode(!selectionMode);
-  });
   el<HTMLButtonElement>("#bulkCancel").addEventListener("click", () => setSelectionMode(false));
   document.addEventListener("keydown", event => {
     if (event.key === "Escape" && selectionMode) setSelectionMode(false);
   });
   el<HTMLButtonElement>("#bulkSelectAll").addEventListener("click", () => {
-    for (const card of all(".bookmark-card")) selectedBookmarks.add(card.dataset.id ?? "");
-    syncCardSelection();
+    void selectAllMatchingBookmarks();
   });
   el<HTMLButtonElement>("#bulkTrash").addEventListener("click", async () => {
     const { done, failed } = await bulkApply(id =>
@@ -1133,20 +1171,35 @@ if (page === "dashboard") {
   });
   el<HTMLButtonElement>("#viewGridButton")?.addEventListener("click", () => setViewMode("grid"));
   el<HTMLButtonElement>("#viewListButton")?.addEventListener("click", () => setViewMode("list"));
-  (async () => {
+  void (async () => {
     await refreshLibraryViews();
-    if (state().activeImport) {
-      // A failing import must never leave the library unusable, so the dock is
-      // always torn down and the error surfaced inline.
-      try {
-        await continueImport(state().activeImport);
-      } catch (error) {
-        setImportOverlay(false);
-        currentImportId = null;
-        const status = el("#libraryStatus");
-        status.textContent = "Raindrop import could not continue: " + messageOf(error);
-        status.className = "status error";
+    try {
+      const setupImportError = sessionStorage.getItem("lg-import-error");
+      if (setupImportError !== null) {
+        sessionStorage.removeItem("lg-import-error");
+        setImportPanel(
+          true,
+          "Import did not start",
+          setupImportError + " You can retry from Settings while using the rest of your library.",
+        );
       }
+    } catch {
+      // A setup handoff message is optional and must not block the library.
+    }
+    let importToMonitor = state().activeImport;
+    try {
+      const handedOffId = sessionStorage.getItem("lg-import-id");
+      if (handedOffId !== null) {
+        importToMonitor = (await api<{ import: ImportSession }>(
+          "/api/imports/" + handedOffId,
+        )).import;
+      }
+    } catch {
+      // The active D1 session remains discoverable without browser storage.
+    }
+    if (importToMonitor !== null) {
+      currentImportId = importToMonitor.id;
+      await waitForImport(importToMonitor.id);
       await refreshLibraryViews();
     }
   })();
@@ -1164,11 +1217,17 @@ if (page === "dashboard") {
     }
   });
   document.addEventListener("click", event => {
-    if (!event.target.closest(".search-shell")) el("#tagSuggestions").hidden = true;
+    if (!(event.target instanceof Element) || event.target.closest(".search-shell") === null) {
+      el("#tagSuggestions").hidden = true;
+    }
+    if (!(event.target instanceof Element) || event.target.closest(".bookmark-tag-field") === null) {
+      el("#bookmarkTagSuggestions").hidden = true;
+      el<HTMLInputElement>("#bookmarkTagInput").setAttribute("aria-expanded", "false");
+    }
   });
   el<HTMLButtonElement>("#filterButton").addEventListener("click", () => el<HTMLDialogElement>("#filterDialog").showModal());
   el<HTMLFormElement>("#filterForm").addEventListener("submit", event => {
-    if (event.submitter?.value === "cancel") return;
+    if ((event.submitter as HTMLButtonElement | null)?.value === "cancel") return;
     event.preventDefault();
     updateFilterCount();
     el<HTMLDialogElement>("#filterDialog").close();
@@ -1241,12 +1300,30 @@ if (page === "dashboard") {
   });
   el<HTMLButtonElement>("#closeBookmarkDialog").addEventListener("click", () => el<HTMLDialogElement>("#bookmarkDialog").close());
   el<HTMLButtonElement>("#editDetailButton").addEventListener("click", () => populateEditor(currentBookmark));
+  el<HTMLInputElement>("#bookmarkTagInput").addEventListener("input", updateBookmarkTagSuggestions);
+  el<HTMLInputElement>("#bookmarkTagInput").addEventListener("keydown", event => {
+    if (event.key === "Enter") {
+      const raw = (event.currentTarget as HTMLInputElement).value.trim();
+      const normalized = normalizeTag(raw);
+      if (raw.startsWith("#") && normalized !== "") {
+        event.preventDefault();
+        const existing = state().tags.find(tag =>
+          tag.status === "active" && tag.normalized_name === normalized,
+        );
+        addBookmarkTag(normalized, existing?.display_name ?? normalized);
+      }
+    } else if (event.key === "Escape") {
+      el("#bookmarkTagSuggestions").hidden = true;
+    }
+  });
   el<HTMLButtonElement>("#restoreDetailButton").addEventListener("click", async () => {
+    if (currentBookmark === null) return;
     await api("/api/bookmarks/" + currentBookmark.id + "/restore", { method: "POST", body: "{}" });
     el<HTMLDialogElement>("#bookmarkDialog").close();
     await loadBookmarks();
   });
   el<HTMLButtonElement>("#deleteDetailButton").addEventListener("click", async () => {
+    if (currentBookmark === null) return;
     if (!confirm("Permanently delete this bookmark? This cannot be undone.")) return;
     await api("/api/bookmarks/" + currentBookmark.id + "/delete", { method: "DELETE" });
     el<HTMLDialogElement>("#bookmarkDialog").close();
@@ -1260,20 +1337,30 @@ if (page === "dashboard") {
     await loadBookmarks();
   });
   el<HTMLFormElement>("#bookmarkForm").addEventListener("submit", async event => {
-    if (event.submitter?.value === "cancel") return;
+    if ((event.submitter as HTMLButtonElement | null)?.value === "cancel") return;
     event.preventDefault();
     const id = el<HTMLInputElement>("#bookmarkId").value;
     const oldRelatedId = el<HTMLInputElement>("#relatedBookmarkId").value;
     const linkedInput = el<HTMLInputElement>("#bookmarkLinkedUrl");
     const linkedUrl = linkedInput.value.trim();
     const relationshipChanged = linkedUrl !== (linkedInput.dataset.original || "");
-    const payload = {
+    const payload: {
+      url: string;
+      title: string | null;
+      description: string | null;
+      note: string | null;
+      folderId: string;
+      tags: string[];
+      favorite: boolean;
+      expectedRevision?: number;
+      linkedUrl?: string | null;
+    } = {
       url: el<HTMLInputElement>("#bookmarkUrl").value,
       title: el<HTMLInputElement>("#bookmarkTitle").value || null,
       description: el<HTMLTextAreaElement>("#bookmarkDescription").value || null,
       note: el<HTMLTextAreaElement>("#bookmarkNote").value || null,
       folderId: el<HTMLSelectElement>("#bookmarkFolder").value,
-      tags: tagValues(el<HTMLInputElement>("#bookmarkTags").value),
+      tags: [...selectedBookmarkTags.keys()],
       favorite: el<HTMLInputElement>("#bookmarkFavorite").checked,
     };
     if (id) {
@@ -1298,7 +1385,22 @@ if (page === "dashboard") {
 }
 
 function showSecret(selector: string, value: string): void {
-  document.querySelector(selector).textContent = value;
+  el(selector).textContent = value;
+}
+
+async function copySecret(
+  valueSelector: string,
+  statusSelector: string,
+  successMessage: string,
+): Promise<void> {
+  const value = el(valueSelector).textContent?.trim() ?? "";
+  if (value.length === 0) return;
+  try {
+    await navigator.clipboard.writeText(value);
+    el(statusSelector).textContent = successMessage;
+  } catch {
+    el(statusSelector).textContent = "Copy failed. Select and copy the value manually.";
+  }
 }
 
 function renderAutomationProgress() {
@@ -1319,14 +1421,14 @@ function renderAutomationProgress() {
   el("#automationProgressLabel").textContent =
     complete.toString() + " of " + total.toString() + " bookmarks organized · " +
     percent.toString() + "%";
-  const states = [
+  const states = ([
     ["Waiting", progress.pending],
     ["Processing", progress.processing],
     ["Provider wait", progress.waitingProvider],
     ["Paused", progress.pausedOwner],
     ["Review", progress.review],
     ["Failed", progress.failed],
-  ].filter(([, count]) => Number(count || 0) > 0);
+  ] satisfies Array<[string, number]>).filter(([, count]) => Number(count || 0) > 0);
   el("#automationProgressStates").innerHTML = states.map(([label, count]) =>
     '<span class="progress-state">' + escapeHtml(label) + " " + Number(count).toString() + "</span>"
   ).join("");
@@ -1342,6 +1444,10 @@ async function loadSettings() {
       : "AI provider is ready.";
   renderAutomationProgress();
   el<HTMLButtonElement>("#automationButton").textContent = state().ownerAiPaused ? "Resume AI" : "Pause AI";
+  const instructions = el<HTMLTextAreaElement>("#settingsPersonalInstructions");
+  if (instructions.dataset.dirty !== "true") {
+    instructions.value = state().personalInstructions ?? "";
+  }
   toggleKey();
   return bootstrap;
 }
@@ -1351,29 +1457,56 @@ function toggleKey() {
 }
 
 if (page === "settings") {
-  initThemeControls();
-  (async () => {
-    await loadSettings();
-    if (state().activeImport) {
-      try {
-        await continueImport(state().activeImport);
-      } catch (error) {
-        setImportOverlay(false);
+  let settingsPageActive = true;
+  const shouldReportSettingsError = (): boolean =>
+    settingsPageActive && !document.hidden && document.body.dataset.page === "settings";
+  void (async () => {
+    try {
+      await loadSettings();
+      const activeImport = state().activeImport;
+      if (activeImport !== null) {
+        currentImportId = activeImport.id;
+        await waitForImport(activeImport.id);
+      }
+    } catch (error) {
+      if (!shouldReportSettingsError()) return;
+      if (currentImportId !== null) {
+        setImportPanel(false);
         currentImportId = null;
         const status = el("#importStatus");
         status.textContent = "Raindrop import could not continue: " + messageOf(error);
+        status.className = "status error";
+      } else {
+        const status = el("#providerStatus");
+        status.textContent = "Settings could not refresh: " + messageOf(error);
         status.className = "status error";
       }
     }
   })();
   // Settings keeps polling during an import so its inline progress panel stays
   // live; it used to stop refreshing for exactly as long as an import ran.
-  window.setInterval(() => {
+  const settingsRefreshInterval = window.setInterval(() => {
     if (document.hidden) return;
-    if (currentImportId === null) void loadSettings();
-    else void refreshImportStatusPanels(currentImportId);
+    const refresh = currentImportId === null
+      ? loadSettings()
+      : refreshImportStatusPanels(currentImportId);
+    void refresh.catch((error: unknown) => {
+      if (!shouldReportSettingsError()) return;
+      const status = maybe("#providerStatus");
+      if (status !== null) {
+        status.textContent = "Settings could not refresh: " + messageOf(error);
+        status.className = "status error";
+      }
+    });
   }, 5000);
+  window.addEventListener("pagehide", () => {
+    settingsPageActive = false;
+    window.clearInterval(settingsRefreshInterval);
+  }, { once: true });
   el<HTMLSelectElement>("#providerName").addEventListener("change", toggleKey);
+  el<HTMLTextAreaElement>("#settingsPersonalInstructions").addEventListener("input", event => {
+    (event.currentTarget as HTMLTextAreaElement).dataset.dirty = "true";
+  });
   el<HTMLFormElement>("#providerForm").addEventListener("submit", async event => {
     event.preventDefault();
     const status = el("#providerStatus");
@@ -1398,41 +1531,105 @@ if (page === "settings") {
     });
     await loadSettings();
   });
+  el<HTMLFormElement>("#personalInstructionsForm").addEventListener("submit", async event => {
+    event.preventDefault();
+    const status = el("#personalInstructionsStatus");
+    status.className = "status";
+    status.textContent = "Saving instructions…";
+    try {
+      const value = el<HTMLTextAreaElement>("#settingsPersonalInstructions").value.trim();
+      await api("/api/profile/personal-instructions", {
+        method: "PUT",
+        body: JSON.stringify({ personalInstructions: value || null }),
+      });
+      status.textContent = "Personal AI instructions saved.";
+      if (bootstrap !== null) bootstrap.personalInstructions = value || null;
+      delete el<HTMLTextAreaElement>("#settingsPersonalInstructions").dataset.dirty;
+    } catch (error) {
+      status.textContent = messageOf(error);
+      status.className = "status error";
+    }
+  });
   el<HTMLFormElement>("#importForm").addEventListener("submit", async event => {
     event.preventDefault();
     const status = el("#importStatus");
     try {
-      await commitImport(
-        el<HTMLInputElement>("#importFile").files[0],
-        el<HTMLSelectElement>("#importOption").value,
+      const started = await beginRaindropImport(
+        el<HTMLInputElement>("#importFile").files?.[0],
+        el<HTMLSelectElement>("#importOption").value === "preserve" ? "preserve" : "reorganize",
         status,
       );
+      await waitForImport(started.id);
       status.textContent = "Import complete.";
       await loadSettings();
     } catch (error) {
       status.textContent = messageOf(error);
       status.className = "status error";
-      setImportOverlay(false);
+      setImportPanel(false);
       currentImportId = null;
     }
   });
   el<HTMLButtonElement>("#pairExtension").addEventListener("click", async () => {
-    const result = await api("/api/capture/credentials", {
+    const result = await api<{ credential: { token: string } }>("/api/capture/credentials", {
       method: "POST",
-      body: JSON.stringify({ kind: "extension", name: el<HTMLInputElement>("#extensionName").value }),
+      body: JSON.stringify({ kind: "extension", name: "Browser extension" }),
     });
-    showSecret("#extensionCredential", "Deployment: " + location.origin + "\nToken: " + result.credential.token);
+    showSecret("#extensionCredential", extensionConnectionCode(location.origin, result.credential.token));
+    el("#extensionCredentialPanel").hidden = false;
+    el("#extensionCredentialStatus").textContent = "Connection code generated. Copy it before leaving this page.";
+  });
+  el<HTMLButtonElement>("#copyExtensionCredential").addEventListener("click", async () => {
+    await copySecret("#extensionCredential", "#extensionCredentialStatus", "Connection code copied.");
+  });
+  for (const button of all<HTMLButtonElement>("[data-extension-guide]")) {
+    button.addEventListener("click", () => {
+      const browser = button.dataset.extensionGuide;
+      el("#chromeExtensionGuide").hidden = browser !== "chrome";
+      el("#firefoxExtensionGuide").hidden = browser !== "firefox";
+      el<HTMLDialogElement>("#extensionGuideDialog").showModal();
+    });
+  }
+  el<HTMLButtonElement>("#closeExtensionGuide").addEventListener("click", () => {
+    el<HTMLDialogElement>("#extensionGuideDialog").close();
   });
   el<HTMLButtonElement>("#pairIos").addEventListener("click", async () => {
-    const result = await api("/api/capture/credentials", {
+    const result = await api<{ credential: { token: string } }>("/api/capture/credentials", {
       method: "POST",
       body: JSON.stringify({ kind: "ios", name: "iOS Shortcut" }),
     });
-    showSecret("#iosCredential", "Endpoint: " + location.origin + "/api/capture/ios\nToken: " + result.credential.token);
+    showSecret("#iosEndpoint", location.origin + "/api/capture/ios");
+    showSecret("#iosToken", result.credential.token);
+    el("#iosCredentialPanel").hidden = false;
+    el("#iosCredentialStatus").textContent = "Connection details generated. Copy them before leaving this page.";
+  });
+  el<HTMLButtonElement>("#copyIosEndpoint").addEventListener("click", async () => {
+    await copySecret("#iosEndpoint", "#iosCredentialStatus", "Endpoint copied.");
+  });
+  el<HTMLButtonElement>("#copyIosToken").addEventListener("click", async () => {
+    await copySecret("#iosToken", "#iosCredentialStatus", "Token copied.");
   });
   el<HTMLButtonElement>("#rotateMcp").addEventListener("click", async () => {
-    const result = await api("/api/mcp/rotate", { method: "POST", body: "{}" });
+    const result = await api<{ url: string }>("/api/mcp/rotate", { method: "POST", body: "{}" });
     showSecret("#mcpCredential", result.url);
+    el("#mcpCredentialPanel").hidden = false;
+    el("#mcpCredentialStatus").textContent = "MCP URL generated. Copy it before leaving this page.";
+  });
+  el<HTMLButtonElement>("#copyMcpCredential").addEventListener("click", async () => {
+    await copySecret("#mcpCredential", "#mcpCredentialStatus", "MCP URL copied.");
+  });
+  for (const button of all<HTMLButtonElement>("[data-connection-guide]")) {
+    button.addEventListener("click", () => {
+      const guide = button.dataset.connectionGuide;
+      const isIos = guide === "ios";
+      el("#connectionGuideKicker").textContent = isIos ? "iOS Share Sheet" : "Model Context Protocol";
+      el("#connectionGuideTitle").textContent = isIos ? "Set up the iOS Shortcut" : "Connect an MCP client";
+      el("#iosConnectionGuide").hidden = !isIos;
+      el("#mcpConnectionGuide").hidden = isIos;
+      el<HTMLDialogElement>("#connectionGuideDialog").showModal();
+    });
+  }
+  el<HTMLButtonElement>("#closeConnectionGuide").addEventListener("click", () => {
+    el<HTMLDialogElement>("#connectionGuideDialog").close();
   });
   el<HTMLButtonElement>("#resetApplicationButton").addEventListener("click", async () => {
     const confirmation = prompt("This permanently deletes the complete Later Gator library and returns to setup. Type DELETE EVERYTHING to continue.");
@@ -1441,7 +1638,7 @@ if (page === "settings") {
     button.disabled = true;
     button.textContent = "Resetting…";
     try {
-      const result = await api("/api/testing/reset", {
+      const result = await api<{ redirectTo: string }>("/api/testing/reset", {
         method: "POST",
         body: JSON.stringify({ confirmation }),
       });

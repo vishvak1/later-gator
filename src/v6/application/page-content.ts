@@ -88,6 +88,39 @@ function pageExcerpt(html: string): string | null {
   return text.length < 80 ? null : text;
 }
 
+function withoutLinkOnlyContent(value: string): string {
+  return collapseWhitespace(
+    value
+      .replace(/https?:\/\/\S+/giu, " ")
+      .replace(/\b(?:www\.|pic\.twitter\.com\/|t\.co\/)\S+/giu, " "),
+  );
+}
+
+/** Titles and link-only placeholders are metadata, not primary page content. */
+export function hasPrimaryContentText(value: string | null | undefined): boolean {
+  if (value === null || value === undefined) return false;
+  const text = withoutLinkOnlyContent(value);
+  return /[\p{L}\p{N}]/u.test(text);
+}
+
+export function hasPrimaryPageContent(
+  context: PageContext | null,
+  bookmarkTitle: string | null = null,
+): boolean {
+  if (context === null) return false;
+  if (hasPrimaryContentText(context.xPost?.text)) return true;
+  const metadataOnly = new Set(
+    [bookmarkTitle, context.pageTitle, context.siteName]
+      .filter((value): value is string => value !== null)
+      .map((value) => collapseWhitespace(value).toLocaleLowerCase("en-US")),
+  );
+  return [context.metaDescription, context.excerpt].some(
+    (value) =>
+      hasPrimaryContentText(value) &&
+      !metadataOnly.has(collapseWhitespace(value ?? "").toLocaleLowerCase("en-US")),
+  );
+}
+
 export function isXStatusUrl(rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl);
@@ -136,7 +169,8 @@ async function resolveXPost(rawUrl: string): Promise<XPostContext | null> {
   const author = (payload as { author_name?: unknown }).author_name;
   if (typeof html !== "string" || html.length === 0) return null;
 
-  const text = stripTags(html).slice(0, 2000);
+  const postBody = /<p\b[^>]*>([\s\S]*?)<\/p>/iu.exec(html)?.[1] ?? "";
+  const text = stripTags(postBody).slice(0, 2000);
   const shortLinks = [...new Set(html.match(/https:\/\/t\.co\/[A-Za-z0-9]+/gu) ?? [])];
   const externalUrls: string[] = [];
   for (const shortLink of shortLinks) {

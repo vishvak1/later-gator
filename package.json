@@ -10,13 +10,14 @@
   "scripts": {
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "build": "wrangler deploy --dry-run --outdir dist",
-    "check": "npm run build:web && npm run types:check && npm run lint && npm run test",
+    "check": "npm run build:web && npm run types:check && npm run typecheck:web && npm run lint && npm run test && npm run test:web",
     "deploy": "npm run db:migrate:remote && wrangler deploy",
     "dev": "wrangler dev",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
     "lint": "eslint .",
     "test": "vitest run",
+    "test:web": "vitest run --config vitest.web.config.ts",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "types": "wrangler types",
@@ -44,7 +45,10 @@
         "description": "Stores bookmark embeddings so search matches meaning, not just words. Cloudflare cannot pre-fill these two fields, so enter them exactly: **Dimensions** `1024` and **Metric** `cosine`. They must match the `@cf/baai/bge-large-en-v1.5` embedding model and cannot be changed after the index is created."
       },
       "BACKGROUND_QUEUE": {
-        "description": "Carries opaque job IDs only and invokes one sequential background job at a time."
+        "description": "Carries opaque AI, embedding, and maintenance job IDs with sequential AI processing."
+      },
+      "THUMBNAIL_QUEUE": {
+        "description": "Carries opaque thumbnail job IDs independently of AI processing, with bounded concurrency."
       },
       "BOOTSTRAP_PASSWORD": {
         "description": "Later Gator password. Use 16 or more characters when possible (10-character compatibility minimum); this field is intentionally blank by default."
@@ -59,8 +63,12 @@
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@eslint/js": "^10.0.1",
+    "@tailwindcss/cli": "^4.3.3",
+    "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.7.0",
+    "happy-dom": "^20.11.1",
+    "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10",

@@ -39,6 +39,32 @@ export async function repairOrganizationBacklog(env: Env): Promise<boolean> {
   await env.DB.batch([
     env.DB
       .prepare(
+        `UPDATE bookmarks
+            SET folder_id = 'folder_need_review',
+                modified_at = ?,
+                revision = revision + 1
+          WHERE deleted_at IS NULL
+            AND folder_id = 'folder_unsorted'
+            AND ai_state IN ('review', 'failed')`,
+      )
+      .bind(nowIso),
+    env.DB
+      .prepare(
+        `UPDATE bookmarks
+            SET organization_policy = 'full',
+                ai_state = CASE
+                  WHEN (SELECT owner_ai_paused FROM app_state WHERE id = 1) = 1
+                    THEN 'paused_owner'
+                  WHEN (SELECT operational_status FROM provider_settings WHERE id = 1) = 'waiting'
+                    THEN 'waiting_provider'
+                  ELSE 'pending'
+                END
+          WHERE deleted_at IS NULL
+            AND folder_id = 'folder_unsorted'
+            AND (organization_policy = 'none' OR ai_state = 'complete')`,
+      ),
+    env.DB
+      .prepare(
         `UPDATE app_state
             SET edit_mode_state = 'inactive',
                 edit_mode_session_id = NULL,
@@ -103,44 +129,6 @@ export async function repairOrganizationBacklog(env: Env): Promise<boolean> {
                  AND last_safe_error_code = 'stalled_job_recovered'
             )`,
       ),
-    env.DB
-      .prepare(
-        `UPDATE bookmarks
-            SET folder_id = 'folder_social_posts',
-                modified_at = ?,
-                revision = revision + 1
-          WHERE deleted_at IS NULL
-            AND folder_id != 'folder_social_posts'
-            AND (
-              hostname IN ('x.com', 'twitter.com')
-              OR hostname LIKE '%.x.com'
-              OR hostname LIKE '%.twitter.com'
-            )`,
-      )
-      .bind(nowIso),
-    env.DB
-      .prepare(
-        `UPDATE background_jobs
-            SET expected_revision = (
-                  SELECT revision FROM bookmarks WHERE bookmarks.id = background_jobs.bookmark_id
-                ),
-                organization_generation = (
-                  SELECT organization_generation FROM app_state WHERE id = 1
-                ),
-                updated_at = ?
-          WHERE state IN (${ACTIVE_JOB_STATES})
-            AND bookmark_id IN (
-              SELECT id
-                FROM bookmarks
-               WHERE deleted_at IS NULL
-                 AND (
-                   hostname IN ('x.com', 'twitter.com')
-                   OR hostname LIKE '%.x.com'
-                   OR hostname LIKE '%.twitter.com'
-                 )
-            )`,
-      )
-      .bind(nowIso),
   ]);
 
   const recoverable = await env.DB
@@ -164,7 +152,8 @@ export async function repairOrganizationBacklog(env: Env): Promise<boolean> {
          JOIN app_state s ON s.id = 1
          JOIN provider_settings p ON p.id = 1
         WHERE b.deleted_at IS NULL
-          AND b.organization_policy != 'none'
+          AND b.folder_id = 'folder_unsorted'
+          AND b.organization_policy IN ('full', 'preserve')
           AND b.ai_state IN ('pending', 'processing', 'paused_edit')
           AND NOT EXISTS (
             SELECT 1

@@ -4,6 +4,7 @@ import { createBookmark } from "../../src/v6/adapters/library-repository";
 import { organizeBookmarkJob } from "../../src/v6/application/organize-bookmark";
 import {
   hasPrimaryPageContent,
+  hasPrimarySourceDescription,
   type PageContext,
 } from "../../src/v6/application/page-content";
 import { repairThumbnailBacklog } from "../../src/v6/application/thumbnail-jobs";
@@ -63,6 +64,60 @@ describe("sequential v6 organization", () => {
       xPost: null,
     }, "Instagram")).toBe(true);
     expect(hasPrimaryPageContent(substantivePageContext)).toBe(true);
+  });
+
+  it("accepts a capture-supplied description as evidence but not a repeated title", () => {
+    expect(
+      hasPrimarySourceDescription(
+        "Rick Astley's official video, remastered in 4K by the original label.",
+        "Never Gonna Give You Up",
+      ),
+    ).toBe(true);
+    expect(
+      hasPrimarySourceDescription("Never Gonna Give You Up", "Never Gonna Give You Up"),
+    ).toBe(false);
+    expect(hasPrimarySourceDescription("https://t.co/abc123", "A title")).toBe(false);
+    expect(hasPrimarySourceDescription(null, "A title")).toBe(false);
+  });
+
+  it("organizes a page whose only evidence is the description the extension read", async () => {
+    const created = await createBookmark(
+      env.DB,
+      {
+        url: "https://www.youtube.com/playlist?list=PLevidence",
+        title: "Select Lectures - YouTube",
+        description:
+          "Some lectures on deep learning, deep reinforcement learning, autonomous " +
+          "vehicles, and artificial intelligence.",
+        organizationPolicy: "full",
+      },
+      "extension",
+    );
+    const aiEnv = environmentWithAi({
+      response: {
+        status: "organized",
+        tags: ["machine-learning", "deep-learning", "lectures"],
+        description:
+          "A YouTube playlist collecting MIT lectures on deep learning, deep " +
+          "reinforcement learning, and autonomous vehicles.",
+        folder: "Videos & Talks",
+        confidence: "high",
+        notes: "",
+      },
+    });
+
+    // No page context at all: the Worker could not retrieve the document.
+    expect(await organize(aiEnv, created.jobId ?? "", null)).toBe("completed");
+    expect(
+      await env.DB
+        .prepare(
+          `SELECT b.ai_state, f.name AS folder_name
+             FROM bookmarks b JOIN folders f ON f.id = b.folder_id
+            WHERE b.id = ?`,
+        )
+        .bind(created.bookmark.id)
+        .first(),
+    ).toEqual({ ai_state: "complete", folder_name: "Videos & Talks" });
   });
 
   it("shares one retry across the Worker gate and an AI insufficient-evidence decision", async () => {

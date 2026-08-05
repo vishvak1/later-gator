@@ -1,8 +1,9 @@
-import { boundedBytes, safeFetch } from "../adapters/safe-remote";
+import { boundedBytes, boundedBytesTruncated, safeFetch } from "../adapters/safe-remote";
 import { sha256Base64 } from "../security/encoding";
 
 const MAX_REMOTE_BYTES = 5 * 1024 * 1024;
-const MAX_HTML_BYTES = 512 * 1024;
+// Matches the page-content budget so cover discovery reaches the same og tags.
+const MAX_HTML_BYTES = 2 * 1024 * 1024;
 const MAX_STORED_BYTES = 500 * 1024;
 const MAX_PREVIEW_WIDTH = 960;
 const MAX_PREVIEW_HEIGHT = 1600;
@@ -98,6 +99,21 @@ function iconImages(html: string, pageUrl: string): string[] {
   return icons;
 }
 
+/**
+ * Site-wide default covers carry no information about the individual bookmark.
+ * X serves this one from its own og:image whenever a post is reached by
+ * client-side navigation, which would otherwise give every saved post the
+ * same picture.
+ */
+const PLACEHOLDER_IMAGE_PATTERNS = [
+  /^https?:\/\/abs\.twimg\.com\/rweb\/ssr\/default\//iu,
+  /^https?:\/\/abs\.twimg\.com\/responsive-web\/[^/]*\/(?:icon|og)[^/]*$/iu,
+];
+
+export function isPlaceholderThumbnail(candidateUrl: string): boolean {
+  return PLACEHOLDER_IMAGE_PATTERNS.some(pattern => pattern.test(candidateUrl));
+}
+
 export interface ThumbnailCandidate {
   url: string;
   source: "page_metadata" | "favicon";
@@ -110,7 +126,7 @@ export async function findPageThumbnailCandidates(
   try {
     const response = await safeFetch(pageUrl, "text/html,application/xhtml+xml");
     if (response.ok && response.headers.get("content-type")?.includes("text/html")) {
-      const bytes = await boundedBytes(response, MAX_HTML_BYTES);
+      const bytes = await boundedBytesTruncated(response, MAX_HTML_BYTES);
       const html = new TextDecoder().decode(bytes);
       const metadata = metadataImage(html, pageUrl);
       if (metadata !== null) candidates.push({ url: metadata, source: "page_metadata" });
@@ -135,6 +151,7 @@ export async function ingestThumbnailCandidate(
   candidateUrl: string,
   source: ThumbnailSource,
 ): Promise<boolean> {
+  if (isPlaceholderThumbnail(candidateUrl)) return false;
   try {
     const response = await safeFetch(candidateUrl, "image/avif,image/webp,image/*");
     const mediaType = response.headers.get("content-type")?.split(";")[0]?.trim();

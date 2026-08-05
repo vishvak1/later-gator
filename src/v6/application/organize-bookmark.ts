@@ -10,8 +10,8 @@ import { normalizeTagName } from "../domain/tags";
 import { createBookmark, dispatchJob, relateBookmarks } from "../adapters/library-repository";
 import { upsertBookmarkVector } from "./embeddings";
 import {
-  hasPrimaryContentText,
   hasPrimaryPageContent,
+  hasPrimarySourceDescription,
   resolvePageContext,
   type PageContext,
 } from "./page-content";
@@ -631,13 +631,14 @@ export async function organizeBookmarkJob(
     (environment !== undefined && environment !== "test" ? resolvePageContext : null);
   const pageContext =
     pageContextResolver === null ? null : await pageContextResolver(context.url);
-  const preservedSourceDescription =
-    context.ai_managed_description === 0 && context.organization_policy === "preserve"
-      ? context.description
-      : null;
+  // A description the AI did not write came from the capture surface, which
+  // read the page in a real browser. The prompt already passes it through as
+  // "Existing description", so it counts as evidence under every policy.
+  const sourceDescription =
+    context.ai_managed_description === 0 ? context.description : null;
   const hasPrimaryContent =
     hasPrimaryPageContent(pageContext, context.title) ||
-    hasPrimaryContentText(preservedSourceDescription);
+    hasPrimarySourceDescription(sourceDescription, context.title);
   if (!hasPrimaryContent) {
     return recordInsufficientEvidence(env.DB, context, "content_unavailable");
   }

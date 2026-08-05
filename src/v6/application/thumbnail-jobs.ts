@@ -1,9 +1,51 @@
 import {
   findPageThumbnailCandidates,
   ingestThumbnailCandidate,
+  isPlaceholderThumbnail,
+  type ThumbnailCandidate,
 } from "./thumbnails";
 
 const MAX_ATTEMPTS = 3;
+
+/**
+ * Records a cover a capture surface observed in the browser. It is a hint, not
+ * an answer: the job still prefers what it can discover server-side and falls
+ * back to this only for pages the Worker cannot fetch itself.
+ */
+export async function setThumbnailCandidate(
+  db: D1Database,
+  jobId: string,
+  candidateUrl: string,
+): Promise<void> {
+  if (isPlaceholderThumbnail(candidateUrl)) return;
+  await db
+    .prepare(
+      `UPDATE thumbnail_jobs
+          SET candidate_url = ?, updated_at = ?
+        WHERE id = ? AND candidate_url IS NULL`,
+    )
+    .bind(candidateUrl, new Date().toISOString(), jobId)
+    .run();
+}
+
+/**
+ * Server-side page metadata first, then the capture hint, then icons. A real
+ * page image from either source outranks a favicon.
+ */
+function orderedCandidates(
+  discovered: ThumbnailCandidate[],
+  hint: string | null,
+): ThumbnailCandidate[] {
+  const merged =
+    hint === null
+      ? discovered
+      : [
+          ...discovered.filter(candidate => candidate.source === "page_metadata"),
+          { url: hint, source: "page_metadata" as const },
+          ...discovered.filter(candidate => candidate.source !== "page_metadata"),
+        ];
+  return [...new Map(merged.map(candidate => [candidate.url, candidate])).values()];
+}
 
 type ThumbnailJobOutcome = "completed" | "retry" | "acknowledged";
 
@@ -82,7 +124,7 @@ export async function processThumbnailJob(
 ): Promise<ThumbnailJobOutcome> {
   const job = await env.DB
     .prepare(
-      `SELECT j.state, j.attempt_count, b.id AS bookmark_id, b.url,
+      `SELECT j.state, j.attempt_count, j.candidate_url, b.id AS bookmark_id, b.url,
               b.deleted_at, b.thumbnail_id
          FROM thumbnail_jobs j
          JOIN bookmarks b ON b.id = j.bookmark_id
@@ -92,6 +134,7 @@ export async function processThumbnailJob(
     .first<{
       state: string;
       attempt_count: number;
+      candidate_url: string | null;
       bookmark_id: string;
       url: string;
       deleted_at: string | null;
@@ -125,7 +168,10 @@ export async function processThumbnailJob(
     return "completed";
   }
 
-  const candidates = await findPageThumbnailCandidates(job.url);
+  const candidates = orderedCandidates(
+    await findPageThumbnailCandidates(job.url),
+    job.candidate_url,
+  );
   for (const candidate of candidates) {
     if (await ingestThumbnailCandidate(env, job.bookmark_id, candidate.url, candidate.source)) {
       const completedAt = new Date().toISOString();

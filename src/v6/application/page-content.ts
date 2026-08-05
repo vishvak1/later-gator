@@ -1,6 +1,14 @@
-import { boundedBytes, resolveRedirectTarget, safeFetch } from "../adapters/safe-remote";
+import {
+  boundedBytes,
+  boundedBytesTruncated,
+  resolveRedirectTarget,
+  safeFetch,
+} from "../adapters/safe-remote";
 
-const MAX_HTML_BYTES = 512 * 1024;
+// Script-heavy pages push their metadata far down the document: a YouTube
+// watch page is ~1.3 MB and emits og/meta tags past the 800 KB mark. Reading
+// less than the whole document is fine, but the budget has to clear those.
+const MAX_HTML_BYTES = 2 * 1024 * 1024;
 const MAX_EXCERPT_CHARS = 2400;
 const MAX_EXTERNAL_LINKS = 2;
 
@@ -101,6 +109,19 @@ export function hasPrimaryContentText(value: string | null | undefined): boolean
   if (value === null || value === undefined) return false;
   const text = withoutLinkOnlyContent(value);
   return /[\p{L}\p{N}]/u.test(text);
+}
+
+/**
+ * A description supplied by a capture surface counts as primary content unless
+ * it only repeats the title, which carries no information the title lacks.
+ */
+export function hasPrimarySourceDescription(
+  description: string | null | undefined,
+  bookmarkTitle: string | null,
+): boolean {
+  if (!hasPrimaryContentText(description)) return false;
+  const normalized = collapseWhitespace(description ?? "").toLocaleLowerCase("en-US");
+  return normalized !== collapseWhitespace(bookmarkTitle ?? "").toLocaleLowerCase("en-US");
 }
 
 export function hasPrimaryPageContent(
@@ -208,7 +229,9 @@ export async function resolvePageContext(rawUrl: string): Promise<PageContext | 
     if (!response.ok || response.headers.get("content-type")?.includes("text/html") !== true) {
       return null;
     }
-    const html = new TextDecoder().decode(await boundedBytes(response, MAX_HTML_BYTES));
+    const html = new TextDecoder().decode(
+      await boundedBytesTruncated(response, MAX_HTML_BYTES),
+    );
     const titleMatch = /<title[^>]*>([\s\S]{0,600}?)<\/title>/iu.exec(html);
     return {
       pageTitle: titleMatch?.[1] === undefined ? null : stripTags(titleMatch[1]).slice(0, 300),

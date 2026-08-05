@@ -73,6 +73,43 @@ export async function boundedBytes(
   return result;
 }
 
+/**
+ * Reads at most `maximum` bytes and stops. Unlike boundedBytes an oversized
+ * body degrades to a prefix instead of throwing, because page metadata is
+ * useful even when the rest of a very large document is discarded. Only safe
+ * for text; a truncated image is corrupt, so binary reads keep boundedBytes.
+ */
+export async function boundedBytesTruncated(
+  response: Response,
+  maximum: number,
+): Promise<Uint8Array<ArrayBuffer>> {
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array<ArrayBuffer>[] = [];
+  let total = 0;
+  try {
+    while (total < maximum) {
+      const next = await reader.read();
+      if (next.done) break;
+      const chunk = new Uint8Array(next.value);
+      total += chunk.byteLength;
+      chunks.push(chunk);
+    }
+  } finally {
+    reader.releaseLock();
+    await response.body.cancel().catch(() => undefined);
+  }
+  const result = new Uint8Array(Math.min(total, maximum));
+  let offset = 0;
+  for (const chunk of chunks) {
+    if (offset >= result.byteLength) break;
+    const slice = chunk.subarray(0, result.byteLength - offset);
+    result.set(slice, offset);
+    offset += slice.byteLength;
+  }
+  return result;
+}
+
 export async function safeFetch(raw: string, accept: string): Promise<Response> {
   let target = safeRemoteUrl(raw);
   for (let redirect = 0; redirect <= 3; redirect += 1) {
@@ -96,23 +133,60 @@ export async function safeFetch(raw: string, accept: string): Promise<Response> 
   throw new Error("remote_redirect_limit");
 }
 
-/** Resolves one redirect hop (e.g. a t.co shortlink) without following it. */
+const INTERSTITIAL_TARGET_PATTERNS = [
+  /<meta[^>]+http-equiv=["']refresh["'][^>]+content=["'][^"']*url=([^"'\s]+)/iu,
+  /location\.replace\(\s*["']([^"']+)["']\s*\)/iu,
+  /location\.href\s*=\s*["']([^"']+)["']/iu,
+];
+
+/**
+ * Shorteners increasingly answer browser User-Agents with a scripted
+ * interstitial instead of a 3xx. The destination is still in that body, so a
+ * bounded read recovers it when no Location header was sent.
+ */
+function interstitialTarget(html: string): string | null {
+  for (const pattern of INTERSTITIAL_TARGET_PATTERNS) {
+    const match = pattern.exec(html);
+    if (match?.[1] === undefined) continue;
+    const candidate = match[1].replaceAll("\\/", "/").replaceAll("&amp;", "&");
+    if (/^https?:\/\//iu.test(candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Resolves one redirect hop (e.g. a t.co shortlink) without following it.
+ *
+ * Deliberately does not send a browser User-Agent: t.co returns a plain 301 to
+ * a simple client but a scripted interstitial to a browser, and the redirect
+ * header is the reliable answer.
+ */
 export async function resolveRedirectTarget(raw: string): Promise<string | null> {
   const target = safeRemoteUrl(raw);
   const response = await fetch(target, {
     redirect: "manual",
     headers: {
       "accept-language": "en-US,en;q=0.9",
-      "user-agent":
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 " +
-        "LaterGator/6.0",
+      "user-agent": "LaterGator/6.0 metadata fetcher",
     },
     signal: AbortSignal.timeout(5_000),
   });
-  await response.body?.cancel();
-  if (response.status < 300 || response.status >= 400) return null;
-  const location = response.headers.get("location");
-  if (location === null) return null;
-  return safeRemoteUrl(new URL(location, target).toString()).toString();
+  if (response.status >= 300 && response.status < 400) {
+    const location = response.headers.get("location");
+    await response.body?.cancel().catch(() => undefined);
+    if (location === null) return null;
+    return safeRemoteUrl(new URL(location, target).toString()).toString();
+  }
+  if (!response.ok || response.headers.get("content-type")?.includes("text/html") !== true) {
+    await response.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  const html = new TextDecoder().decode(await boundedBytesTruncated(response, 16 * 1024));
+  const destination = interstitialTarget(html);
+  if (destination === null) return null;
+  try {
+    return safeRemoteUrl(new URL(destination, target).toString()).toString();
+  } catch {
+    return null;
+  }
 }

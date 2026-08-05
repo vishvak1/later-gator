@@ -9,8 +9,7 @@ import {
   authenticateCapture,
   type CaptureKind,
 } from "../security/capture-credentials";
-import { ingestThumbnailCandidate } from "../application/thumbnails";
-import { dispatchThumbnailJob } from "../application/thumbnail-jobs";
+import { dispatchThumbnailJob, setThumbnailCandidate } from "../application/thumbnail-jobs";
 import { apiError, json, readJson } from "./responses";
 import { sha256Base64 } from "../security/encoding";
 import { normalizeBookmarkUrl } from "../domain/url";
@@ -313,15 +312,15 @@ export async function captureBookmark(
     if (
       kind === "extension" &&
       source.created &&
+      source.thumbnailJobId !== null &&
       extensionData?.success === true &&
       extensionData.data.thumbnailUrl !== null &&
       extensionData.data.thumbnailUrl !== undefined
     ) {
-      await ingestThumbnailCandidate(
-        env,
-        source.bookmark.id,
+      await setThumbnailCandidate(
+        env.DB,
+        source.thumbnailJobId,
         extensionData.data.thumbnailUrl,
-        "page_metadata",
       );
     }
     const jobs = [...(source.jobId === null ? [] : [source.jobId]), ...linkedJobs];

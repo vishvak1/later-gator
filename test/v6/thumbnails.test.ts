@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { calculatePreviewDimensions } from "../../src/v6/application/thumbnails";
+import {
+  calculatePreviewDimensions,
+  isPlaceholderThumbnail,
+} from "../../src/v6/application/thumbnails";
 
 describe("bookmark preview dimensions", () => {
   it("preserves landscape aspect ratio without cropping", () => {
@@ -21,5 +24,20 @@ describe("bookmark preview dimensions", () => {
       width: 480,
       height: 320,
     });
+  });
+});
+
+describe("site-wide default covers", () => {
+  it("rejects the X default that a client-side navigation leaves in og:image", () => {
+    expect(
+      isPlaceholderThumbnail("https://abs.twimg.com/rweb/ssr/default/v2/og/image.png"),
+    ).toBe(true);
+  });
+
+  it("keeps the real per-post image a server-side fetch returns", () => {
+    expect(
+      isPlaceholderThumbnail("https://pbs.twimg.com/media/HO4V1gIaIAAwzMh.jpg:large"),
+    ).toBe(false);
+    expect(isPlaceholderThumbnail("https://i.ytimg.com/vi/abc/maxresdefault.jpg")).toBe(false);
   });
 });

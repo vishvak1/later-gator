@@ -24,6 +24,10 @@ export interface PageContext {
   metaDescription: string | null;
   excerpt: string | null;
   xPost: XPostContext | null;
+  /** Publisher or channel, from a structured source rather than page text. */
+  creator: string | null;
+  /** Titles of the items a listing page collects, when the page is a listing. */
+  entries: string[] | null;
 }
 
 const NAMED_ENTITIES: Record<string, string> = {
@@ -130,6 +134,8 @@ export function hasPrimaryPageContent(
 ): boolean {
   if (context === null) return false;
   if (hasPrimaryContentText(context.xPost?.text)) return true;
+  // What a listing collects is its content, whatever its description says.
+  if (context.entries !== null && context.entries.length > 0) return true;
   const metadataOnly = new Set(
     [bookmarkTitle, context.pageTitle, context.siteName]
       .filter((value): value is string => value !== null)
@@ -169,6 +175,79 @@ function isXInternalUrl(rawUrl: string): boolean {
     );
   } catch {
     return true;
+  }
+}
+
+/**
+ * Scoped deliberately to playlist pages. A watch page carries the same listing
+ * structure for its sidebar recommendations, and those titles are unrelated to
+ * the bookmark; harvesting them would poison the tags.
+ */
+export function isYouTubePlaylistUrl(rawUrl: string): boolean {
+  try {
+    const url = new URL(rawUrl);
+    const hostname = url.hostname.toLowerCase().replace(/^(?:www|m|music)\./u, "");
+    return (
+      (hostname === "youtube.com" || hostname === "youtube-nocookie.com") &&
+      url.pathname === "/playlist" &&
+      url.searchParams.get("list") !== null
+    );
+  } catch {
+    return false;
+  }
+}
+
+const LISTING_ENTRY_PATTERNS = [
+  /"lockupMetadataViewModel":\{"title":\{"content":"((?:[^"\\]|\\.){3,200})"/gu,
+  /"playlistVideoRenderer":\{[\s\S]{0,400}?"title":\{"runs":\[\{"text":"((?:[^"\\]|\\.){3,200})"/gu,
+  /"accessibilityContext":\{"label":"((?:[^"\\]|\\.){3,200})"/gu,
+];
+const DURATION_LIKE =
+  /^\d+\s+(?:hour|minute|second)s?(?:,\s*\d+\s+(?:hour|minute|second)s?)*$/iu;
+const MAX_LISTING_ENTRIES = 30;
+
+/**
+ * Recovers the titles a listing page renders from client-side data. Several
+ * independent shapes carry the same titles, so one of them changing degrades
+ * the result instead of emptying it. An empty result is always survivable:
+ * callers keep whatever metadata the page published.
+ */
+export function listingEntries(html: string): string[] {
+  for (const pattern of LISTING_ENTRY_PATTERNS) {
+    const found = new Set<string>();
+    for (const match of html.matchAll(pattern)) {
+      if (match[1] === undefined) continue;
+      let value: string;
+      try {
+        value = JSON.parse(`"${match[1]}"`) as string;
+      } catch {
+        continue;
+      }
+      const collapsed = collapseWhitespace(value);
+      if (collapsed.length < 3 || DURATION_LIKE.test(collapsed)) continue;
+      found.add(collapsed);
+      if (found.size >= MAX_LISTING_ENTRIES) break;
+    }
+    if (found.size > 0) return [...found];
+  }
+  return [];
+}
+
+/** oEmbed is a documented endpoint, unlike the rendered page payload. */
+async function resolveCreator(rawUrl: string): Promise<string | null> {
+  try {
+    const response = await safeFetch(
+      `https://www.youtube.com/oembed?format=json&url=${encodeURIComponent(rawUrl)}`,
+      "application/json",
+    );
+    if (!response.ok) return null;
+    const payload: unknown = JSON.parse(
+      new TextDecoder().decode(await boundedBytes(response, 64 * 1024)),
+    );
+    const author = (payload as { author_name?: unknown }).author_name;
+    return typeof author === "string" && author.length > 0 ? author : null;
+  } catch {
+    return null;
   }
 }
 
@@ -223,6 +302,8 @@ export async function resolvePageContext(rawUrl: string): Promise<PageContext | 
         metaDescription: null,
         excerpt: null,
         xPost,
+        creator: xPost.author,
+        entries: null,
       };
     }
     const response = await safeFetch(rawUrl, "text/html,application/xhtml+xml");
@@ -233,6 +314,8 @@ export async function resolvePageContext(rawUrl: string): Promise<PageContext | 
       await boundedBytesTruncated(response, MAX_HTML_BYTES),
     );
     const titleMatch = /<title[^>]*>([\s\S]{0,600}?)<\/title>/iu.exec(html);
+    const listing = isYouTubePlaylistUrl(rawUrl);
+    const entries = listing ? listingEntries(html) : [];
     return {
       pageTitle: titleMatch?.[1] === undefined ? null : stripTags(titleMatch[1]).slice(0, 300),
       siteName: metaContent(html, "og:site_name", "property"),
@@ -242,6 +325,8 @@ export async function resolvePageContext(rawUrl: string): Promise<PageContext | 
         metaContent(html, "twitter:description", "name"),
       excerpt: pageExcerpt(html),
       xPost: null,
+      creator: listing ? await resolveCreator(rawUrl) : null,
+      entries: entries.length === 0 ? null : entries,
     };
   } catch {
     return null;

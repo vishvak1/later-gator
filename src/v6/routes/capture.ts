@@ -27,8 +27,15 @@ const extensionCaptureSchema = z.strictObject({
   thumbnailUrl: z.string().trim().min(1).max(8192).nullable().optional(),
 });
 
+/**
+ * requestId is optional because the shared URL is already the idempotency key:
+ * `bookmarks_active_normalized_url_unique` makes an active bookmark unique per
+ * normalized URL, so a repeated share returns `already_saved` either way. A
+ * client with no convenient way to produce a UUID — an Apple Shortcut, for
+ * instance — can omit it and still behave idempotently.
+ */
 const iosCaptureSchema = z.strictObject({
-  requestId: z.uuid(),
+  requestId: z.uuid().optional(),
   url: z.string().trim().min(1).max(8192),
 });
 
@@ -235,12 +242,16 @@ export async function captureBookmark(
       : (extensionData?.success === true ? extensionData.data : null);
   if (data === null) return cors(apiError(400, "invalid_capture", "Check the shared URL."));
   const requestHash = await sha256Base64(JSON.stringify(data));
-  const repeated = await storedIdempotentResponse(
-    env.DB,
-    credential.id,
-    data.requestId,
-    requestHash,
-  );
+  const idempotencyKey = data.requestId ?? null;
+  /** Without a key there is no stored response to replay or conflict with. */
+  const finish = async (response: Response): Promise<Response> =>
+    idempotencyKey === null
+      ? cors(response)
+      : saveIdempotentResponse(env.DB, credential.id, idempotencyKey, requestHash, response);
+  const repeated =
+    idempotencyKey === null
+      ? null
+      : await storedIdempotentResponse(env.DB, credential.id, idempotencyKey, requestHash);
   if (repeated !== null) return repeated;
   if (await importHoldsLibrary(env.DB)) {
     return cors(
@@ -339,11 +350,7 @@ export async function captureBookmark(
         : source.created
           ? "saved"
           : "already_saved";
-    return await saveIdempotentResponse(
-      env.DB,
-      credential.id,
-      data.requestId,
-      requestHash,
+    return await finish(
       json(
         {
           ok: true,
@@ -355,12 +362,6 @@ export async function captureBookmark(
       ),
     );
   } catch {
-    return await saveIdempotentResponse(
-      env.DB,
-      credential.id,
-      data.requestId,
-      requestHash,
-      apiError(503, "capture_unavailable", "Failed to save to Later Gator."),
-    );
+    return await finish(apiError(503, "capture_unavailable", "Failed to save to Later Gator."));
   }
 }

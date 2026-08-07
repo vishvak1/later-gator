@@ -593,6 +593,37 @@ describe("v6 Worker foundation", () => {
       body: JSON.stringify({ requestId, url: "https://example.com/different" }),
     });
     expect(conflict.status).toBe(409);
+
+    // A client with no way to generate a UUID may omit requestId entirely: the
+    // unique index on normalized_url still makes a repeated share idempotent.
+    const send = (url: string) =>
+      exports.default.fetch("https://later-gator.test/api/capture/ios", {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${credential.credential.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url }),
+      });
+    const keyless = await send("https://example.com/ios-keyless");
+    expect(keyless.status).toBe(201);
+    expect(await keyless.json()).toMatchObject({ ok: true, result: "saved" });
+    const keylessAgain = await send("https://example.com/ios-keyless");
+    expect(keylessAgain.status).toBe(200);
+    expect(await keylessAgain.json()).toMatchObject({ ok: true, result: "already_saved" });
+    // Extra fields stay rejected; only requestId became optional.
+    const stillStrict = await exports.default.fetch(
+      "https://later-gator.test/api/capture/ios",
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${credential.credential.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: "https://example.com/ios-extra", note: "nope" }),
+      },
+    );
+    expect(stillStrict.status).toBe(400);
   });
 
   it("searches existing bookmarks for extension linking and rejects manual organization in Unsorted", async () => {

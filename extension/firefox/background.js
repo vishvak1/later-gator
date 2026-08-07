@@ -1,5 +1,9 @@
 "use strict";
 
+// Blue so the saved marker reads as a state badge rather than part of the
+// green Later Gator icon behind it.
+const SAVED_BADGE_COLOR = "#1d6fe0";
+
 const browserApi = globalThis.browser ?? globalThis.chrome;
 
 function storedConnection(value) {
@@ -28,7 +32,11 @@ function storedConnection(value) {
 }
 
 async function setSavedBadge(tabId, saved) {
-  await browserApi.action.setBadgeBackgroundColor({ color: "#2f7d4f", tabId });
+  await browserApi.action.setBadgeBackgroundColor({ color: SAVED_BADGE_COLOR, tabId });
+  // Firefox keeps a light default text colour, which is unreadable on this blue.
+  if (browserApi.action.setBadgeTextColor !== undefined) {
+    await browserApi.action.setBadgeTextColor({ color: "#ffffff", tabId });
+  }
   await browserApi.action.setBadgeText({ text: saved ? "✓" : "", tabId });
   await browserApi.action.setTitle({
     title: saved ? "Saved in Later Gator" : "Save to Later Gator",

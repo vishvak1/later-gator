@@ -16,10 +16,15 @@ import {
   type PageContext,
 } from "./page-content";
 import { dispatchThumbnailJob } from "./thumbnail-jobs";
+import {
+  browserBindingPresent,
+  renderPageText,
+  type RenderedPage,
+} from "../adapters/browser-render";
 
 const organizationResultSchema = z.strictObject({
   status: z.enum(["organized", "insufficient_evidence"]),
-  tags: z.array(z.string().trim().min(1).max(64)).max(8),
+  tags: z.array(z.string().trim().min(1).max(64)).max(10),
   description: z.string().trim().max(1000),
   folder: z.enum([
     "Social Posts",
@@ -68,7 +73,7 @@ const organizationJsonSchema = {
     tags: {
       type: "array",
       minItems: 0,
-      maxItems: 8,
+      maxItems: 10,
       items: { type: "string" },
     },
     description: { type: "string", minLength: 0, maxLength: 1000 },
@@ -95,6 +100,7 @@ interface JobContext {
   job_id: string;
   job_state: string;
   expected_revision: number;
+  browser_rendered_at: string | null;
   organization_generation: number;
   quality_attempt_count: number;
   last_safe_error_code: string | null;
@@ -131,6 +137,7 @@ type OrganizationResult = z.infer<typeof organizationResultSchema>;
 
 interface OrganizationDependencies {
   resolvePageContext?: (rawUrl: string) => Promise<PageContext | null>;
+  renderPage?: (rawUrl: string) => Promise<RenderedPage | null>;
 }
 
 export type OrganizationOutcome =
@@ -194,9 +201,11 @@ function buildPrompt(
     "",
     "Tag rules:",
     "- Folders classify source type. Tags classify subject matter.",
-    "- Choose 3 to 6 tags mixing one or two broad subjects with precise specifics.",
+    "- Choose 5 to 10 tags mixing broad subjects with precise specifics.",
     "- The active tag registry is a convenience, not a closed taxonomy.",
     "- Reuse an active tag only when it accurately fits. Create precise new subject tags whenever the bookmark introduces a topic that is missing from the registry.",
+    "- The registry cannot anticipate every bookmark. When the retrieved content covers a format, medium, or topic the registry lacks, those missing tags are the most valuable ones you can add.",
+    "- For example, a YouTube playlist of recorded university lectures on deep learning should be tagged playlist and course alongside deep-learning, even when playlist and course appear nowhere in the registry, because they describe what this bookmark is and how the owner will look for it later.",
     "- Treat setup seed tags as examples and preferences, never as a target vocabulary or a limit on how many tags the library may contain.",
     "- Do not create synonymous or abbreviated duplicates. Reuse the registry's canonical wording; for example, use artificial-intelligence rather than also creating ai.",
     "- Do not force bookmarks into the user's setup interests. For example, create tags such as history or religion when the content calls for them.",
@@ -228,6 +237,12 @@ function buildPrompt(
     pageContext?.excerpt === null || pageContext?.excerpt === undefined
       ? ""
       : `Page content excerpt: ${pageContext.excerpt}`,
+    pageContext?.creator === null || pageContext?.creator === undefined || xPost !== null
+      ? ""
+      : `Published by: ${pageContext.creator}`,
+    pageContext?.entries === null || pageContext?.entries === undefined
+      ? ""
+      : `Items collected on this page: ${pageContext.entries.join("; ").slice(0, 2000)}`,
     xPost === null ? "" : `X post author: ${xPost.author ?? "unknown"}`,
     xPost === null ? "" : `X post text: ${xPost.text}`,
     xPost === null || xPost.externalUrls.length === 0
@@ -261,6 +276,7 @@ async function loadContext(db: D1Database, jobId: string): Promise<JobContext | 
          j.state AS job_state,
          j.expected_revision,
          j.organization_generation,
+         j.browser_rendered_at,
          j.quality_attempt_count,
          j.last_safe_error_code,
          j.provider,
@@ -316,6 +332,49 @@ async function markState(
   ]);
 }
 
+/**
+ * The browser fallback. It sits in front of every insufficient-evidence
+ * decision and changes nothing else: one render per organization job, skipped
+ * entirely when the binding is absent, an import is running, or Cloudflare has
+ * already refused for the day. A null result leaves the caller exactly where it
+ * was, so the existing retry gate still decides the outcome.
+ */
+async function rescueWithBrowser(
+  env: Env,
+  context: JobContext,
+  dependencies: OrganizationDependencies,
+): Promise<RenderedPage | null> {
+  if (context.browser_rendered_at !== null) return null;
+  const render = dependencies.renderPage ?? (browserBindingPresent(env) ? renderPageText.bind(null, env) : null);
+  if (render === null) return null;
+  if (await importHoldsAi(env.DB)) return null;
+  const now = new Date().toISOString();
+  // Marked before the outcome is known: a render that returns nothing must not
+  // be retried on the next pass, or a stubborn page would spend the whole day.
+  await env.DB
+    .prepare("UPDATE background_jobs SET browser_rendered_at = ? WHERE id = ?")
+    .bind(now, context.job_id)
+    .run();
+  context.browser_rendered_at = now;
+  return render(context.url).catch(() => null);
+}
+
+/** Folds rendered text into whatever the plain fetch already produced. */
+function withRenderedPage(
+  pageContext: PageContext | null,
+  rendered: RenderedPage,
+): PageContext {
+  return {
+    pageTitle: pageContext?.pageTitle ?? rendered.title,
+    siteName: pageContext?.siteName ?? null,
+    metaDescription: pageContext?.metaDescription ?? null,
+    excerpt: rendered.text,
+    xPost: pageContext?.xPost ?? null,
+    creator: pageContext?.creator ?? null,
+    entries: pageContext?.entries ?? null,
+  };
+}
+
 const INSUFFICIENT_EVIDENCE_CODES = new Set([
   "content_unavailable",
   "ai_insufficient_evidence",
@@ -325,11 +384,14 @@ async function recordInsufficientEvidence(
   db: D1Database,
   context: JobContext,
   safeErrorCode: "content_unavailable" | "ai_insufficient_evidence",
+  /** Set once the browser has already had its one attempt at this page. */
+  exhausted = false,
 ): Promise<OrganizationOutcome> {
   const now = new Date().toISOString();
   if (
-    context.last_safe_error_code !== null &&
-    INSUFFICIENT_EVIDENCE_CODES.has(context.last_safe_error_code)
+    exhausted ||
+    (context.last_safe_error_code !== null &&
+      INSUFFICIENT_EVIDENCE_CODES.has(context.last_safe_error_code))
   ) {
     await db.batch([
       db
@@ -629,17 +691,21 @@ export async function organizeBookmarkJob(
   const pageContextResolver =
     dependencies.resolvePageContext ??
     (environment !== undefined && environment !== "test" ? resolvePageContext : null);
-  const pageContext =
+  let pageContext =
     pageContextResolver === null ? null : await pageContextResolver(context.url);
   // A description the AI did not write came from the capture surface, which
   // read the page in a real browser. The prompt already passes it through as
   // "Existing description", so it counts as evidence under every policy.
   const sourceDescription =
     context.ai_managed_description === 0 ? context.description : null;
-  const hasPrimaryContent =
+  const hasEvidence = (): boolean =>
     hasPrimaryPageContent(pageContext, context.title) ||
     hasPrimarySourceDescription(sourceDescription, context.title);
-  if (!hasPrimaryContent) {
+  if (!hasEvidence()) {
+    const rendered = await rescueWithBrowser(env, context, dependencies);
+    if (rendered !== null) pageContext = withRenderedPage(pageContext, rendered);
+  }
+  if (!hasEvidence()) {
     return recordInsufficientEvidence(env.DB, context, "content_unavailable");
   }
 
@@ -651,9 +717,9 @@ export async function organizeBookmarkJob(
     )
     .all<TagRow>();
 
-  let result: OrganizationResult | null = null;
-  try {
-    for (let attempt = 0; attempt < 2 && result === null; attempt += 1) {
+  const evaluate = async (): Promise<OrganizationResult | null> => {
+    let evaluated: OrganizationResult | null = null;
+    for (let attempt = 0; attempt < 2 && evaluated === null; attempt += 1) {
       const payload = await runOrganizationProvider(
         env,
         context.provider as ProviderName,
@@ -661,7 +727,22 @@ export async function organizeBookmarkJob(
         buildPrompt(context, tags.results, pageContext, attempt > 0),
         organizationJsonSchema,
       );
-      result = parseOrganizationResult(payload);
+      evaluated = parseOrganizationResult(payload);
+    }
+    return evaluated;
+  };
+
+  let result: OrganizationResult | null;
+  try {
+    result = await evaluate();
+    // The model saw the cheap page and abstained. Render it once and let the
+    // model look again; a second abstention is final.
+    if (result?.status === "insufficient_evidence") {
+      const rendered = await rescueWithBrowser(env, context, dependencies);
+      if (rendered !== null) {
+        pageContext = withRenderedPage(pageContext, rendered);
+        if (hasEvidence()) result = await evaluate();
+      }
     }
   } catch (error) {
     if (
@@ -751,7 +832,14 @@ export async function organizeBookmarkJob(
   }
 
   if (result.status === "insufficient_evidence") {
-    return recordInsufficientEvidence(env.DB, context, "ai_insufficient_evidence");
+    // A model that abstains after the browser has already rendered the page has
+    // seen everything this deployment can retrieve.
+    return recordInsufficientEvidence(
+      env.DB,
+      context,
+      "ai_insufficient_evidence",
+      context.browser_rendered_at !== null,
+    );
   }
 
   try {

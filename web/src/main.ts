@@ -1206,7 +1206,7 @@ if (page === "dashboard") {
 
   el<HTMLInputElement>("#searchInput").addEventListener("input", () => {
     updateTagSuggestions();
-    clearTimeout(searchTimer);
+    if (searchTimer !== null) clearTimeout(searchTimer);
     searchTimer = setTimeout(() => void loadBookmarks(), 280);
   });
   el<HTMLInputElement>("#searchInput").addEventListener("keydown", event => {

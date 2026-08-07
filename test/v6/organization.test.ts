@@ -5,6 +5,8 @@ import { organizeBookmarkJob } from "../../src/v6/application/organize-bookmark"
 import {
   hasPrimaryPageContent,
   hasPrimarySourceDescription,
+  isYouTubePlaylistUrl,
+  listingEntries,
   type PageContext,
 } from "../../src/v6/application/page-content";
 import { repairThumbnailBacklog } from "../../src/v6/application/thumbnail-jobs";
@@ -28,6 +30,8 @@ const substantivePageContext: PageContext = {
   metaDescription: null,
   excerpt: "The retrieved page body provides substantive source material for organization.",
   xPost: null,
+  creator: null,
+  entries: null,
 };
 
 function organize(
@@ -48,6 +52,8 @@ describe("sequential v6 organization", () => {
       metaDescription: "Introduction to transformer attention",
       excerpt: null,
       xPost: null,
+      creator: null,
+      entries: null,
     }, "Introduction to transformer attention")).toBe(false);
     expect(hasPrimaryPageContent({
       pageTitle: null,
@@ -55,6 +61,8 @@ describe("sequential v6 organization", () => {
       metaDescription: null,
       excerpt: null,
       xPost: { author: "Example", text: "pic.twitter.com/abc123", externalUrls: [] },
+      creator: null,
+      entries: null,
     })).toBe(false);
     expect(hasPrimaryPageContent({
       pageTitle: "Instagram",
@@ -62,8 +70,54 @@ describe("sequential v6 organization", () => {
       metaDescription: "Create an account or log in to Instagram to see photos and videos.",
       excerpt: "Log in or sign up to continue. Forgot your password? Create an account.",
       xPost: null,
+      creator: null,
+      entries: null,
     }, "Instagram")).toBe(true);
     expect(hasPrimaryPageContent(substantivePageContext)).toBe(true);
+  });
+
+  it("harvests listing titles only from playlist pages, never from a watch page", () => {
+    expect(
+      isYouTubePlaylistUrl("https://www.youtube.com/playlist?list=PL4bm2lr9UVG0Hve"),
+    ).toBe(true);
+    expect(isYouTubePlaylistUrl("https://m.youtube.com/playlist?list=PL4bm")).toBe(true);
+    // A watch page renders the same structure for sidebar recommendations.
+    expect(isYouTubePlaylistUrl("https://www.youtube.com/watch?v=dQw4w9WgXcQ")).toBe(false);
+    expect(isYouTubePlaylistUrl("https://www.youtube.com/playlist")).toBe(false);
+    expect(isYouTubePlaylistUrl("https://example.com/playlist?list=PL4bm")).toBe(false);
+  });
+
+  it("reads listing titles from the rendered payload and drops durations", () => {
+    const payload =
+      '<script>{"metadata":{"lockupMetadataViewModel":{"title":{"content":' +
+      '"How LLMs survive in low precision | Quantization Fundamentals"}}},' +
+      '"metadata":{"lockupMetadataViewModel":{"title":{"content":' +
+      '"The myth of 1-bit LLMs | Quantization-Aware Training"}}},' +
+      '"accessibilityContext":{"label":"20 minutes, 34 seconds"}}</script>';
+    expect(listingEntries(payload)).toEqual([
+      "How LLMs survive in low precision | Quantization Fundamentals",
+      "The myth of 1-bit LLMs | Quantization-Aware Training",
+    ]);
+  });
+
+  it("returns nothing rather than throwing when the payload shape changes", () => {
+    expect(listingEntries("<script>{\"someNewShape\":{\"title\":\"x\"}}</script>")).toEqual([]);
+    expect(listingEntries("")).toEqual([]);
+  });
+
+  it("treats what a listing collects as primary content", () => {
+    expect(
+      hasPrimaryPageContent({
+        pageTitle: "Model Quantization - YouTube",
+        siteName: "YouTube",
+        // The creator left the description blank, so YouTube substitutes boilerplate.
+        metaDescription: "Share your videos with friends, family and the world",
+        excerpt: null,
+        xPost: null,
+        creator: "Julia Turc",
+        entries: ["Reverse-engineering GGUF | Post-Training Quantization"],
+      }, "Model Quantization"),
+    ).toBe(true);
   });
 
   it("accepts a capture-supplied description as evidence but not a repeated title", () => {
@@ -155,6 +209,8 @@ describe("sequential v6 organization", () => {
       metaDescription: null,
       excerpt: null,
       xPost: null,
+      creator: null,
+      entries: null,
     };
 
     expect(await organize(aiEnv, created.jobId ?? "", titleOnly)).toBe("retry");
@@ -172,6 +228,8 @@ describe("sequential v6 organization", () => {
       metaDescription: "Create an account or log in to Instagram to see photos and videos.",
       excerpt: null,
       xPost: null,
+      creator: null,
+      entries: null,
     };
     expect(await organize(aiEnv, created.jobId ?? "", genericLoginShell)).toBe("review");
     expect(aiCalls).toBe(1);
@@ -237,6 +295,132 @@ describe("sequential v6 organization", () => {
       ai_state: "complete",
       description: "A detailed guide to reliable distributed systems.",
     });
+  });
+
+  it("rescues an unreadable page with one browser render, then organizes it", async () => {
+    let renders = 0;
+    const created = await createBookmark(
+      env.DB,
+      {
+        url: `https://spa.example/${crypto.randomUUID()}`,
+        title: "Client rendered app",
+        organizationPolicy: "full",
+      },
+      "dashboard",
+    );
+    const aiEnv = environmentWithAi({
+      response: {
+        status: "organized",
+        tags: ["distributed-systems", "architecture", "reliability"],
+        description: "A detailed walkthrough of building reliable distributed systems.",
+        folder: "Articles",
+        confidence: "high",
+        notes: "",
+      },
+    });
+
+    expect(
+      await organizeBookmarkJob(aiEnv, created.jobId ?? "", {
+        // The plain fetch cannot read this page at all.
+        resolvePageContext: () => Promise.resolve(null),
+        renderPage: () => {
+          renders += 1;
+          return Promise.resolve({
+            title: "Client rendered app",
+            text: "A detailed walkthrough of building reliable distributed systems, covering "
+              + "consensus, replication, and failure detection in production deployments.",
+          });
+        },
+      }),
+    ).toBe("completed");
+    expect(renders).toBe(1);
+    expect(
+      await env.DB
+        .prepare("SELECT browser_rendered_at IS NOT NULL AS rendered FROM background_jobs WHERE id = ?")
+        .bind(created.jobId)
+        .first(),
+    ).toEqual({ rendered: 1 });
+  });
+
+  it("renders at most once per job, then falls back to the existing retry gate", async () => {
+    let renders = 0;
+    const created = await createBookmark(
+      env.DB,
+      {
+        url: `https://unreadable.example/${crypto.randomUUID()}`,
+        title: "Unreadable",
+        organizationPolicy: "full",
+      },
+      "dashboard",
+    );
+    const aiEnv = environmentWithAi({ response: { status: "organized" } });
+    const dependencies = {
+      resolvePageContext: () => Promise.resolve(null),
+      renderPage: () => {
+        renders += 1;
+        return Promise.resolve(null);
+      },
+    };
+
+    // Render fails, so the shared gate grants its usual single retry.
+    expect(await organizeBookmarkJob(aiEnv, created.jobId ?? "", dependencies)).toBe("retry");
+    // Second pass must not render again, and exhausts the gate.
+    expect(await organizeBookmarkJob(aiEnv, created.jobId ?? "", dependencies)).toBe("review");
+    expect(renders).toBe(1);
+    expect(
+      await env.DB
+        .prepare(
+          `SELECT b.ai_state, f.name AS folder_name
+             FROM bookmarks b JOIN folders f ON f.id = b.folder_id
+            WHERE b.id = ?`,
+        )
+        .bind(created.bookmark.id)
+        .first(),
+    ).toEqual({ ai_state: "review", folder_name: "Need for Review" });
+  });
+
+  it("sends an abstention after a render straight to review, skipping the spare retry", async () => {
+    let aiCalls = 0;
+    const created = await createBookmark(
+      env.DB,
+      {
+        url: `https://abstain.example/${crypto.randomUUID()}`,
+        title: "Ambiguous fragment",
+        organizationPolicy: "full",
+      },
+      "dashboard",
+    );
+    const aiEnv = {
+      DB: env.DB,
+      AI: {
+        run: () => {
+          aiCalls += 1;
+          return Promise.resolve({
+            response: {
+              status: "insufficient_evidence",
+              tags: [],
+              description: "",
+              folder: "Websites & Apps",
+              confidence: "low",
+              notes: "Still ambiguous after rendering.",
+            },
+          });
+        },
+      },
+    } as unknown as Env;
+
+    expect(
+      await organizeBookmarkJob(aiEnv, created.jobId ?? "", {
+        resolvePageContext: () => Promise.resolve(substantivePageContext),
+        renderPage: () =>
+          Promise.resolve({
+            title: "Ambiguous fragment",
+            text: "Some additional rendered prose that is still not about any clear subject.",
+          }),
+      }),
+    ).toBe("review");
+    // Once before the render, once after: a second abstention is final.
+    expect(aiCalls).toBe(2);
   });
 
   it("continues organizing Unsorted bookmarks after another bookmark enters review", async () => {
@@ -457,6 +641,10 @@ describe("sequential v6 organization", () => {
 
     expect(await organize(aiEnv, created.jobId ?? "")).toBe("completed");
     expect(prompt).toContain("not a closed taxonomy");
+    expect(prompt).toContain("Choose 5 to 10 tags");
+    // The permission to invent tags carries a worked example, so it competes
+    // with the equally concrete rule against near-duplicates.
+    expect(prompt).toContain("tagged playlist and course");
     expect(prompt).toContain("Do not force bookmarks into the user's setup interests");
     expect(prompt).toContain("Do not create synonymous or abbreviated duplicates");
     expect(prompt).toContain("Use the title only as supporting context");

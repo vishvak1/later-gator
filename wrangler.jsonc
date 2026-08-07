@@ -36,6 +36,7 @@
   },
   "build": { "command": "npm run build:web" },
   "images": { "binding": "IMAGES" },
+  "browser": { "binding": "BROWSER" },
   "ai": { "binding": "AI" },
   "vectorize": [
     { "binding": "VECTORS", "index_name": "later-gator-vectors", "remote": true }

@@ -84,7 +84,10 @@ export async function runOrganizationProvider(
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_schema", json_schema: jsonSchema },
         max_tokens: 1024,
-        temperature: 0.1,
+        // Near-greedy decoding made the model copy tags straight out of the
+        // registry it was shown. The JSON schema, not the temperature, is what
+        // keeps the response well formed.
+        temperature: 0.4,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : "";

@@ -19,6 +19,49 @@ const anthropicEnvelopeSchema = z.looseObject({
   content: z.array(z.looseObject({ type: z.string(), text: z.string().optional() })),
 });
 
+const chatCompletionSchema = z.looseObject({
+  choices: z
+    .array(
+      z.looseObject({
+        message: z.looseObject({ content: z.string().nullish() }).optional(),
+      }),
+    )
+    .min(1),
+});
+
+/**
+ * Workers AI is moving to the OpenAI chat-completions envelope. Older models
+ * answer with `{ response }`, newer ones with `{ choices: [{ message: { content } }] }`,
+ * and some return both while they transition. Reading only the legacy shape
+ * made capable models — gpt-oss and nemotron among them — look as though they
+ * could not produce structured output, when their JSON was correct all along.
+ *
+ * Normalizing here keeps every caller on one shape.
+ */
+export function normalizeWorkersAiResult(raw: unknown): unknown {
+  const legacy = z.looseObject({ response: z.unknown() }).safeParse(raw);
+  if (legacy.success && legacy.data.response !== undefined && legacy.data.response !== null) {
+    return { response: legacy.data.response };
+  }
+  const chat = chatCompletionSchema.safeParse(raw);
+  const content = chat.success ? chat.data.choices[0]?.message?.content : null;
+  if (typeof content === "string" && content.trim().length > 0) return { response: content };
+  return raw;
+}
+
+/**
+ * Workers AI reports a spent daily allowance as:
+ *   "4006: you have used up your daily free allocation of 10,000 neurons…"
+ *
+ * The previous pattern looked for code 3036 and the words "limit" or
+ * "exhausted", none of which appear. So the one error the pipeline is built to
+ * handle was classified as a transient model fault: the provider never paused,
+ * every queued job kept retrying against an allowance that was already gone,
+ * and Settings told the owner to check their model ID.
+ */
+const ALLOCATION_EXHAUSTED =
+  /\b(?:3036|4006)\b|daily free allocation|daily.*(?:limit|allocation)|allocation.*exhaust|neurons.*upgrade/iu;
+
 export type ProviderName = "workers-ai" | "openai" | "anthropic";
 
 export class OrganizationProviderError extends Error {
@@ -71,27 +114,40 @@ async function externalJson(
   return boundedJson(response);
 }
 
+/**
+ * Prepaid AI Gateway credits only apply to traffic routed through a gateway,
+ * so the id has to travel with every Workers AI call. Absent, calls go direct
+ * and draw on the free daily allocation exactly as before.
+ */
+export function aiGatewayOptions(gatewayId: string | null): { gateway: { id: string } } | undefined {
+  return gatewayId === null || gatewayId.trim() === ""
+    ? undefined
+    : { gateway: { id: gatewayId.trim() } };
+}
+
 export async function runOrganizationProvider(
   env: Env,
   provider: ProviderName,
   model: string,
   prompt: string,
   jsonSchema: object,
+  gatewayId: string | null = null,
 ): Promise<unknown> {
   if (provider === "workers-ai") {
     try {
-      return await env.AI.run(model, {
+      return normalizeWorkersAiResult(await env.AI.run(model, {
         messages: [{ role: "user", content: prompt }],
         response_format: { type: "json_schema", json_schema: jsonSchema },
-        max_tokens: 1024,
+        // Reasoning models spend part of the budget before emitting the object.
+        max_tokens: 2048,
         // Near-greedy decoding made the model copy tags straight out of the
         // registry it was shown. The JSON schema, not the temperature, is what
         // keeps the response well formed.
         temperature: 0.4,
-      });
+      }, aiGatewayOptions(gatewayId)));
     } catch (error) {
       const message = error instanceof Error ? error.message : "";
-      if (/\b3036\b|daily.*limit|allocation.*exhaust/iu.test(message)) {
+      if (ALLOCATION_EXHAUSTED.test(message)) {
         throw new OrganizationProviderError("allocation", "workers_ai_allocation_exhausted");
       }
       throw new OrganizationProviderError("temporary", "workers_ai_temporary");
@@ -176,6 +232,7 @@ export async function testProviderConnection(
   env: Env,
   provider: ProviderName,
   model: string,
+  gatewayId: string | null = null,
 ): Promise<void> {
   const result = await runOrganizationProvider(
     env,
@@ -183,6 +240,7 @@ export async function testProviderConnection(
     model,
     'Return exactly {"ok":"later-gator"} as the requested JSON.',
     connectionSchema,
+    gatewayId,
   );
   const envelope = z.looseObject({ response: z.unknown() }).safeParse(result);
   if (!envelope.success) {

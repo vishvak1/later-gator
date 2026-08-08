@@ -3,17 +3,24 @@
 // no manual asset version to forget to bump.
 import esbuild from "esbuild";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const PUBLIC_DIR = "web/public";
 const OUT_DIR = `${PUBLIC_DIR}/assets`;
+const IMG_SRC = "web/img";
 const MANIFEST = "src/v6/generated/asset-manifest.ts";
 
 rmSync(PUBLIC_DIR, { recursive: true, force: true });
 mkdirSync(OUT_DIR, { recursive: true });
 mkdirSync("src/v6/generated", { recursive: true });
+
+// web/public is rebuilt from scratch every run, so illustrations and setup
+// screenshots live in a tracked source directory and are copied in. They are
+// referenced by stable paths rather than content hashes because the setup
+// guides link to them by name.
+if (existsSync(IMG_SRC)) cpSync(IMG_SRC, `${PUBLIC_DIR}/img`, { recursive: true });
 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "later-gator-web-"));
 const compiledCss = join(temporaryDirectory, "app.css");

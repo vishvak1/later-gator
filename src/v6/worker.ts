@@ -103,6 +103,31 @@ interface RouteContext {
   executionContext: ExecutionContext;
 }
 
+/**
+ * A failed provider test previously said only that it failed, which gave no way
+ * to tell a mistyped model from one that cannot produce structured output.
+ */
+function providerTestReason(safeCode: string): string {
+  const reasons: Record<string, string> = {
+    provider_test_invalid:
+      "That model did not return the structured JSON Later Gator needs. Choose a model that supports JSON schema output.",
+    provider_output_missing:
+      "That model returned an empty response. Choose a model that supports JSON schema output.",
+    provider_response_schema:
+      "That provider replied in an unexpected format. Check the model name.",
+    workers_ai_temporary:
+      "Workers AI could not run that model. Check the model ID is exactly as shown on the Cloudflare model page, then try again.",
+    workers_ai_allocation_exhausted:
+      "The daily Workers AI allocation is used up. It resets at UTC midnight.",
+    missing_provider_credential: "Add an API key for this provider first.",
+    provider_http_401: "That API key was rejected.",
+    provider_http_403: "That API key is not allowed to use this model.",
+    provider_http_404: "That model was not found for this provider.",
+    provider_network: "The provider could not be reached.",
+  };
+  return reasons[safeCode] ?? "The provider test failed.";
+}
+
 async function setupComplete(db: D1Database): Promise<boolean> {
   const row = await db
     .prepare("SELECT setup_status FROM app_state WHERE id = 1")
@@ -743,7 +768,15 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     }
     const now = new Date().toISOString();
     try {
-      await testProviderConnection(env, parsed.data.provider, parsed.data.model);
+      const testGateway = await env.DB
+        .prepare("SELECT ai_gateway_id FROM provider_settings WHERE id = 1")
+        .first<{ ai_gateway_id: string | null }>();
+      await testProviderConnection(
+        env,
+        parsed.data.provider,
+        parsed.data.model,
+        testGateway?.ai_gateway_id ?? null,
+      );
       await env.DB
         .prepare(
           `INSERT INTO provider_candidates (
@@ -776,7 +809,7 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
         )
         .bind(parsed.data.provider, parsed.data.model, now, safeCode)
         .run();
-      return apiError(422, safeCode, "The provider test failed. The active provider was not changed.");
+      return apiError(422, safeCode, `${providerTestReason(safeCode)} The active provider was not changed.`);
     }
   }
 
@@ -805,11 +838,19 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
       env.DB
         .prepare(
           `UPDATE provider_settings
-              SET provider = ?, model = ?, config_version = config_version + 1,
+              SET provider = ?, model = ?, ai_gateway_id = ?,
+                  config_version = config_version + 1,
                   operational_status = 'ready', last_safe_error_code = NULL, updated_at = ?
             WHERE id = 1`,
         )
-        .bind(parsed.data.provider, parsed.data.model, now),
+        .bind(
+          parsed.data.provider,
+          parsed.data.model,
+          parsed.data.aiGatewayId === undefined || parsed.data.aiGatewayId === ""
+            ? null
+            : parsed.data.aiGatewayId,
+          now,
+        ),
       env.DB
         .prepare(
           `UPDATE background_jobs

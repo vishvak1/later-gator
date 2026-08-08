@@ -24,7 +24,7 @@ import {
 
 const organizationResultSchema = z.strictObject({
   status: z.enum(["organized", "insufficient_evidence"]),
-  tags: z.array(z.string().trim().min(1).max(64)).max(10),
+  tags: z.array(z.string().trim().min(1).max(64)).max(11),
   description: z.string().trim().max(1000),
   folder: z.enum([
     "Social Posts",
@@ -73,7 +73,7 @@ const organizationJsonSchema = {
     tags: {
       type: "array",
       minItems: 0,
-      maxItems: 10,
+      maxItems: 11,
       items: { type: "string" },
     },
     description: { type: "string", minLength: 0, maxLength: 1000 },
@@ -121,9 +121,8 @@ interface JobContext {
   owner_ai_paused: number;
   current_generation: number;
   provider_status: string;
+  ai_gateway_id: string | null;
   personal_instructions: string | null;
-  career_context: string | null;
-  aspiration_context: string | null;
 }
 
 interface TagRow {
@@ -184,42 +183,40 @@ function buildPrompt(
     "Return only the requested JSON object.",
     "",
     "Evidence sufficiency rules:",
-    "- The Worker retrieved at least one primary content field, but that content may still be generic, blocked, ambiguous, or inadequate for reliable organization.",
-    "- First decide whether the retrieved source content is sufficient to support a factual description and subject tags.",
-    "- Return status insufficient_evidence for login prompts, access shells, generic platform boilerplate, ambiguous fragments, or any material that does not support reliable subject claims.",
+    "- Every detail below is retrieved evidence: the title, the site, the page description, the author or channel, any items the page collects, the existing description, the user note, and the page excerpt.",
+    "- Judge sufficiency across all of those fields together. Generic or empty material in one field does not make the others insufficient; a page whose description is a site-wide default can still be organized from its title and the items it lists.",
+    "- Navigation menus, footers, cookie banners, and legal links are site furniture, not page content. Ignore them entirely and judge only what remains.",
+    "- Return status insufficient_evidence only when nothing across every field supports a factual description and subject tags: a login wall, an access shell, or fragments too ambiguous to name any subject.",
     "- For insufficient_evidence return tags [], description \"\", folder \"Websites & Apps\", confidence \"low\", and put a concise reason in notes. The folder is an ignored transport placeholder.",
-    "- For organized, return a non-empty description and tags supported by the retrieved source content.",
+    "- For organized, return a non-empty description and tags supported by the retrieved evidence.",
     "",
     "Description rules:",
     "- Use the title only as supporting context, never as the sole basis for classification.",
-    "- Base every subject claim and tag on the retrieved source content. Do not infer a topic from the owner's career, aspirations, or personal instructions.",
-    "- Apply a conditional personal instruction only after the source content independently establishes that its condition is true.",
+    "- Base every subject claim and tag on the retrieved evidence. Do not infer a topic from the owner's personal instructions.",
+    "- Apply a conditional personal instruction only after the retrieved evidence independently establishes that its condition is true.",
     "- Write 2 to 4 full sentences (roughly 40 to 90 words) describing what this page actually contains and why it is worth returning to.",
     "- Name the concrete subjects, technologies, tools, people, and organizations involved so a search for any of them finds this bookmark.",
     "- Never open with filler such as 'This is a bookmark about' or 'This page contains'. State the substance directly.",
     "- For social posts, summarize the post's actual claim or content and name the author when known, including what any linked article or resource is.",
     "",
-    "Tag rules:",
-    "- Folders classify source type. Tags classify subject matter.",
-    "- Choose 5 to 10 tags mixing broad subjects with precise specifics.",
-    "- The active tag registry is a convenience, not a closed taxonomy.",
-    "- Reuse an active tag only when it accurately fits. Create precise new subject tags whenever the bookmark introduces a topic that is missing from the registry.",
-    "- The registry cannot anticipate every bookmark. When the retrieved content covers a format, medium, or topic the registry lacks, those missing tags are the most valuable ones you can add.",
-    "- For example, a YouTube playlist of recorded university lectures on deep learning should be tagged playlist and course alongside deep-learning, even when playlist and course appear nowhere in the registry, because they describe what this bookmark is and how the owner will look for it later.",
-    "- Treat setup seed tags as examples and preferences, never as a target vocabulary or a limit on how many tags the library may contain.",
-    "- Do not create synonymous or abbreviated duplicates. Reuse the registry's canonical wording; for example, use artificial-intelligence rather than also creating ai.",
-    "- Do not force bookmarks into the user's setup interests. For example, create tags such as history or religion when the content calls for them.",
+    "Tag rules. Return the tags array as three ordered blocks, A then B then C.",
+    "- Together the blocks tell a stranger what the bookmark is about, what kind of thing it is, and why either of you would reach for it. Example: machine-learning, model-quantization, playlist, course, learning.",
+    "- Block A, Content, 3 to 4 tags: what it is actually about, ordered broad to narrow. Domain first, then the specific topic, as in machine-learning then model-quantization.",
+    "- Block B, Type, 1 to 3 tags: what kind of resource it is, such as course, tutorial, reference, cheatsheet, or playlist. This deliberately echoes the folder so a tag-only search still finds it. Add a modifier such as education, news, or inspiration when it helps.",
+    "- Block C, Relevance, 1 to 4 tags: why it matters. Choose only from career, current-project, learning, reading-list, work, personal, someday, reference-later. Use someday for material with no immediate use so it stays out of active searches.",
+    "- Reuse an existing registry tag whenever one accurately fits rather than inventing a synonym; use artificial-intelligence rather than also creating ai. Create precise new tags freely when the registry lacks the subject.",
+    "- Do not force a bookmark into the owner's setup interests. Create tags such as history or religion when the content calls for them.",
     "- Every tag must be lowercase and contain one word or hyphen-separated words only.",
     "- Never return a retired tag.",
     "",
-    "Folder rules:",
-    "- Social Posts: posts on X, Reddit, LinkedIn, and similar social platforms.",
-    "- Articles: news stories, essays, and blog posts.",
-    "- Videos & Talks: video pages and recorded talks.",
-    "- Code: repositories and code hosting.",
-    "- Docs & Reference: official documentation and reference material.",
-    "- Papers: research papers and preprints.",
-    "- Websites & Apps: tools, products, homepages, and anything without a better fit.",
+    "Folder rules. Choose exactly one, by what the bookmark is rather than where it is hosted.",
+    "- Social Posts: one post or thread on a social platform, such as X, LinkedIn, Reddit, Hacker News, or Instagram. The unit is the single post or thread, never a whole account. A blog post merely linked from a post is an Article; a person's whole profile is Websites & Apps.",
+    "- Articles: long-form written prose meant to be read start to finish, such as blog posts, news, essays, newsletters, and written tutorials. Opinion and narrative belong here. A journalist's writeup of research stays here even though the research itself is a Paper.",
+    "- Videos & Talks: anything whose primary form is video or recorded audio, such as videos, playlists, conference talks, podcast episodes, and recorded lectures. A course delivered as video belongs here. A video embedded in an article saved for its writing is an Article.",
+    "- Docs & Reference: official documentation and material looked up rather than read through, such as API docs, language and library references, cheat sheets, specs, and standards. The test is whether the owner would return to look something up. A repository's hosted docs site belongs here; the repository itself is Code.",
+    "- Code: code that would be cloned, run, copied, or studied, such as repositories, gists, sandboxes, snippet collections, and package pages. The unit is a runnable or usable code artifact.",
+    "- Papers: formal research and academic literature, such as arXiv entries, journal papers, conference proceedings, whitepapers, technical reports, and theses. Always include the tag research, and add venue or year when useful. A blog summarizing a paper is an Article, not a Paper.",
+    "- Websites & Apps: a whole site, tool, or product rather than one page, such as SaaS tools, web apps, portfolios, directories, and ongoing resources. One specific article on a site is an Article; the site as a whole belongs here.",
     "",
   ];
   const details = [
@@ -252,12 +249,6 @@ function buildPrompt(
     context.note === null ? "" : `User note: ${context.note.slice(0, 5000)}`,
     `Active tag registry: ${registry}`,
     retired.length === 0 ? "" : `Retired tags that must not be used: ${retired}`,
-    context.career_context === null || context.career_context.length === 0
-      ? ""
-      : `The owner's current work: ${context.career_context.slice(0, 2000)}`,
-    context.aspiration_context === null || context.aspiration_context.length === 0
-      ? ""
-      : `The owner is working toward: ${context.aspiration_context.slice(0, 2000)}`,
     context.personal_instructions === null
       ? ""
       : `Personal instructions: ${context.personal_instructions.slice(0, 5000)}`,
@@ -296,9 +287,8 @@ async function loadContext(db: D1Database, jobId: string): Promise<JobContext | 
          s.owner_ai_paused,
          s.organization_generation AS current_generation,
          ps.operational_status AS provider_status,
-         p.personal_instructions,
-         p.career_context,
-         p.aspiration_context
+         ps.ai_gateway_id,
+         p.personal_instructions
        FROM background_jobs j
        JOIN bookmarks b ON b.id = j.bookmark_id
        JOIN app_state s ON s.id = 1
@@ -726,6 +716,7 @@ export async function organizeBookmarkJob(
         context.model,
         buildPrompt(context, tags.results, pageContext, attempt > 0),
         organizationJsonSchema,
+        context.ai_gateway_id,
       );
       evaluated = parseOrganizationResult(payload);
     }

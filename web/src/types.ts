@@ -54,6 +54,8 @@ export interface ProviderState {
   model: string;
   operational_status: string;
   last_safe_error_code: string | null;
+  /** Empty means Workers AI is called directly on the free daily allocation. */
+  ai_gateway_id: string | null;
 }
 
 export interface BootstrapState {

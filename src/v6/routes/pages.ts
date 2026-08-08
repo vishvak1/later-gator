@@ -1,4 +1,5 @@
 import { ASSET_MANIFEST } from "../generated/asset-manifest";
+import { ICONS } from "../domain/icons";
 const PAGE_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
@@ -7,6 +8,16 @@ const PAGE_HEADERS = {
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
 } satisfies HeadersInit;
+
+/**
+ * The maintained Share Sheet Shortcut. Its two credential fields ship empty and
+ * are filled by Shortcuts' import questions on install, so the link carries no
+ * secret. Editing the Shortcut and re-sharing mints a new URL: change it here.
+ */
+const IOS_SHORTCUT_URL = "https://www.icloud.com/shortcuts/01e03ec749c040cfb3737da4970d8efd";
+
+/** The extension's own mark, so browser toolbar and web app agree. */
+const BRAND_MARK = `<svg class="brand-mark" viewBox="0 0 128 128" aria-hidden="true"><rect width="128" height="128" rx="28" fill="#2f7d4f"/><path d="M20 62c0-18 14-32 32-32h26c16 0 30 10 34 24l-18 2 18 8c-4 20-20 34-42 34H46C32 98 20 86 20 72V62Z" fill="#eef6df"/><circle cx="50" cy="50" r="6" fill="#183222"/><circle cx="84" cy="50" r="6" fill="#183222"/><path d="M46 78h48M58 78l6 10 6-10 6 10 6-10" fill="none" stroke="#2f7d4f" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 const APP_ICON = `data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#2f7d4f"/><path d="M10 31c0-9 7-16 16-16h13c8 0 15 5 17 12l-9 1 9 4c-2 10-10 17-21 17H23C16 49 10 43 10 36v-5Z" fill="#eef6df"/><circle cx="25" cy="25" r="3" fill="#183222"/><circle cx="42" cy="25" r="3" fill="#183222"/><path d="M23 39h24M29 39l3 5 3-5 3 5 3-5" fill="none" stroke="#2f7d4f" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
@@ -47,11 +58,27 @@ ${body}
   );
 }
 
-function themeControls(compact = false): string {
-  return `<div class="theme-options${compact ? " compact" : ""}" role="group" aria-label="Color theme">
-    <button class="theme-option" type="button" data-theme-choice="light" aria-pressed="false">Light</button>
-    <button class="theme-option" type="button" data-theme-choice="dark" aria-pressed="false">Dark</button>
-    <button class="theme-option" type="button" data-theme-choice="system" aria-pressed="false">System</button>
+/**
+ * The artwork is the control rather than a preview beneath one, so the panel
+ * fills its space instead of stacking a picture under a row of buttons.
+ */
+function themeControls(): string {
+  return `<div class="theme-options" role="group" aria-label="Color theme">
+    <button class="theme-option" type="button" data-theme-choice="light" aria-pressed="false">
+      <img src="/img/gator-day.jpg" alt="" loading="lazy" width="454" height="640">
+      <span>Light</span>
+    </button>
+    <button class="theme-option" type="button" data-theme-choice="dark" aria-pressed="false">
+      <img src="/img/gator-night.jpg" alt="" loading="lazy" width="454" height="640">
+      <span>Dark</span>
+    </button>
+    <button class="theme-option theme-option-system" type="button" data-theme-choice="system" aria-pressed="false">
+      <span class="theme-split" aria-hidden="true">
+        <img src="/img/gator-day.jpg" alt="" loading="lazy">
+        <img src="/img/gator-night.jpg" alt="" loading="lazy">
+      </span>
+      <span>System</span>
+    </button>
   </div>`;
 }
 
@@ -71,13 +98,29 @@ function importStatusPanel(): string {
 
 function navigation(active: "dashboard" | "settings"): string {
   return `<header class="topbar">
-    <a class="brand" href="/dashboard"><span>🐊</span> Later Gator</a>
+    <a class="brand" href="/dashboard">${BRAND_MARK} Later Gator</a>
     <nav aria-label="Primary">
       <a ${active === "dashboard" ? 'aria-current="page"' : ""} href="/dashboard">Library</a>
       <a ${active === "settings" ? 'aria-current="page"' : ""} href="/settings">Settings</a>
     </nav>
+    <button class="icon-toggle" id="howToButton" type="button" aria-label="How to set up Later Gator" title="How to set up Later Gator">${ICONS.help}</button>
     <button class="ghost" id="logoutButton" type="button">Log out</button>
   </header>`;
+}
+
+function howToDialog(): string {
+  return `<dialog id="howToDialog" class="how-to-dialog">
+    <div class="dialog-heading">
+      <div><p id="howToKicker" class="eyebrow"></p><h2 id="howToTitle"></h2></div>
+      <button id="closeHowTo" class="icon-button" type="button" aria-label="Close">×</button>
+    </div>
+    <div id="howToBody" class="how-to-body"></div>
+    <nav class="wizard-nav how-to-nav" aria-label="Guide navigation">
+      <button id="howToPrev" class="secondary" type="button">← Back</button>
+      <p id="howToProgress" class="status" aria-live="polite"></p>
+      <button id="howToNext" type="button">Next →</button>
+    </nav>
+  </dialog>`;
 }
 
 export function loginPage(
@@ -95,7 +138,7 @@ export function loginPage(
     "login",
     `<main class="auth-shell">
       <section class="auth-card space-y-5">
-        <div class="logo">🐊</div>
+        <div class="logo">${BRAND_MARK}</div>
         <h1>Later Gator</h1>
         <p class="muted">Your private, AI-organized bookmark library.</p>
         ${errorMessage === null ? "" : `<p class="error" role="alert">${errorMessage}</p>`}
@@ -117,9 +160,14 @@ export function setupPage(theme: Theme = "system"): Response {
     "Setup",
     "setup",
     `<main class="setup-shell">
-      <header class="setup-header"><span class="logo small">🐊</span><div class="setup-heading"><h1>Set up Later Gator</h1><p class="muted">Choose your interests and optionally import your Raindrop library.</p></div></header>
+      <header class="setup-header"><span class="logo small">${BRAND_MARK}</span><div class="setup-heading"><h1>Set up Later Gator</h1><p class="muted">Choose your interests and optionally import your Raindrop library.</p></div></header>
+      <ol class="wizard-progress" aria-label="Setup progress">
+        <li data-step-marker="1" aria-current="step"><span>1</span>Topics</li>
+        <li data-step-marker="2"><span>2</span>Personalization</li>
+        <li data-step-marker="3"><span>3</span>Import</li>
+      </ol>
       <form id="setupForm" class="stack">
-        <section class="panel topic-onboarding"><span class="step">1</span><h2>Shape your starting interests</h2>
+        <section class="panel topic-onboarding wizard-screen" data-step="1"><h2>Shape your starting interests</h2>
           <p class="muted">Choose at least five topics or subtopics. These guide the first few recommendations; AI can create completely new tags whenever your bookmarks introduce new subjects.</p>
           <div id="topicPicker" class="topic-picker">
             <fieldset><legend>Technology</legend><div class="topic-options">
@@ -155,16 +203,16 @@ export function setupPage(theme: Theme = "system"): Response {
           <div id="customTopicTokens" class="topic-options custom-topic-tokens" aria-live="polite"></div>
           <p id="topicSelectionCount" class="selection-count">0 selected · choose at least 5</p>
         </section>
-        <section class="panel"><span class="step">2</span><h2>Career and aspirations</h2>
-          <label>What is your career?<textarea id="careerContext" required maxlength="2000"></textarea></label>
-          <label>What do you aspire to be?<textarea id="aspirationContext" required maxlength="2000"></textarea></label>
+        <section class="panel wizard-screen" data-step="2" hidden><h2>Personalization <small>Optional</small></h2>
+          <p class="muted">Tell Later Gator anything that should shape how it describes, tags, and prioritizes what you save. Your work, what you are learning, phrasing you prefer — all optional, and changeable later in Settings.</p>
+          <textarea id="personalInstructions" maxlength="5000" placeholder="For example: I work on distributed systems and am learning about model quantization. Prefer precise technical tags over broad ones."></textarea>
         </section>
-        <section class="panel"><span class="step">3</span><h2>Personal AI instructions <small>Optional</small></h2>
-          <textarea id="personalInstructions" maxlength="5000" placeholder="How should Later Gator describe, tag, and prioritize your bookmarks?"></textarea>
-        </section>
-        <section class="panel"><span class="step">4</span><h2>Import from Raindrop <small>Optional</small></h2>
+        <section class="panel wizard-screen" data-step="3" hidden><h2>Import from Raindrop <small>Optional</small></h2>
           <p class="muted">Upload the CSV now, or skip it and import later from Settings.</p>
-          <details class="import-help"><summary>How to export from Raindrop</summary><ol class="instructions"><li>Open Raindrop Settings.</li><li>Choose Backups → Export.</li><li>Select CSV, download it, then return here.</li></ol></details>
+          <figure class="guide-figure">
+            <img src="/img/raindrop-export.png" alt="Raindrop toolbar with the Export menu open, showing HTML, CSV, TXT and ZIP options" loading="lazy" width="840" height="393">
+            <figcaption>In Raindrop, open <strong>Export</strong> and choose <strong>CSV</strong>.</figcaption>
+          </figure>
           <label class="file-field">Raindrop CSV<input id="setupImportFile" type="file" accept=".csv,text/csv"></label>
           <div class="choice-grid" role="radiogroup" aria-label="Raindrop import behavior">
             <label class="choice-card"><input type="radio" name="setupImportOption" value="reorganize" checked><span><strong>Reorganize everything</strong><small>Keep URLs and titles. AI creates descriptions, tags, and folder assignments.</small></span></label>
@@ -172,11 +220,12 @@ export function setupPage(theme: Theme = "system"): Response {
           </div>
           <p class="muted">In both cases, every bookmark first stays in Unsorted. Only Unsorted bookmarks are processed by AI; imported folders are never reused.</p>
         </section>
-        <section class="panel"><span class="step">5</span><h2>Ready</h2>
-          <p>Folders are fixed. Tags and bookmarks remain under your control.</p>
-          <button id="finishSetupButton" type="submit" disabled>Finish setup and open dashboard</button>
+        <nav class="wizard-nav" aria-label="Setup navigation">
+          <button id="wizardBack" class="secondary" type="button" hidden>← Back</button>
           <p id="setupStatus" class="status" role="status"></p>
-        </section>
+          <button id="wizardNext" type="button" disabled>Next →</button>
+          <button id="finishSetupButton" type="submit" hidden>Finish setup and open dashboard</button>
+        </nav>
       </form>
     </main>`,
     200,
@@ -199,7 +248,7 @@ export function dashboardPage(theme: Theme = "system"): Response {
       </aside>
       <main class="library">
         <header class="library-header">
-          <div><h1 id="libraryTitle">All Bookmarks</h1><p id="libraryCount" class="muted"></p></div>
+          <div class="library-heading"><h1 id="libraryTitle">All Bookmarks</h1><span id="unsortedMascot" class="unsorted-mascot" aria-hidden="true" hidden>${ICONS.mascot}</span><p id="libraryCount" class="muted"></p></div>
         </header>
         ${importStatusPanel()}
         <section class="discovery-bar" aria-label="Search and filter bookmarks">
@@ -208,6 +257,8 @@ export function dashboardPage(theme: Theme = "system"): Response {
             <input id="searchInput" type="search" autocomplete="off" placeholder="Search titles, notes, descriptions… Type # for tags">
             <div id="tagSuggestions" class="suggestion-menu" hidden></div>
           </div>
+          <button id="favoritesToggle" class="icon-toggle" type="button" aria-pressed="false" title="Show favorites in this folder" aria-label="Show favorites in this folder">${ICONS.heart}</button>
+          <button id="notesToggle" class="icon-toggle" type="button" aria-pressed="false" title="Show bookmarks with your notes" aria-label="Show bookmarks with your notes">${ICONS.note}</button>
           <button id="filterButton" class="secondary filter-button" type="button">Sort &amp; filter <span id="filterCount"></span></button>
           <div class="view-toggle" role="group" aria-label="View mode">
             <button id="viewGridButton" type="button" class="active" aria-label="Grid view">▦</button>
@@ -290,7 +341,8 @@ export function dashboardPage(theme: Theme = "system"): Response {
         <label><input id="bookmarkFavorite" type="checkbox"> Favorite</label>
         <div class="actions split"><button id="trashBookmarkButton" class="danger" type="button">Move to Trash</button><div><button value="cancel" class="secondary">Cancel</button> <button id="saveBookmarkButton" value="default">Save changes</button></div></div>
       </form>
-    </dialog>`,
+    </dialog>
+    ${howToDialog()}`,
     200,
     theme,
   );
@@ -313,9 +365,9 @@ export function settingsPage(theme: Theme = "system"): Response {
             <label>Provider<select id="providerName"><option value="workers-ai">Cloudflare Workers AI</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
             <label>Model<input id="providerModel" required></label>
             <label id="providerKeyLabel">API key<input id="providerKey" type="password" autocomplete="off"></label>
-            <button type="submit">Test and activate</button>
+            <div class="control-row"><button type="submit">Test and activate</button><button id="openAdvancedProvider" class="icon-toggle" type="button" aria-label="Advanced provider settings" title="Advanced">${ICONS.settings}</button></div>
           </form><p id="providerStatus" class="status"></p>
-          <a href="https://dash.cloudflare.com/" target="_blank" rel="noreferrer">View account-wide Workers AI usage ↗</a>
+          <div class="connection-actions"><button class="secondary" type="button" data-how-to="models">How to change the model</button><a class="button-link secondary" href="https://dash.cloudflare.com/" target="_blank" rel="noreferrer">Workers AI usage ↗</a></div>
         </section>
         <section class="panel panel-flow"><h2>AI sorting</h2>
           <p id="automationStatus"></p>
@@ -346,66 +398,30 @@ export function settingsPage(theme: Theme = "system"): Response {
         <section class="panel panel-flow"><h2>Export</h2><p>Download a portable copy of the Later Gator library.</p><div class="control-row"><a class="button-link" href="/api/export?format=json">Export JSON</a><a class="button-link secondary" href="/api/export?format=csv">Export CSV</a></div></section>
         <section class="panel panel-flow"><h2>Browser extension</h2>
           <p class="muted">Create one code containing everything the extension needs. Copy it once, then paste it into the toolbar popup.</p>
-          <div class="connection-actions"><button id="pairExtension">Generate connection code</button><button class="secondary" type="button" data-extension-guide="chrome">Set up Chrome</button><button class="secondary" type="button" data-extension-guide="firefox">Set up Firefox</button></div>
+          <div class="connection-actions"><button id="pairExtension">Generate connection code</button><button class="secondary" type="button" data-how-to="chrome">Set up Chrome</button><button class="secondary" type="button" data-how-to="firefox">Set up Firefox</button></div>
           <div id="extensionCredentialPanel" class="connection-code-panel" hidden>
             <p class="eyebrow">One-time connection code</p>
             <pre id="extensionCredential" class="secret-output" tabindex="0"></pre>
             <div class="actions split"><p id="extensionCredentialStatus" class="status" role="status"></p><button id="copyExtensionCredential" type="button">Copy code</button></div>
           </div>
         </section>
-        <section class="panel panel-flow"><h2>iOS Share Sheet Shortcut</h2><p class="muted">Generate one endpoint and token for an iPhone or iPad Shortcut.</p><div class="connection-actions"><button id="pairIos">Generate iOS connection</button><a class="button-link secondary" href="shortcuts://create-shortcut">Create in Shortcuts</a><button class="secondary" type="button" data-connection-guide="ios">Setup instructions</button></div><div id="iosCredentialPanel" class="connection-code-panel" hidden><div class="connection-secret"><p class="eyebrow">Endpoint</p><pre id="iosEndpoint" class="secret-output" tabindex="0"></pre><button id="copyIosEndpoint" type="button">Copy endpoint</button></div><div class="connection-secret"><p class="eyebrow">One-time token</p><pre id="iosToken" class="secret-output" tabindex="0"></pre><button id="copyIosToken" type="button">Copy token</button></div><p id="iosCredentialStatus" class="status" role="status"></p></div></section>
-        <section class="panel panel-flow"><h2>MCP</h2><p class="muted">Generate a read-only connection URL for ChatGPT, Claude, or another MCP client.</p><div class="connection-actions"><button id="rotateMcp">Generate or rotate MCP URL</button><button class="secondary" type="button" data-connection-guide="mcp">Set up MCP client</button></div><div id="mcpCredentialPanel" class="connection-code-panel" hidden><p class="eyebrow">One-time MCP URL</p><pre id="mcpCredential" class="secret-output" tabindex="0"></pre><div class="actions split"><p id="mcpCredentialStatus" class="status" role="status"></p><button id="copyMcpCredential" type="button">Copy MCP URL</button></div></div></section>
+        <section class="panel panel-flow"><h2>iOS Share Sheet Shortcut</h2><p class="muted">Generate one endpoint and token for an iPhone or iPad Shortcut.</p><div class="connection-actions"><button id="pairIos">Generate iOS connection</button><a class="button-link" href="${IOS_SHORTCUT_URL}" target="_blank" rel="noreferrer">Add to Shortcuts ↗</a><button class="secondary" type="button" data-how-to="ios">Setup instructions</button></div><div id="iosCredentialPanel" class="connection-code-panel" hidden><div class="connection-secret"><p class="eyebrow">Endpoint</p><pre id="iosEndpoint" class="secret-output" tabindex="0"></pre><button id="copyIosEndpoint" type="button">Copy endpoint</button></div><div class="connection-secret"><p class="eyebrow">One-time token</p><pre id="iosToken" class="secret-output" tabindex="0"></pre><button id="copyIosToken" type="button">Copy token</button></div><p id="iosCredentialStatus" class="status" role="status"></p></div></section>
+        <section class="panel panel-flow"><h2>MCP</h2><p class="muted">Generate a read-only connection URL for ChatGPT, Claude, or another MCP client.</p><div class="connection-actions"><button id="rotateMcp">Generate or rotate MCP URL</button><button class="secondary" type="button" data-how-to="mcp">Set up MCP client</button></div><div id="mcpCredentialPanel" class="connection-code-panel" hidden><p class="eyebrow">One-time MCP URL</p><pre id="mcpCredential" class="secret-output" tabindex="0"></pre><div class="actions split"><p id="mcpCredentialStatus" class="status" role="status"></p><button id="copyMcpCredential" type="button">Copy MCP URL</button></div></div></section>
         <section class="panel panel-flow span-two danger-zone"><p class="eyebrow">Testing tools</p><h2>Reset Later Gator</h2><p>Delete every bookmark, tag, thumbnail, import, connection, provider credential, and preference, then return this deployment to setup. Your Later Gator password is kept.</p><button id="resetApplicationButton" class="danger" type="button">Delete everything and restart setup</button></section>
       </div>
       <p id="settingsStatus" class="status"></p>
     </main>
-    <dialog id="extensionGuideDialog" class="extension-guide-dialog">
-      <div class="dialog-heading"><div><p class="eyebrow">Browser extension</p><h2>Set up Later Gator</h2></div><button id="closeExtensionGuide" class="icon-button" type="button" aria-label="Close">×</button></div>
-      <p class="muted">The extension is installed locally and connects only to your Later Gator deployment.</p>
-      <section id="chromeExtensionGuide" hidden>
-        <h3>Chrome</h3>
-        <ol class="setup-steps">
-          <li><strong>Download Later Gator.</strong><span>Download or clone the repository containing the extension files.</span></li>
-          <li><strong>Open extensions.</strong><span>Go to <code>chrome://extensions</code> and turn on Developer mode.</span></li>
-          <li><strong>Load the extension.</strong><span>Choose Load unpacked and select the <code>extension/chrome</code> folder.</span></li>
-          <li><strong>Connect once.</strong><span>Generate and copy the connection code above, click the Later Gator toolbar icon, paste the code, and select Connect.</span></li>
-        </ol>
-      </section>
-      <section id="firefoxExtensionGuide" hidden>
-        <h3>Firefox</h3>
-        <ol class="setup-steps">
-          <li><strong>Download Later Gator.</strong><span>Download or clone the repository containing the extension files.</span></li>
-          <li><strong>Open debugging.</strong><span>Go to <code>about:debugging#/runtime/this-firefox</code>.</span></li>
-          <li><strong>Load the extension.</strong><span>Choose Load Temporary Add-on and select <code>extension/firefox/manifest.json</code>.</span></li>
-          <li><strong>Connect once.</strong><span>Generate and copy the connection code above, click the Later Gator toolbar icon, paste the code, and select Connect.</span></li>
-        </ol>
-        <p class="muted">Firefox temporary add-ons must be loaded again after the browser restarts.</p>
-      </section>
+    ${howToDialog()}
+    <dialog id="advancedProviderDialog" class="advanced-dialog">
+      <div class="dialog-heading"><div><p class="eyebrow">AI provider</p><h2>Advanced</h2></div><button id="closeAdvancedProvider" class="icon-button" type="button" aria-label="Close">×</button></div>
+      <label>AI Gateway ID <small>Optional</small>
+        <input id="aiGatewayId" maxlength="64" placeholder="later-gator-ai-gateway" autocomplete="off" spellcheck="false">
+      </label>
+      <p class="muted">Leave empty to call Workers AI directly on the free daily allocation. Set it to route organizing and search embeddings through your gateway, which is the only way prepaid credits are spent.</p>
+      <div class="actions split"><button class="secondary" type="button" data-how-to="models">How to set this up</button><button id="saveAdvancedProvider" type="button">Save</button></div>
+      <p id="advancedProviderStatus" class="status" role="status"></p>
     </dialog>
-    <dialog id="connectionGuideDialog" class="extension-guide-dialog">
-      <div class="dialog-heading"><div><p id="connectionGuideKicker" class="eyebrow"></p><h2 id="connectionGuideTitle"></h2></div><button id="closeConnectionGuide" class="icon-button" type="button" aria-label="Close">×</button></div>
-      <section id="iosConnectionGuide" hidden>
-        <p class="muted">The Shortcut receives one shared URL and saves it directly to Unsorted.</p>
-        <a class="button-link" href="shortcuts://create-shortcut">Open a new Shortcut</a>
-        <ol class="setup-steps">
-          <li><strong>Generate the connection.</strong><span>Copy the endpoint and token separately. Keep the token private; it is shown only once.</span></li>
-          <li><strong>Create the Share Sheet Shortcut.</strong><span>Open the editor above, name it Later Gator, and configure it to receive URLs from the Share Sheet.</span></li>
-          <li><strong>Add Get Contents of URL.</strong><span>Use POST with a JSON body containing <code>requestId</code> as a new UUID and <code>url</code> as the Shortcut input.</span></li>
-          <li><strong>Add authorization.</strong><span>Set the <code>Authorization</code> header to <code>Bearer &lt;token&gt;</code> using the copied token.</span></li>
-          <li><strong>Show the result.</strong><span>Display Saved, Already saved, or Failed from the response before the Shortcut closes.</span></li>
-        </ol>
-      </section>
-      <section id="mcpConnectionGuide" hidden>
-        <p class="muted">The MCP URL grants read-only access to search and inspect your Later Gator library.</p>
-        <ol class="setup-steps">
-          <li><strong>Generate and copy the MCP URL.</strong><span>The secret is inside the URL and is shown only once.</span></li>
-          <li><strong>Open your MCP client settings.</strong><span>Add a custom or remote MCP server in ChatGPT, Claude, or another supported client.</span></li>
-          <li><strong>Paste the URL.</strong><span>Use the complete copied URL without adding separate authentication.</span></li>
-          <li><strong>Test the connection.</strong><span>Ask the client to search your Later Gator bookmarks.</span></li>
-          <li><strong>Rotate if exposed.</strong><span>Generating a new MCP URL immediately invalidates the previous one.</span></li>
-        </ol>
-      </section>
-    </dialog>`,
+    `,
     200,
     theme,
   );

@@ -1,18 +1,23 @@
 {
-  "name": "Save to Later Gator",
+  "name": "Add To Unsorted",
+  "distribution": "Installed from the maintained iCloud Shortcut linked in Settings. The endpoint and token fields ship empty and are supplied by Shortcuts' import questions during installation, so the shared link carries no secret.",
   "shareSheetInput": "URL",
   "request": {
     "method": "POST",
-    "url": "ASK_EACH_TIME_LATER_GATOR_ENDPOINT",
+    "url": "IMPORT_QUESTION_LATER_GATOR_ENDPOINT",
     "headers": {
-      "Authorization": "Bearer ASK_EACH_TIME_IOS_TOKEN",
+      "Authorization": "Bearer IMPORT_QUESTION_IOS_TOKEN",
       "Content-Type": "application/json"
     },
     "json": {
-      "requestId": "GENERATE_UUID",
       "url": "SHORTCUT_INPUT"
     }
   },
+  "notes": [
+    "requestId is optional. An active bookmark is unique per normalized URL, so a repeated share returns already_saved without a client-generated key.",
+    "The body is validated strictly: any field other than url and the optional requestId is rejected with 400 invalid_capture.",
+    "Success is read from the response body's result field, never from the request completing."
+  ],
   "successMessages": {
     "saved": "Saved to Later Gator",
     "already_saved": "Already saved in Later Gator"

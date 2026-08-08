@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { createBookmark } from "../../src/v6/adapters/library-repository";
+import { normalizeWorkersAiResult, OrganizationProviderError, runOrganizationProvider } from "../../src/v6/adapters/organization-providers";
+import { resetApplication } from "../../src/v6/application/reset";
 import { organizeBookmarkJob } from "../../src/v6/application/organize-bookmark";
 import {
   hasPrimaryPageContent,
@@ -640,15 +642,21 @@ describe("sequential v6 organization", () => {
     } as unknown as Env;
 
     expect(await organize(aiEnv, created.jobId ?? "")).toBe("completed");
-    expect(prompt).toContain("not a closed taxonomy");
-    expect(prompt).toContain("Choose 5 to 10 tags");
-    // The permission to invent tags carries a worked example, so it competes
-    // with the equally concrete rule against near-duplicates.
-    expect(prompt).toContain("tagged playlist and course");
-    expect(prompt).toContain("Do not force bookmarks into the user's setup interests");
-    expect(prompt).toContain("Do not create synonymous or abbreviated duplicates");
+    // Tags follow three ordered blocks: what it is about, what kind of thing it
+    // is, and why the owner would reach for it.
+    expect(prompt).toContain("Block A, Content");
+    expect(prompt).toContain("Block B, Type");
+    expect(prompt).toContain("Block C, Relevance");
+    expect(prompt).toContain("Do not force a bookmark into the owner's setup interests");
+    expect(prompt).toContain("rather than inventing a synonym");
+    // Folder choices carry their tie-breakers, not just a one-line gloss.
+    expect(prompt).toContain("The unit is the single post or thread, never a whole account");
+    expect(prompt).toContain("A blog summarizing a paper is an Article");
     expect(prompt).toContain("Use the title only as supporting context");
-    expect(prompt).toContain("Do not infer a topic from the owner's career");
+    expect(prompt).toContain("Do not infer a topic from the owner's personal instructions");
+    // Career and aspiration were removed; one personalization field replaces them.
+    expect(prompt).not.toContain("The owner's current work");
+    expect(prompt).not.toContain("working toward");
     expect(prompt).toContain("Return status insufficient_evidence");
     const tags = await env.DB
       .prepare(
@@ -792,5 +800,79 @@ describe("sequential v6 organization", () => {
       )
       .first<{ name: string }>();
     expect(table).toBeNull();
+  });
+});
+
+describe("Workers AI response envelopes", () => {
+  it("reads both the legacy and the chat-completions shapes", () => {
+    // Older models answer with { response }.
+    expect(normalizeWorkersAiResult({ response: { ok: "later-gator" } }))
+      .toEqual({ response: { ok: "later-gator" } });
+    // Newer ones (gpt-oss, nemotron) answer with OpenAI chat completions, and
+    // carry reasoning alongside the content that must be ignored.
+    expect(normalizeWorkersAiResult({
+      choices: [{
+        message: { content: '{"ok":"later-gator"}', reasoning: "thinking out loud" },
+        finish_reason: "stop",
+      }],
+    })).toEqual({ response: '{"ok":"later-gator"}' });
+    // Models mid-transition send both; the legacy field stays authoritative.
+    expect(normalizeWorkersAiResult({
+      response: { ok: "later-gator" },
+      choices: [{ message: { content: "ignored" } }],
+    })).toEqual({ response: { ok: "later-gator" } });
+    // Nothing usable degrades to the raw payload rather than inventing one.
+    expect(normalizeWorkersAiResult({ choices: [{ message: { content: "" } }] }))
+      .toEqual({ choices: [{ message: { content: "" } }] });
+  });
+});
+
+describe("reset and the vector index", () => {
+  it("forgets the vectors of every bookmark it deletes", async () => {
+    const deleted: string[][] = [];
+    const created = await createBookmark(
+      env.DB,
+      { url: `https://vectors.test/${crypto.randomUUID()}`, title: "Embedded", organizationPolicy: "none" },
+      "dashboard",
+    );
+    const resetEnv = {
+      DB: env.DB,
+      VECTORS: { deleteByIds: (ids: string[]) => { deleted.push(ids); return Promise.resolve(); } },
+      BACKGROUND_QUEUE: { send: () => Promise.resolve() },
+    } as unknown as Env;
+
+    await resetApplication(resetEnv, "session-hash");
+    // Orphaned vectors keep matching queries and, because retrieval is top-K,
+    // crowd the live library out of every result.
+    expect(deleted.flat()).toContain(created.bookmark.id);
+    expect(
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM bookmarks").first<{ n: number }>(),
+    ).toEqual({ n: 0 });
+  });
+});
+
+describe("Workers AI allocation errors", () => {
+  it("recognises the exhausted daily allowance from its real wording", async () => {
+    const failing = (message: string): Env => ({
+      AI: { run: () => Promise.reject(new Error(message)) },
+    } as unknown as Env);
+    const classify = async (message: string): Promise<string> => {
+      try {
+        await runOrganizationProvider(failing(message), "workers-ai", "m", "p", {});
+        return "no error";
+      } catch (error) {
+        return error instanceof OrganizationProviderError ? error.safeCode : "unknown";
+      }
+    };
+    // Verbatim from Workers AI. The old pattern matched none of it, so the one
+    // failure the pipeline is designed to pause on looked like a bad model ID.
+    expect(await classify(
+      "4006: you have used up your daily free allocation of 10,000 neurons, please "
+      + "upgrade to Cloudflare's Workers Paid plan if you would like to continue usage.",
+    )).toBe("workers_ai_allocation_exhausted");
+    // The historical wording must keep working.
+    expect(await classify("3036: daily limit exceeded")).toBe("workers_ai_allocation_exhausted");
+    // A genuine model fault is still temporary, not an allocation problem.
+    expect(await classify("no such model: @cf/does/not-exist")).toBe("workers_ai_temporary");
   });
 });

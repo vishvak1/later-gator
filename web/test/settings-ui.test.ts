@@ -104,13 +104,14 @@ describe("settings navigation lifecycle", () => {
     await import("../src/main");
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
 
-    document.querySelector<HTMLButtonElement>('[data-extension-guide="chrome"]')?.click();
-    const dialog = document.querySelector<HTMLDialogElement>("#extensionGuideDialog");
+    // Settings opens the shared how-to overlay at the panel it belongs to.
+    document.querySelector<HTMLButtonElement>('[data-how-to="chrome"]')?.click();
+    const dialog = document.querySelector<HTMLDialogElement>("#howToDialog");
     expect(dialog?.open).toBe(true);
-    expect(document.querySelector<HTMLElement>("#chromeExtensionGuide")?.hidden).toBe(false);
-    expect(document.querySelector<HTMLElement>("#firefoxExtensionGuide")?.hidden).toBe(true);
+    expect(document.querySelector<HTMLElement>("#howToTitle")?.textContent)
+      .toBe("Save from Chrome");
     expect(document.querySelector('a[href="/extension/chrome"]')).toBeNull();
-    document.querySelector<HTMLButtonElement>("#closeExtensionGuide")?.click();
+    document.querySelector<HTMLButtonElement>("#closeHowTo")?.click();
     expect(dialog?.open).toBe(false);
 
     document.querySelector<HTMLButtonElement>("#pairExtension")?.click();
@@ -162,13 +163,15 @@ describe("settings navigation lifecycle", () => {
     ));
     document.querySelector<HTMLButtonElement>("#copyIosToken")?.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(token));
-    expect(document.querySelector<HTMLAnchorElement>('a[href="shortcuts://create-shortcut"]'))
+    // The maintained iCloud Shortcut replaced the "create one yourself" link.
+    expect(document.querySelector<HTMLAnchorElement>('a[href^="https://www.icloud.com/shortcuts/"]'))
       .not.toBeNull();
-    document.querySelector<HTMLButtonElement>('[data-connection-guide="ios"]')?.click();
-    const dialog = document.querySelector<HTMLDialogElement>("#connectionGuideDialog");
+    document.querySelector<HTMLButtonElement>('[data-how-to="ios"]')?.click();
+    const dialog = document.querySelector<HTMLDialogElement>("#howToDialog");
     expect(dialog?.open).toBe(true);
-    expect(document.querySelector<HTMLElement>("#iosConnectionGuide")?.hidden).toBe(false);
-    document.querySelector<HTMLButtonElement>("#closeConnectionGuide")?.click();
+    expect(document.querySelector<HTMLElement>("#howToTitle")?.textContent)
+      .toBe("Save from your iPhone");
+    document.querySelector<HTMLButtonElement>("#closeHowTo")?.click();
 
     document.querySelector<HTMLButtonElement>("#rotateMcp")?.click();
     await vi.waitFor(() => {
@@ -176,9 +179,71 @@ describe("settings navigation lifecycle", () => {
     });
     document.querySelector<HTMLButtonElement>("#copyMcpCredential")?.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(mcpUrl));
-    document.querySelector<HTMLButtonElement>('[data-connection-guide="mcp"]')?.click();
+    document.querySelector<HTMLButtonElement>('[data-how-to="mcp"]')?.click();
     expect(dialog?.open).toBe(true);
-    expect(document.querySelector<HTMLElement>("#mcpConnectionGuide")?.hidden).toBe(false);
+    expect(document.querySelector<HTMLElement>("#howToTitle")?.textContent)
+      .toBe("Connect ChatGPT or Claude");
     window.dispatchEvent(new Event("pagehide"));
+  });
+});
+
+describe("provider form under the settings refresh poll", () => {
+  beforeEach(async () => {
+    vi.resetModules();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    const html = await settingsPage().text();
+    const body = /<body[^>]*>([\s\S]*?)<script type="module"/u.exec(html)?.[1];
+    if (body === undefined) throw new Error("Settings page body was not rendered");
+    document.body.dataset.page = "settings";
+    document.body.innerHTML = body;
+  });
+
+  it("keeps a typed model and a failed test result across refreshes", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const calls: string[] = [];
+    const fetchCalls = () => calls;
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      calls.push(requestPath(input));
+      const path = requestPath(input);
+      if (path.startsWith("/api/bootstrap")) return Promise.resolve(json({ state: settingsState() }));
+      if (path.startsWith("/api/providers/test")) {
+        return Promise.resolve(new Response(JSON.stringify({
+          ok: false,
+          error: { code: "provider_test_invalid", message: "That model did not return the structured JSON Later Gator needs." },
+        }), { status: 422, headers: { "content-type": "application/json" } }));
+      }
+      return Promise.resolve(json({ ok: true }));
+    }));
+
+    await import("../src/main");
+    const model = document.querySelector<HTMLInputElement>("#providerModel");
+    const status = document.querySelector<HTMLElement>("#providerStatus");
+    if (model === null || status === null) throw new Error("provider form missing");
+    await vi.waitFor(() => expect(model.value).toBe("test-model"));
+
+    model.value = "@cf/nvidia/nemotron-3-120b-a12b";
+    model.dispatchEvent(new Event("input", { bubbles: true }));
+    document.querySelector<HTMLFormElement>("#providerForm")?.requestSubmit();
+    await vi.waitFor(() => expect(status.className).toBe("status error"));
+    const failureText = status.textContent;
+
+    // Drive the real 5s settings poll three times over. It used to overwrite
+    // the model box mid-edit and replace the failure with a stale "ready".
+    const refreshes = fetchCalls().filter(path => path.startsWith("/api/bootstrap")).length;
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(fetchCalls().filter(path => path.startsWith("/api/bootstrap")).length)
+      .toBeGreaterThan(refreshes);
+    expect(model.value).toBe("@cf/nvidia/nemotron-3-120b-a12b");
+    expect(status.textContent).toBe(failureText);
+    expect(status.className).toBe("status error");
+
+    // The owner can still correct the value.
+    model.value = "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+    model.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(model.value).toBe("@cf/meta/llama-3.3-70b-instruct-fp8-fast");
+    window.dispatchEvent(new Event("pagehide"));
+    vi.useRealTimers();
   });
 });

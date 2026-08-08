@@ -1193,8 +1193,8 @@ The Shortcut must not show success merely because it sent a network request. A c
 
 Settings provides:
 
-- **Create in Shortcuts**, which opens Apple's new-Shortcut editor, plus exact
-  setup instructions in an in-page dialog without opening a separate tab.
+- **Add to Shortcuts**, linking to the project-maintained iCloud Shortcut, plus
+  the same setup instructions in the in-page how-to overlay.
 - A generated capture endpoint and one-time token, each with its own Copy action.
 - Connection test.
 - Connected/not-configured state.
@@ -1203,9 +1203,15 @@ Settings provides:
 
 The Shortcut does not contain the Later Gator password or MCP secret. Its credential is scoped only to idempotently add one URL to Unsorted and receive that operation's result.
 
-The app does not claim that the `shortcuts://create-shortcut` URL can prefill
-actions. A future project-maintained, Apple-validated iCloud Shortcut may
-replace guided creation and use import questions for endpoint and token setup.
+Later Gator ships one maintained iCloud Shortcut rather than guided manual
+creation. Its endpoint and token fields are distributed empty and are filled by
+Shortcuts' **import questions** during installation, so the shared link carries
+no secret and the installer edits no actions. Editing and re-sharing the
+Shortcut produces a new iCloud URL, so the link is held in a single constant.
+
+`requestId` is optional on the iOS capture endpoint. An active bookmark is
+unique per normalized URL, so a repeated share is already idempotent without a
+client-generated key; the Shortcut therefore sends only `url`.
 
 ### 12.5 Offline and unavailable behavior
 

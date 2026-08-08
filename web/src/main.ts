@@ -9,6 +9,58 @@ import type {
   ImportSession,
 } from "./types";
 import { extensionConnectionCode } from "./extension-connection";
+// One source of truth with the server-rendered toolbar icons.
+import { FOLDER_ICONS } from "../../src/v6/domain/icons";
+import { HOW_TO_PANELS } from "../../src/v6/domain/how-to";
+
+/**
+ * The how-to overlay is shared by the dashboard (walk every panel) and Settings
+ * (open one panel directly), so both call the same renderer.
+ */
+const HOW_TO_SEEN_KEY = "lg-how-to-seen";
+function initHowTo(): void {
+  const dialog = maybe<HTMLDialogElement>("#howToDialog");
+  if (dialog === null) return;
+  let index = 0;
+  const render = (): void => {
+    const panel = HOW_TO_PANELS[index];
+    if (panel === undefined) return;
+    el("#howToKicker").textContent = panel.kicker;
+    el("#howToTitle").textContent = panel.title;
+    el("#howToBody").innerHTML = panel.body;
+    el("#howToProgress").textContent =
+      (index + 1).toString() + " of " + HOW_TO_PANELS.length.toString();
+    el<HTMLButtonElement>("#howToPrev").disabled = index === 0;
+    el<HTMLButtonElement>("#howToNext").disabled = index === HOW_TO_PANELS.length - 1;
+    el("#howToBody").scrollTop = 0;
+  };
+  const open = (panelId?: string): void => {
+    const found = HOW_TO_PANELS.findIndex(panel => panel.id === panelId);
+    index = found === -1 ? 0 : found;
+    render();
+    if (!dialog.open) dialog.showModal();
+  };
+  el<HTMLButtonElement>("#howToPrev").addEventListener("click", () => {
+    if (index > 0) { index -= 1; render(); }
+  });
+  el<HTMLButtonElement>("#howToNext").addEventListener("click", () => {
+    if (index < HOW_TO_PANELS.length - 1) { index += 1; render(); }
+  });
+  el<HTMLButtonElement>("#closeHowTo").addEventListener("click", () => dialog.close());
+  maybe<HTMLButtonElement>("#howToButton")?.addEventListener("click", () => open());
+  // Settings opens a single panel from the connection card it belongs to.
+  for (const button of all("[data-how-to]")) {
+    button.addEventListener("click", () => open(button.dataset.howTo));
+  }
+  dialog.addEventListener("close", () => {
+    try { localStorage.setItem(HOW_TO_SEEN_KEY, "1"); } catch { /* private mode */ }
+  });
+  if (document.body.dataset.page === "dashboard") {
+    let seen = true;
+    try { seen = localStorage.getItem(HOW_TO_SEEN_KEY) !== null; } catch { /* private mode */ }
+    if (!seen) open();
+  }
+}
 
 /**
  * Non-null DOM lookups. A missing element is a programming error, not a
@@ -350,8 +402,43 @@ if (page === "setup") {
     el("#topicSelectionCount").textContent =
       count.toString() + " selected" +
       (count < 5 ? " · choose at least 5" : " · ready");
-    el<HTMLButtonElement>("#finishSetupButton").disabled = count < 5;
+    renderWizard();
   };
+
+  /**
+   * Three screens in one form rather than three routes, so a half-finished
+   * setup is never a URL someone can land on directly or refresh into.
+   */
+  const LAST_STEP = 3;
+  let step = 1;
+  const topicsSatisfied = () => allSelectedTopics().length >= 5;
+  function renderWizard(): void {
+    for (const screen of all("[data-step]")) {
+      screen.hidden = screen.dataset.step !== String(step);
+    }
+    for (const marker of all("[data-step-marker]")) {
+      const markerStep = Number(marker.dataset.stepMarker);
+      marker.classList.toggle("done", markerStep < step);
+      marker.classList.toggle("current", markerStep === step);
+      if (markerStep === step) marker.setAttribute("aria-current", "step");
+      else marker.removeAttribute("aria-current");
+    }
+    el<HTMLButtonElement>("#wizardBack").hidden = step === 1;
+    const next = el<HTMLButtonElement>("#wizardNext");
+    const finish = el<HTMLButtonElement>("#finishSetupButton");
+    next.hidden = step === LAST_STEP;
+    finish.hidden = step !== LAST_STEP;
+    // Topics are the only gate; personalization and import are both optional.
+    next.disabled = step === 1 && !topicsSatisfied();
+    finish.disabled = !topicsSatisfied();
+  }
+  const goToStep = (nextStep: number): void => {
+    step = Math.min(LAST_STEP, Math.max(1, nextStep));
+    renderWizard();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
+  el<HTMLButtonElement>("#wizardBack").addEventListener("click", () => goToStep(step - 1));
+  el<HTMLButtonElement>("#wizardNext").addEventListener("click", () => goToStep(step + 1));
   all(".topic-chip[data-topic]").forEach(button => button.addEventListener("click", () => {
     const topic = button.dataset.topic;
     if (topic === undefined) return;
@@ -388,8 +475,6 @@ if (page === "setup") {
         method: "POST",
         body: JSON.stringify({
           relevantTags: allSelectedTopics(),
-          careerContext: el<HTMLTextAreaElement>("#careerContext").value,
-          aspirationContext: el<HTMLTextAreaElement>("#aspirationContext").value,
           personalInstructions: el<HTMLTextAreaElement>("#personalInstructions").value || null,
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
         }),
@@ -547,6 +632,8 @@ const selectedSearchTags = new Map<string, string>();
 const selectedBookmarkTags = new Map<string, string>();
 let currentBookmark: BookmarkDetail | null = null;
 let searchTimer: ReturnType<typeof setTimeout> | null = null;
+let favoritesOnly = false;
+let notesOnly = false;
 let nextBookmarkCursor: string | null = null;
 let loadedBookmarkCount = 0;
 
@@ -566,6 +653,12 @@ function folderOptions() {
     .join("");
 }
 
+/** The mascot only waves where AI actually works: Unsorted. */
+function syncUnsortedMascot(): void {
+  const mascot = maybe("#unsortedMascot");
+  if (mascot !== null) mascot.hidden = currentFolder !== "folder_unsorted";
+}
+
 function renderFolders() {
   const nav = el("#folderNavigation");
   const visibleFolders = state().folders.filter(folder => folder.slug !== "imports");
@@ -574,22 +667,25 @@ function renderFolders() {
     0,
   );
   const items = [
-    { id: null, name: "All Bookmarks", count: allCount },
+    { id: null, slug: "all", name: "All Bookmarks", count: allCount },
     ...visibleFolders.map(folder => ({ ...folder, count: Number(folder.bookmark_count || 0) })),
-    { id: "trash", name: "Trash", count: Number(state().trashCount || 0) },
+    { id: "trash", slug: "trash", name: "Trash", count: Number(state().trashCount || 0) },
   ];
   nav.innerHTML = items.map(item =>
     '<button type="button" data-folder="' + (item.id ?? "") + '" data-folder-name="' +
     escapeHtml(item.name) + '" class="' + (currentFolder === item.id ? "active" : "") + '">' +
+    '<span class="folder-icon" aria-hidden="true">' + (FOLDER_ICONS[String(item.slug)] ?? "") + "</span>" +
     '<span class="folder-nav-label">' + escapeHtml(item.name) + '</span><span class="folder-count">' +
     Number(item.count).toString() + "</span></button>"
   ).join("");
   nav.querySelectorAll("button").forEach(button => button.addEventListener("click", () => {
     currentFolder = button.dataset.folder || null;
     el("#libraryTitle").textContent = button.dataset.folderName ?? "Library";
+    syncUnsortedMascot();
     renderFolders();
     void loadBookmarks();
   }));
+  syncUnsortedMascot();
   el<HTMLSelectElement>("#bookmarkFolder").innerHTML = folderOptions();
   const bulkFolder = maybe<HTMLSelectElement>("#bulkFolder");
   if (bulkFolder !== null) {
@@ -699,10 +795,15 @@ function searchQuery(cursor: string | null = null): URLSearchParams {
   });
   const q = el<HTMLInputElement>("#searchInput").value.trim();
   const site = el<HTMLInputElement>("#siteInput").value.trim();
-  const favorite = el<HTMLSelectElement>("#favoriteFilter").value;
+  // The toolbar heart is a shortcut for the same filter the dialog exposes, so
+  // whichever one the owner touched last is the one that applies.
+  const favorite = favoritesOnly
+    ? "true"
+    : el<HTMLSelectElement>("#favoriteFilter").value;
   if (q) params.set("q", q.replace(/#[^\s#]*/g, "").trim());
   if (site) params.set("hostname", site);
   if (favorite) params.set("favorite", favorite);
+  if (notesOnly) params.set("hasNote", "true");
   if (selectedSearchTags.size > 0) params.set("tags", [...selectedSearchTags.keys()].join(","));
   if (currentFolder === "trash") params.set("includeTrash", "true");
   else if (currentFolder) params.set("folder", currentFolder);
@@ -786,8 +887,10 @@ function cardExcerpt(bookmark: Bookmark): string {
 
 function bookmarkCards(bookmarks: Bookmark[]): string {
   return bookmarks.map(bookmark =>
-    '<article class="bookmark-card" data-id="' + escapeHtml(bookmark.id) + '" tabindex="0" role="button" aria-label="View ' +
-    escapeHtml(bookmark.title) + '">' +
+    // A card the AI is working on right now gets a travelling corner glow.
+    '<article class="bookmark-card' + (bookmark.ai_state === "processing" ? " processing" : "") +
+    '" data-id="' + escapeHtml(bookmark.id) + '" tabindex="0" role="button" aria-label="View ' +
+    escapeHtml(bookmark.title) + (bookmark.ai_state === "processing" ? ", being organized" : "") + '">' +
     '<label class="card-select"><input type="checkbox" data-select-id="' + escapeHtml(bookmark.id) +
     '" aria-label="Select ' + escapeHtml(bookmark.title) + '"></label>' + previewImage(bookmark) +
     '<div class="bookmark-content"><div class="card-kicker"><span>' + escapeHtml(bookmark.folder_name) +
@@ -949,6 +1052,8 @@ function activeFilterCount() {
     el<HTMLInputElement>("#dateTo").value,
     el<HTMLSelectElement>("#sortSelect").value !== "added_at" ? "sort" : "",
     el<HTMLSelectElement>("#directionSelect").value !== "desc" ? "direction" : "",
+    favoritesOnly ? "favorites" : "",
+    notesOnly ? "notes" : "",
   ].filter(Boolean).length;
 }
 
@@ -1098,6 +1203,7 @@ function populateEditor(detail: BookmarkDetail | null): void {
 }
 
 if (page === "dashboard") {
+  initHowTo();
   let storedView = "grid";
   try { storedView = localStorage.getItem("lg-view-mode") || "grid"; } catch {
     // Fall back to the grid when browser storage is unavailable.
@@ -1203,6 +1309,57 @@ if (page === "dashboard") {
       await refreshLibraryViews();
     }
   })();
+
+  /**
+   * Bookmarks also arrive from the extension and the iOS Shortcut, and AI moves
+   * them out of Unsorted long after the page loaded. Neither reaches this tab,
+   * so the sidebar counts and the grid silently go stale.
+   *
+   * Returning to the tab is the moment a capture has almost certainly just
+   * happened, so that drives the refresh. The timer only covers work already
+   * known to be in flight, and stops as soon as the queue drains — polling
+   * /api/bootstrap is not free, since it runs the backlog repair sweeps.
+   */
+  let refreshing = false;
+  const refreshIfIdle = async (): Promise<void> => {
+    if (refreshing || document.hidden) return;
+    refreshing = true;
+    try {
+      await refreshLibraryViews();
+    } catch {
+      // A failed refresh leaves the last good view; the next one recovers it.
+    } finally {
+      refreshing = false;
+    }
+  };
+  const aiWorkPending = (): boolean => {
+    const progress = state().automationProgress;
+    return Number(progress.pending) + Number(progress.processing) > 0;
+  };
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void refreshIfIdle();
+  });
+  window.addEventListener("focus", () => void refreshIfIdle());
+  window.setInterval(() => {
+    if (aiWorkPending()) void refreshIfIdle();
+  }, 30_000);
+
+  const bindToolbarToggle = (
+    selector: string,
+    read: () => boolean,
+    write: (next: boolean) => void,
+  ): void => {
+    const button = el<HTMLButtonElement>(selector);
+    button.addEventListener("click", () => {
+      write(!read());
+      button.classList.toggle("active", read());
+      button.setAttribute("aria-pressed", read() ? "true" : "false");
+      updateFilterCount();
+      void loadBookmarks();
+    });
+  };
+  bindToolbarToggle("#favoritesToggle", () => favoritesOnly, next => { favoritesOnly = next; });
+  bindToolbarToggle("#notesToggle", () => notesOnly, next => { notesOnly = next; });
 
   el<HTMLInputElement>("#searchInput").addEventListener("input", () => {
     updateTagSuggestions();
@@ -1434,14 +1591,40 @@ function renderAutomationProgress() {
   ).join("");
 }
 
+/**
+ * Message and colour are one thing. Setting only textContent is what left a
+ * failure's red styling attached to the next success message.
+ */
+function setStatus(selector: string, text: string, kind: "" | "error" | "loading" = ""): void {
+  const node = el(selector);
+  node.textContent = text;
+  node.className = kind === "" ? "status" : "status " + kind;
+}
+
 async function loadSettings() {
   bootstrap = (await api<{ state: BootstrapState }>("/api/bootstrap")).state;
-  el<HTMLSelectElement>("#providerName").value = state().provider.provider;
-  el<HTMLInputElement>("#providerModel").value = state().provider.model;
-  el("#providerStatus").textContent =
-    state().provider.operational_status === "waiting"
-      ? "AI needs attention: " + (state().provider.last_safe_error_code || "provider unavailable")
-      : "AI provider is ready.";
+  const providerSelect = el<HTMLSelectElement>("#providerName");
+  const providerModel = el<HTMLInputElement>("#providerModel");
+  // Settings polls every 5s. Overwriting these fields mid-edit made the model
+  // box impossible to type into, and replaced the result of a test the owner
+  // had just run with a stale "ready".
+  if (providerModel.dataset.dirty !== "true") {
+    providerSelect.value = state().provider.provider;
+    providerModel.value = state().provider.model;
+  }
+  const gateway = maybe<HTMLInputElement>("#aiGatewayId");
+  if (gateway !== null && gateway.dataset.dirty !== "true") {
+    gateway.value = state().provider.ai_gateway_id ?? "";
+  }
+  if (el("#providerStatus").dataset.transient !== "true") {
+    setStatus(
+      "#providerStatus",
+      state().provider.operational_status === "waiting"
+        ? "AI needs attention: " + (state().provider.last_safe_error_code || "provider unavailable")
+        : "AI provider is ready.",
+      state().provider.operational_status === "waiting" ? "error" : "",
+    );
+  }
   renderAutomationProgress();
   el<HTMLButtonElement>("#automationButton").textContent = state().ownerAiPaused ? "Resume AI" : "Pause AI";
   const instructions = el<HTMLTextAreaElement>("#settingsPersonalInstructions");
@@ -1457,6 +1640,7 @@ function toggleKey() {
 }
 
 if (page === "settings") {
+  initHowTo();
   let settingsPageActive = true;
   const shouldReportSettingsError = (): boolean =>
     settingsPageActive && !document.hidden && document.body.dataset.page === "settings";
@@ -1503,25 +1687,80 @@ if (page === "settings") {
     settingsPageActive = false;
     window.clearInterval(settingsRefreshInterval);
   }, { once: true });
-  el<HTMLSelectElement>("#providerName").addEventListener("change", toggleKey);
+  /** Marks the provider fields as owner-edited so the poll stops overwriting them. */
+  const markProviderDirty = (): void => {
+    el<HTMLInputElement>("#providerModel").dataset.dirty = "true";
+  };
+  const releaseProviderFields = (): void => {
+    delete el<HTMLInputElement>("#providerModel").dataset.dirty;
+    delete el("#providerStatus").dataset.transient;
+  };
+  el<HTMLInputElement>("#providerModel").addEventListener("input", markProviderDirty);
+  el<HTMLInputElement>("#providerKey").addEventListener("input", markProviderDirty);
+  el<HTMLSelectElement>("#providerName").addEventListener("change", () => {
+    // Each provider names its models differently, so a switch is an edit.
+    markProviderDirty();
+    toggleKey();
+  });
   el<HTMLTextAreaElement>("#settingsPersonalInstructions").addEventListener("input", event => {
     (event.currentTarget as HTMLTextAreaElement).dataset.dirty = "true";
   });
+  const advanced = maybe<HTMLDialogElement>("#advancedProviderDialog");
+  if (advanced !== null) {
+    el<HTMLButtonElement>("#openAdvancedProvider").addEventListener("click", () => advanced.showModal());
+    el<HTMLButtonElement>("#closeAdvancedProvider").addEventListener("click", () => advanced.close());
+    el<HTMLInputElement>("#aiGatewayId").addEventListener("input", event => {
+      (event.currentTarget as HTMLInputElement).dataset.dirty = "true";
+    });
+    el<HTMLButtonElement>("#saveAdvancedProvider").addEventListener("click", async () => {
+      // Reuses the activation route, so the gateway is validated by the same
+      // test that guards a model change rather than saved unchecked.
+      const status = "#advancedProviderStatus";
+      setStatus(status, "Saving…", "loading");
+      try {
+        await api("/api/providers/activate", {
+          method: "POST",
+          body: JSON.stringify({
+            provider: el<HTMLSelectElement>("#providerName").value,
+            model: el<HTMLInputElement>("#providerModel").value.trim(),
+            aiGatewayId: el<HTMLInputElement>("#aiGatewayId").value.trim(),
+          }),
+        });
+        delete el<HTMLInputElement>("#aiGatewayId").dataset.dirty;
+        await loadSettings();
+        setStatus(status, "Saved.");
+      } catch (error) {
+        setStatus(status, messageOf(error), "error");
+      }
+    });
+  }
+
   el<HTMLFormElement>("#providerForm").addEventListener("submit", async event => {
     event.preventDefault();
     const status = el("#providerStatus");
-    status.textContent = "Testing provider…";
+    // Hold the poll off this message until the owner acts again.
+    status.dataset.transient = "true";
+    setStatus("#providerStatus", "Testing provider…", "loading");
     try {
       const provider = el<HTMLSelectElement>("#providerName").value;
-      const model = el<HTMLInputElement>("#providerModel").value;
+      const model = el<HTMLInputElement>("#providerModel").value.trim();
       const credential = el<HTMLInputElement>("#providerKey").value || null;
       await api("/api/providers/test", { method: "POST", body: JSON.stringify({ provider, model, credential }) });
-      await api("/api/providers/activate", { method: "POST", body: JSON.stringify({ provider, model }) });
-      status.textContent = "Provider activated.";
+      await api("/api/providers/activate", {
+        method: "POST",
+        body: JSON.stringify({
+          provider,
+          model,
+          aiGatewayId: maybe<HTMLInputElement>("#aiGatewayId")?.value.trim() ?? "",
+        }),
+      });
+      // Only a successful activation makes the stored value the truth again.
+      releaseProviderFields();
       await loadSettings();
+      setStatus("#providerStatus", "Provider activated.");
     } catch (error) {
-      status.textContent = messageOf(error);
-      status.className = "status error";
+      // The typed model stays put so it can be corrected rather than retyped.
+      setStatus("#providerStatus", messageOf(error), "error");
     }
   });
   el<HTMLButtonElement>("#automationButton").addEventListener("click", async () => {
@@ -1581,17 +1820,6 @@ if (page === "settings") {
   el<HTMLButtonElement>("#copyExtensionCredential").addEventListener("click", async () => {
     await copySecret("#extensionCredential", "#extensionCredentialStatus", "Connection code copied.");
   });
-  for (const button of all<HTMLButtonElement>("[data-extension-guide]")) {
-    button.addEventListener("click", () => {
-      const browser = button.dataset.extensionGuide;
-      el("#chromeExtensionGuide").hidden = browser !== "chrome";
-      el("#firefoxExtensionGuide").hidden = browser !== "firefox";
-      el<HTMLDialogElement>("#extensionGuideDialog").showModal();
-    });
-  }
-  el<HTMLButtonElement>("#closeExtensionGuide").addEventListener("click", () => {
-    el<HTMLDialogElement>("#extensionGuideDialog").close();
-  });
   el<HTMLButtonElement>("#pairIos").addEventListener("click", async () => {
     const result = await api<{ credential: { token: string } }>("/api/capture/credentials", {
       method: "POST",
@@ -1616,20 +1844,6 @@ if (page === "settings") {
   });
   el<HTMLButtonElement>("#copyMcpCredential").addEventListener("click", async () => {
     await copySecret("#mcpCredential", "#mcpCredentialStatus", "MCP URL copied.");
-  });
-  for (const button of all<HTMLButtonElement>("[data-connection-guide]")) {
-    button.addEventListener("click", () => {
-      const guide = button.dataset.connectionGuide;
-      const isIos = guide === "ios";
-      el("#connectionGuideKicker").textContent = isIos ? "iOS Share Sheet" : "Model Context Protocol";
-      el("#connectionGuideTitle").textContent = isIos ? "Set up the iOS Shortcut" : "Connect an MCP client";
-      el("#iosConnectionGuide").hidden = !isIos;
-      el("#mcpConnectionGuide").hidden = isIos;
-      el<HTMLDialogElement>("#connectionGuideDialog").showModal();
-    });
-  }
-  el<HTMLButtonElement>("#closeConnectionGuide").addEventListener("click", () => {
-    el<HTMLDialogElement>("#connectionGuideDialog").close();
   });
   el<HTMLButtonElement>("#resetApplicationButton").addEventListener("click", async () => {
     const confirmation = prompt("This permanently deletes the complete Later Gator library and returns to setup. Type DELETE EVERYTHING to continue.");

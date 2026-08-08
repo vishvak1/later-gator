@@ -10,8 +10,6 @@ export const loginInputSchema = z.strictObject({
 
 export const completeSetupInputSchema = z.strictObject({
   relevantTags: z.array(trimmedText(64)).min(5).max(500),
-  careerContext: trimmedText(2000),
-  aspirationContext: trimmedText(2000),
   personalInstructions: optionalText(5000),
   timezone: trimmedText(100),
 });
@@ -60,6 +58,8 @@ export const bookmarkListQuerySchema = z.strictObject({
   folder: z.string().trim().max(100).optional(),
   tag: z.string().trim().max(64).optional(),
   favorite: z.enum(["true", "false"]).optional(),
+  /** Only bookmarks carrying a note the owner wrote, never an AI description. */
+  hasNote: z.enum(["true", "false"]).optional(),
   aiState: z
     .enum([
       "pending",
@@ -102,9 +102,13 @@ export const providerCandidateInputSchema = z.strictObject({
   credential: z.string().trim().min(1).max(20_000).nullable().optional(),
 });
 
+/** Cloudflare gateway names are lowercase alphanumeric with dashes. */
+const aiGatewayId = z.string().trim().max(64).regex(/^[a-z0-9-]*$/u).optional();
+
 export const providerActivationInputSchema = z.strictObject({
   provider: z.enum(["workers-ai", "openai", "anthropic"]),
   model: trimmedText(200),
+  aiGatewayId,
 });
 
 export const captureCredentialInputSchema = z.strictObject({

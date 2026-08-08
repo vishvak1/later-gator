@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { aiGatewayOptions } from "../adapters/organization-providers";
 
 const EMBEDDING_MODEL = "@cf/baai/bge-large-en-v1.5";
 // bge retrieval works asymmetrically: queries carry an instruction prefix,
@@ -29,11 +30,28 @@ function vectorsAvailable(env: Env): boolean {
   return "VECTORS" in env && "AI" in env;
 }
 
+/**
+ * Embedding is the call that runs on every save and every search, so it is the
+ * first thing to fail when the free allocation is spent — which silently turns
+ * semantic search into keyword search. Routing it through the gateway is what
+ * lets prepaid credits cover it.
+ */
+async function aiGatewayId(db: D1Database): Promise<string | null> {
+  const row = await db
+    .prepare("SELECT ai_gateway_id FROM provider_settings WHERE id = 1")
+    .first<{ ai_gateway_id: string | null }>();
+  return row?.ai_gateway_id ?? null;
+}
+
 async function embedText(env: Env, input: string): Promise<number[]> {
   const ai = env.AI as unknown as {
-    run: (model: string, options: unknown) => Promise<unknown>;
+    run: (model: string, options: unknown, extra?: unknown) => Promise<unknown>;
   };
-  const raw = await ai.run(EMBEDDING_MODEL, { text: [input.slice(0, 4000)] });
+  const raw = await ai.run(
+    EMBEDDING_MODEL,
+    { text: [input.slice(0, 4000)] },
+    aiGatewayOptions(await aiGatewayId(env.DB)),
+  );
   const parsed = embeddingResponseSchema.safeParse(raw);
   const values = parsed.success ? parsed.data.data[0] : undefined;
   if (values === undefined) throw new Error("embedding_response_invalid");

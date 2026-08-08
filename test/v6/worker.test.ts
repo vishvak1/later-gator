@@ -37,8 +37,6 @@ async function finishSetup(client: AuthenticatedClient): Promise<void> {
     headers: mutationHeaders(client),
     body: JSON.stringify({
       relevantTags: ["ai", "systems", "design", "research", "typescript"],
-      careerContext: "Software engineer",
-      aspirationContext: "Build useful AI systems",
       personalInstructions: null,
       timezone: "Asia/Kolkata",
     }),
@@ -272,8 +270,6 @@ describe("v6 Worker foundation", () => {
             "Product Management",
             "Web Development",
           ],
-          careerContext: "Engineer",
-          aspirationContext: "Researcher",
           personalInstructions: null,
           timezone: "Asia/Kolkata",
         }),
@@ -350,8 +346,6 @@ describe("v6 Worker foundation", () => {
         headers: mutationHeaders(client),
         body: JSON.stringify({
           relevantTags: Array.from({ length: 25 }, (_, index) => `Topic ${index.toString()}`),
-          careerContext: "Engineer",
-          aspirationContext: "Researcher",
           personalInstructions: "Prefer practical sources.",
           timezone: "Asia/Kolkata",
         }),

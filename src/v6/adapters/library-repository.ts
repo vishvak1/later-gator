@@ -109,24 +109,14 @@ export async function completeSetup(
     db
       .prepare(
         `INSERT INTO profile (
-          id, career_context, aspiration_context, personal_instructions, timezone,
-          created_at, updated_at
-        ) VALUES (1, ?, ?, ?, ?, ?, ?)
+          id, personal_instructions, timezone, created_at, updated_at
+        ) VALUES (1, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
-          career_context = excluded.career_context,
-          aspiration_context = excluded.aspiration_context,
           personal_instructions = excluded.personal_instructions,
           timezone = excluded.timezone,
           updated_at = excluded.updated_at`,
       )
-      .bind(
-        input.careerContext,
-        input.aspirationContext,
-        input.personalInstructions ?? null,
-        input.timezone,
-        now,
-        now,
-      ),
+      .bind(input.personalInstructions ?? null, input.timezone, now, now),
   ];
 
   for (const tag of uniqueTags.values()) {
@@ -418,6 +408,14 @@ export async function listBookmarkPage(
   if (query.favorite !== undefined) {
     predicates.push("b.favorite = ?");
     bindings.push(query.favorite === "true" ? 1 : 0);
+  }
+  if (query.hasNote !== undefined) {
+    // note is only ever written by the owner; AI writes description instead.
+    predicates.push(
+      query.hasNote === "true"
+        ? "(b.note IS NOT NULL AND TRIM(b.note) != '')"
+        : "(b.note IS NULL OR TRIM(b.note) = '')",
+    );
   }
   if (query.aiState !== undefined) {
     predicates.push("b.ai_state = ?");
@@ -969,6 +967,7 @@ export async function getBootstrapState(db: D1Database): Promise<{
     model: string;
     operational_status: string;
     last_safe_error_code: string | null;
+    ai_gateway_id: string | null;
   };
 }> {
   await canonicalizeStoredTags(db);
@@ -1001,7 +1000,7 @@ export async function getBootstrapState(db: D1Database): Promise<{
       .all<{ hostname: string }>(),
     db
       .prepare(
-        `SELECT provider, model, operational_status, last_safe_error_code
+        `SELECT provider, model, operational_status, last_safe_error_code, ai_gateway_id
            FROM provider_settings WHERE id = 1`,
       )
       .first<{
@@ -1009,6 +1008,7 @@ export async function getBootstrapState(db: D1Database): Promise<{
         model: string;
         operational_status: string;
         last_safe_error_code: string | null;
+        ai_gateway_id: string | null;
       }>(),
     db
       .prepare("SELECT personal_instructions FROM profile WHERE id = 1")

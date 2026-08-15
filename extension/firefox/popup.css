@@ -2,12 +2,12 @@
 *{box-sizing:border-box}
 [hidden]{display:none!important}
 body{width:100%;margin:0;padding:16px}
-header{display:flex;align-items:center;gap:10px;margin-bottom:16px}
+header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
 .gator{width:32px;height:32px;border-radius:8px}
 .brand{display:grid}
 .brand small{color:#9ca795}
 .icon-button{width:34px;height:34px;margin-left:auto;padding:0;font-size:16px}
-h1{font-size:18px;margin:8px 0}
+h1{font-size:18px;margin:0}
 form{display:grid;gap:12px}
 .helper{margin:0;color:#aab3a5}
 label{display:grid;gap:4px;color:#b9c2b4}
@@ -23,9 +23,36 @@ button:disabled{cursor:wait;opacity:.65}
 footer button{width:100%}
 #loadingPanel{min-height:140px;display:grid;place-content:center;text-align:center;gap:12px;color:#b9c2b4}
 #loadingPanel button{justify-self:center}
-#preview{width:100%;aspect-ratio:16/9;object-fit:cover;border-radius:8px}
-#pageDescription{color:#aab3a5;max-height:42px;overflow:hidden}
-.status{min-height:20px;margin:0;color:#d4e8bc}
+/* The page cover now rides in the header where the mark used to be: one
+   picture instead of a logo above a large duplicate of it. It keeps the
+   mark's footprint exactly, so the header does not move when a page has
+   no cover to show. */
+#preview{object-fit:cover;background:#1d241c}
+#preview.placeholder{object-fit:contain;padding:3px;background:#e2f1e7}
+#pageDescription{margin:0;color:#aab3a5;max-height:42px;overflow:hidden}
+/* Only occupies the grid when it has something to say: the Save button now
+   reports progress itself, so an empty line here was pure gap. */
+.status{margin:0;color:#d4e8bc}
+/* ---- Thread links ------------------------------------------------------
+   The checkbox is the veto; the popover is how the owner sees what they are
+   vetoing, since the addresses themselves are t.co shorteners that say
+   nothing about where they go. */
+.thread-links{position:relative;margin:0}
+.thread-links-row{display:flex;align-items:flex-start;gap:6px;margin:0;color:#91bd5e;font-size:12px;font-weight:600;cursor:pointer}
+.thread-links-row input{width:auto;flex:0 0 auto;margin:1px 0 0;accent-color:#91bd5e}
+.thread-links-row span{text-decoration:underline dotted;text-underline-offset:2px}
+.thread-links-popover{
+  position:absolute;z-index:20;top:calc(100% + 6px);left:0;right:0;
+  margin:0;padding:8px 10px;list-style:none;
+  border:1px solid #566250;border-radius:7px;background:#171c16;
+  box-shadow:0 8px 20px #0008;
+  color:#eef3e9;font-size:12px;font-weight:500;line-height:1.5;
+  opacity:0;visibility:hidden;transition:opacity .12s ease,visibility .12s ease}
+.thread-links-popover li{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thread-links-popover li + li{margin-top:4px}
+.thread-links:hover .thread-links-popover,
+.thread-links:focus-within .thread-links-popover{opacity:1;visibility:visible}
+.status:empty{display:none}
 fieldset{min-width:0;margin:0;padding:0;border:0;color:#b9c2b4}
 fieldset:disabled{opacity:.58}
 legend{margin-bottom:4px;padding:0}

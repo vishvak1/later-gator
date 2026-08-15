@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { dashboardPage } from "../../src/v6/routes/pages";
+import { dashboardPage } from "../../src/routes/pages";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {

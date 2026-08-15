@@ -1,16 +1,14 @@
 "use strict";
 
-// Blue so the saved marker reads as a state badge rather than part of the
-// green Later Gator icon behind it.
-const SAVED_BADGE_COLOR = "#1d6fe0";
-
 const browserApi = globalThis.browser ?? globalThis.chrome;
-const connectionCodePrefix = "later-gator-v1.";
+const { connectionOrigin, setSavedBadge, storedConnection } = globalThis.laterGatorExtension;
+const connectionCodePrefix = "later-gator.";
 let connection = null;
 let metadata = {};
 let availableTags = [];
 let unsortedFolderIds = new Set(["folder_unsorted"]);
 let selectedTags = new Map();
+let threadLinks = [];
 let selectedLinkedBookmark = null;
 let linkedSearchTimer = null;
 let linkedSearchGeneration = 0;
@@ -23,8 +21,10 @@ class CaptureRequestError extends Error {
   }
 }
 
+/** Returns the popup element with the requested ID. */
 const byId = id => document.getElementById(id);
 
+/** Shows view for the extension popup. */
 function showView(view) {
   byId("loadingPanel").hidden = view !== "loading";
   byId("connectionPanel").hidden = view !== "connection";
@@ -34,12 +34,14 @@ function showView(view) {
   byId("popupHeader").hidden = view === "success";
 }
 
+/** Shows loading for the extension popup. */
 function showLoading(message = "Connecting to Later Gator…", retry = false) {
   byId("loadingStatus").textContent = message;
   byId("retryButton").hidden = !retry;
   showView("loading");
 }
 
+/** Shows connection for the extension popup. */
 function showConnection(message = "", canCancel = false) {
   byId("connectionCode").value = "";
   byId("connectionStatus").textContent = message;
@@ -47,6 +49,7 @@ function showConnection(message = "", canCancel = false) {
   showView("connection");
 }
 
+/** Decodes connection code for the extension popup. */
 function decodeConnectionCode(value) {
   const code = value.trim();
   if (!code.startsWith(connectionCodePrefix)) {
@@ -65,7 +68,6 @@ function decodeConnectionCode(value) {
   if (
     payload === null ||
     typeof payload !== "object" ||
-    payload.version !== 1 ||
     typeof payload.deployment !== "string" ||
     typeof payload.token !== "string" ||
     payload.token.length < 32 ||
@@ -76,10 +78,12 @@ function decodeConnectionCode(value) {
   return { deployment: connectionOrigin(payload.deployment), token: payload.token };
 }
 
+/** Shows capture for the extension popup. */
 function showCapture() {
   showView("capture");
 }
 
+/** Shows success for the extension popup. */
 function showSuccess(result) {
   const messages = {
     saved: ["Bookmark saved!", "Your bookmark is safely in Later Gator."],
@@ -94,51 +98,18 @@ function showSuccess(result) {
   showView("success");
 }
 
+/** Updates saved badge for the extension popup. */
 async function updateSavedBadge(saved) {
   const tabId = metadata.tabId;
   if (typeof tabId !== "number" || browserApi.action === undefined) return;
   try {
-    await browserApi.action.setBadgeBackgroundColor({ color: SAVED_BADGE_COLOR, tabId });
-    // Firefox keeps a light default text colour, which is unreadable on this blue.
-    if (browserApi.action.setBadgeTextColor !== undefined) {
-      await browserApi.action.setBadgeTextColor({ color: "#ffffff", tabId });
-    }
-    await browserApi.action.setBadgeText({ text: saved ? "✓" : "", tabId });
-    await browserApi.action.setTitle({
-      title: saved ? "Saved in Later Gator" : "Save to Later Gator",
-      tabId,
-    });
+    await setSavedBadge(browserApi, tabId, saved);
   } catch {
     // Saving remains available if a browser does not support per-tab action badges.
   }
 }
 
-function connectionOrigin(value) {
-  const url = new URL(value);
-  if (url.protocol !== "https:" && !(url.protocol === "http:" && url.hostname === "localhost")) {
-    throw new Error("Enter an HTTPS Later Gator deployment URL.");
-  }
-  return url.origin;
-}
-
-function validStoredConnection(value) {
-  if (
-    value === null ||
-    typeof value !== "object" ||
-    typeof value.deployment !== "string" ||
-    typeof value.token !== "string" ||
-    value.token.length < 32 ||
-    value.token.length > 256
-  ) {
-    return null;
-  }
-  try {
-    return { deployment: connectionOrigin(value.deployment), token: value.token };
-  } catch {
-    return null;
-  }
-}
-
+/** Sends an authenticated deployment request and classifies connection failures. */
 async function requestWith(target, path, options = {}) {
   let response;
   try {
@@ -167,15 +138,18 @@ async function requestWith(target, path, options = {}) {
   return body;
 }
 
+/** Sends an authenticated request using the currently validated connection. */
 function request(path, options = {}) {
   if (connection === null) throw new CaptureRequestError("Reconnect Later Gator.", 401);
   return requestWith(connection, path, options);
 }
 
+/** Reports whether an error means the stored connection must be discarded. */
 function isInvalidConnection(error) {
   return error instanceof CaptureRequestError && [400, 401, 403, 404, 405].includes(error.status);
 }
 
+/** Extracts bounded title, description, image, and thread links from the active tab. */
 async function pageMetadata() {
   const [tab] = await browserApi.tabs.query({ active: true, currentWindow: true });
   if (!tab?.url) return {};
@@ -183,24 +157,267 @@ async function pageMetadata() {
   try {
     const results = await browserApi.scripting.executeScript({
       target: { tabId: tab.id },
-      func: () => ({
-        description:
-          document.querySelector('meta[name="description"]')?.content ||
-          document.querySelector('meta[property="og:description"]')?.content ||
-          "",
-        image:
-          document.querySelector('meta[property="og:image"]')?.content ||
-          document.querySelector('meta[name="twitter:image"]')?.content ||
-          "",
-      }),
+      func: () => {
+        /** Reads a metadata element from the active browser page. */
+        const meta = name =>
+          document.querySelector(`meta[property="${name}"]`)?.content ||
+          document.querySelector(`meta[name="${name}"]`)?.content ||
+          "";
+        /** Normalizes a hostname for same-page metadata checks. */
+        const host = value => value.replace(/^www\./iu, "").toLowerCase();
+        /*
+         * True when `declared` describes the page now at `current`. A canonical
+         * URL is allowed to be a prefix of the real one: sites publish
+         * `?v=abc` while the address bar carries `?v=abc&si=…&t=30`. So every
+         * parameter the canonical URL names must match, and extra tracking
+         * parameters on the current URL are ignored rather than treated as a
+         * different page.
+         */
+        /** Reports whether two URLs identify the same normalized page. */
+        const describesSamePage = (declared, current) => {
+          try {
+            const a = new URL(declared);
+            const b = new URL(current);
+            if (host(a.hostname) !== host(b.hostname)) return false;
+            if (a.pathname.replace(/\/$/u, "") !== b.pathname.replace(/\/$/u, "")) return false;
+            for (const [key, value] of a.searchParams) {
+              if (b.searchParams.get(key) !== value) return false;
+            }
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        /*
+         * og:* and description tags are rendered once, with the document. A site
+         * that routes client-side — x.com, Instagram, YouTube, Reddit — changes
+         * location without rewriting them, so they can still describe whichever
+         * page happened to load first. Reading them then attaches the previously
+         * opened link's thumbnail to this bookmark.
+         *
+         * og:url is the reliable signal, because it says which page the rest of
+         * the og block is about: if it names this page the tags are current, and
+         * if it names another page they are stale, whichever way we arrived.
+         * Only when a page publishes no og:url do we fall back to asking whether
+         * the document has been routed somewhere else since it loaded.
+         */
+        const declared = meta("og:url");
+        let stale;
+        if (declared !== "") {
+          stale = !describesSamePage(declared, location.href);
+        } else {
+          const navigated = performance.getEntriesByType("navigation")[0]?.name;
+          stale =
+            typeof navigated === "string" &&
+            navigated !== "" &&
+            !describesSamePage(navigated, location.href) &&
+            !describesSamePage(location.href, navigated);
+        }
+
+        /*
+         * YouTube publishes every cover at a fixed path built from the video id,
+         * so on a watch page the id in the address bar is a better source than
+         * any tag: it is right even when the whole og block belongs to the feed
+         * the video was opened from.
+         */
+        /** Derives a stable YouTube cover image URL when the page is a video. */
+        const youTubeCover = () => {
+          try {
+            const url = new URL(location.href);
+            const site = url.hostname.toLowerCase().replace(/^(?:www|m|music)\./u, "");
+            let id = null;
+            if (site === "youtu.be") id = url.pathname.slice(1).split("/")[0];
+            else if (site === "youtube.com" || site === "youtube-nocookie.com") {
+              id = url.searchParams.get("v")
+                || (/^\/(?:shorts|embed|live)\/([^/?#]+)/u.exec(url.pathname) || [])[1]
+                || null;
+            }
+            return id && /^[A-Za-z0-9_-]{6,20}$/u.test(id)
+              ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
+              : "";
+          } catch {
+            return "";
+          }
+        };
+
+        /*
+         * The rendered document, unlike the head, cannot be stale: a page that
+         * routed somewhere else replaced its content to get there. So when the
+         * tags describe the wrong page, the biggest image actually on screen is
+         * still this page's — that is what recovers a cover on Reddit and on
+         * other apps that never rewrite their og tags.
+         */
+        /** Selects the largest visible content image after excluding UI chrome. */
+        const largestVisibleImage = () => {
+          let best = null;
+          let bestArea = 0;
+          for (const image of document.images) {
+            const source = image.currentSrc || image.src || "";
+            if (!/^https?:/iu.test(source)) continue;
+            const box = image.getBoundingClientRect();
+            // Rendered size, so layout decides what is prominent rather than the
+            // intrinsic size of a sprite sheet or a tracking pixel.
+            const area = Math.min(box.width, 1600) * Math.min(box.height, 1600);
+            if (box.width < 160 || box.height < 120) continue;
+            if (image.closest("nav, header, footer, aside") !== null) continue;
+            if (area > bestArea) {
+              bestArea = area;
+              best = source;
+            }
+          }
+          return best ?? "";
+        };
+
+        const trustedImage = stale ? "" : meta("og:image") || meta("twitter:image");
+        const image = youTubeCover() || trustedImage || (stale ? largestVisibleImage() : "");
+        return {
+          // Nothing is better than the wrong picture: with no candidate left the
+          // deployment renders the page itself for the thumbnail.
+          description: stale ? "" : meta("description") || meta("og:description"),
+          image,
+          staleMetadata: stale,
+        };
+      },
     });
     page = results[0]?.result || {};
   } catch {
     // URL and tab title remain useful when a page does not allow script injection.
   }
-  return { tabId: tab.id, url: tab.url, title: tab.title || "", ...page };
+  const merged = { tabId: tab.id, url: tab.url, title: tab.title || "", ...page };
+  /*
+   * Recovers a YouTube cover from the tab URL alone, without reading the page.
+   * That matters where injection is unavailable — a page that forbids it, and
+   * browsers whose scripting API does not support passing a function — because
+   * there the whole metadata read yields nothing and every cover goes missing.
+   */
+  if (!merged.image) {
+    const derived = youTubeCoverFor(tab.url);
+    if (derived !== "") merged.image = derived;
+  }
+  return merged;
 }
 
+/**
+ * Reads the outbound links an X post points at, including the ones the author
+ * put in their own reply.
+ *
+ * Two reasons this can only be done here, in the page:
+ *
+ * A long post — the kind with "Show more" — is only ever published in truncated
+ * form: oEmbed and the syndication endpoint both stop around 280 characters and
+ * expose no `urls` entities, so a link past that point is invisible to the
+ * deployment however it asks. And replies are not published at all — the
+ * syndication endpoint returns a `conversation_count` and nothing else, the old
+ * conversation endpoints return empty, and the official API needs a paid key.
+ * The rendered page is the only place either can still be read.
+ *
+ * Deliberately read at save time rather than when the popup opens: X loads the
+ * focal post first and fills in replies afterwards, so asking immediately is
+ * asking at the one moment they are reliably absent. By the time Save is
+ * pressed the page has had the whole life of the popup to settle.
+ *
+ * Links stay in t.co form. Only the deployment can follow one, and it already
+ * discards the ones leading back into X — a post's own photo is published as a
+ * t.co link exactly like an outbound one.
+ */
+async function readPostLinks(tabId) {
+  if (typeof tabId !== "number") return [];
+  try {
+    const results = await browserApi.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const site = location.hostname.toLowerCase().replace(/^(?:www|m|mobile)\./u, "");
+        if (site !== "x.com" && site !== "twitter.com") return [];
+        const path = location.pathname.split("/");
+        if (!/\/status(?:es)?\/\d+/u.test(location.pathname)) return [];
+        /*
+         * Whose post this is, taken from the address rather than from the first
+         * rendered article. On a page scrolled down into the replies the first
+         * article is somebody else's, and trusting it would attribute a
+         * stranger's links to this bookmark.
+         */
+        const owner = (path[1] ?? "").toLowerCase();
+        if (owner === "") return [];
+        /** Extracts an author handle from a supported social-post URL. */
+        const authorOf = post => {
+          const link = post.querySelector('[data-testid="User-Name"] a[href^="/"]');
+          if (link === null) return null;
+          return (new URL(link.href).pathname.split("/")[1] ?? "").toLowerCase();
+        };
+        const found = [];
+        /*
+         * Take links from the author's own posts among the first few articles:
+         * the post itself and any self-reply continuing it.
+         *
+         * Scanning a short window rather than stopping at the first article by
+         * someone else, because replies are ranked rather than chronological —
+         * X can place a popular stranger's reply above the author's own
+         * continuation, and stopping there would miss the very link this looks
+         * for. The window is what keeps it from wandering into the author
+         * reappearing far down the thread on an unrelated tangent.
+         */
+        const articles = [...document.querySelectorAll('article[data-testid="tweet"]')].slice(0, 5);
+        const seen = new Set();
+        for (const post of articles) {
+          if (authorOf(post) !== owner) continue;
+          for (const anchor of post.querySelectorAll('a[href^="https://t.co/"]')) {
+            // X renders the same link twice, as body text and as its card.
+            if (seen.has(anchor.href)) continue;
+            seen.add(anchor.href);
+            /*
+             * The address is a t.co shortener, which tells the owner nothing
+             * about where it goes. X prints the real destination as the link's
+             * own text, so that is what gets carried alongside it and shown.
+             */
+            const label = (anchor.textContent ?? "").replace(/\s+/gu, "").trim();
+            found.push({ url: anchor.href, label: label === "" ? anchor.href : label });
+            if (found.length >= 4) return found;
+          }
+        }
+        return found;
+      },
+    });
+    const value = results?.[0]?.result;
+    /*
+     * Must be a list of well-formed entries whatever came back. A browser that
+     * answers an injection with an unexpected shape would otherwise reach the
+     * request body and throw, and this runs inside submit — so a surprise here
+     * would fail the save itself rather than merely cost a link.
+     */
+    if (!Array.isArray(value)) return [];
+    return value
+      .filter(link => link !== null && typeof link === "object" && typeof link.url === "string")
+      .map(link => ({
+        url: link.url,
+        label: typeof link.label === "string" && link.label !== "" ? link.label : link.url,
+      }));
+  } catch {
+    // A page that refuses injection simply contributes no links.
+    return [];
+  }
+}
+
+/** Kept in step with the copy injected into the page, which cannot see this one. */
+function youTubeCoverFor(pageUrl) {
+  try {
+    const url = new URL(pageUrl);
+    const site = url.hostname.toLowerCase().replace(/^(?:www|m|music)\./u, "");
+    let id = null;
+    if (site === "youtu.be") id = url.pathname.slice(1).split("/")[0];
+    else if (site === "youtube.com" || site === "youtube-nocookie.com") {
+      id = url.searchParams.get("v")
+        || (/^\/(?:shorts|embed|live)\/([^/?#]+)/u.exec(url.pathname) || [])[1]
+        || null;
+    }
+    return id && /^[A-Za-z0-9_-]{6,20}$/u.test(id)
+      ? `https://i.ytimg.com/vi/${id}/hqdefault.jpg`
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+/** Normalizes tag for the extension popup. */
 function normalizeTag(value) {
   const normalized = value
     .normalize("NFKC")
@@ -214,12 +431,14 @@ function normalizeTag(value) {
   return normalized === "ai" ? "artificial-intelligence" : normalized;
 }
 
+/** Hides suggestions for the extension popup. */
 function hideSuggestions(id, inputId) {
   byId(id).hidden = true;
   byId(id).replaceChildren();
   byId(inputId).setAttribute("aria-expanded", "false");
 }
 
+/** Creates one accessible autocomplete option button with its selection callback. */
 function suggestionButton(title, detail, onSelect) {
   const button = document.createElement("button");
   button.type = "button";
@@ -240,6 +459,7 @@ function suggestionButton(title, detail, onSelect) {
   return button;
 }
 
+/** Renders selected tags for the extension popup. */
 function renderSelectedTags() {
   const container = byId("selectedTags");
   container.replaceChildren(
@@ -263,6 +483,7 @@ function renderSelectedTags() {
   );
 }
 
+/** Adds a normalized tag chip when it is allowed and not already selected. */
 function addTag(normalized, display = normalized) {
   if (normalized === "" || selectedTags.size >= 50) return;
   selectedTags.set(normalized, display);
@@ -272,6 +493,7 @@ function addTag(normalized, display = normalized) {
   hideSuggestions("tagSuggestions", "tagInput");
 }
 
+/** Renders tag suggestions for the extension popup. */
 function renderTagSuggestions() {
   const input = byId("tagInput");
   const raw = input.value.trim();
@@ -306,6 +528,7 @@ function renderTagSuggestions() {
   byId("tagHelp").textContent = query === "" ? "Keep typing after # to create a new tag." : "Choose a suggestion or press Enter to add.";
 }
 
+/** Clears linked bookmark for the extension popup. */
 function clearLinkedBookmark(focus = false) {
   linkedSearchGeneration += 1;
   if (linkedSearchTimer !== null) {
@@ -322,6 +545,7 @@ function clearLinkedBookmark(focus = false) {
   if (focus && !byId("linkedFieldset").disabled) input.focus();
 }
 
+/** Selects linked bookmark for the extension popup. */
 function selectLinkedBookmark(bookmark) {
   selectedLinkedBookmark = bookmark;
   byId("selectedLinkedLabel").textContent = bookmark.title || bookmark.url;
@@ -331,6 +555,7 @@ function selectLinkedBookmark(bookmark) {
   hideSuggestions("linkedSuggestions", "linkedSearch");
 }
 
+/** Renders linked suggestions for the extension popup. */
 function renderLinkedSuggestions(bookmarks) {
   const suggestions = byId("linkedSuggestions");
   suggestions.replaceChildren();
@@ -348,6 +573,7 @@ function renderLinkedSuggestions(bookmarks) {
     : "Choose one existing bookmark.";
 }
 
+/** Schedules linked search for the extension popup. */
 function scheduleLinkedSearch() {
   selectedLinkedBookmark = null;
   byId("selectedLinkedBookmark").hidden = true;
@@ -383,6 +609,7 @@ function scheduleLinkedSearch() {
   }, 200);
 }
 
+/** Synchronizes folder fields for the extension popup. */
 function syncFolderFields() {
   const isUnsorted = unsortedFolderIds.has(byId("folder").value);
   byId("tagFieldset").disabled = isUnsorted;
@@ -401,6 +628,7 @@ function syncFolderFields() {
   byId("linkedHelp").textContent = "Type at least 2 characters to search your bookmarks.";
 }
 
+/** Populates options for the extension popup. */
 function fillOptions(options) {
   availableTags = Array.isArray(options.tags) ? options.tags : [];
   unsortedFolderIds = new Set(
@@ -419,17 +647,89 @@ function fillOptions(options) {
   syncFolderFields();
 }
 
+/**
+ * An <img> keeps painting its previous frame until a new src finishes decoding,
+ * so assigning a new URL and unhiding in the same tick can show the last
+ * bookmark's picture for as long as the fetch takes. Clearing the element first
+ * and only revealing it on load means it shows this page's image or nothing.
+ */
+/**
+ * Paints the page's cover into the header tile.
+ *
+ * The tile is always occupied, never hidden: it is the same slot the mark sits
+ * in, so hiding it would make the header jump. A page with no usable cover, and
+ * a cover whose host refuses to serve it to another origin — Reddit's image CDN
+ * rejects hotlinks often enough that this is common — both fall back to the
+ * mark, which is why there is no longer a second, larger copy of the picture
+ * below. The deployment still renders its own thumbnail after saving.
+ */
+function showPreview(imageUrl) {
+  const preview = byId("preview");
+  preview.onload = null;
+  preview.onerror = null;
+
+  /** Shows fallback for the extension popup. */
+  const showFallback = () => {
+    preview.onload = null;
+    preview.onerror = null;
+    preview.classList.add("placeholder");
+    preview.src = "icons/icon-48.png";
+  };
+
+  if (!imageUrl) {
+    showFallback();
+    return;
+  }
+  preview.onload = () => { preview.classList.remove("placeholder"); };
+  preview.onerror = showFallback;
+  preview.src = imageUrl;
+}
+
+/** Prepares capture for the extension popup. */
 async function prepareCapture(options, activePage = null) {
   metadata = activePage ?? await pageMetadata().catch(() => ({}));
   selectedTags = new Map();
   clearLinkedBookmark();
   byId("pageTitle").textContent = metadata.title || "Current page";
   byId("pageDescription").textContent = metadata.description || "";
-  byId("preview").hidden = !metadata.image;
-  if (metadata.image) byId("preview").src = metadata.image;
+  showPreview(metadata.image);
   fillOptions(options);
+  void showThreadLinks();
 }
 
+/**
+ * Says, before saving, which links in the thread will be saved alongside this
+ * post. Without it the feature is invisible: an X post that quietly failed to
+ * pick up its author's link looked exactly like one that had no link to pick
+ * up, and neither the owner nor a bug report could tell the two apart.
+ *
+ * Read here for display only. What actually gets sent is read again at save
+ * time, when the page has had longer to render its replies.
+ */
+async function showThreadLinks() {
+  const note = byId("threadLinks");
+  const popover = byId("threadLinksPopover");
+  note.hidden = true;
+  popover.replaceChildren();
+  const links = await readPostLinks(metadata.tabId);
+  threadLinks = links;
+  if (links.length === 0) return;
+  byId("threadLinksLabel").textContent = links.length === 1
+    ? "1 link in this thread will be saved too."
+    : `${links.length} links in this thread will be saved too.`;
+  // Built as nodes rather than markup: these strings come off a page, and the
+  // popup would otherwise be interpreting whatever a post chose to put there.
+  for (const link of links) {
+    const item = document.createElement("li");
+    item.textContent = link.label;
+    item.title = link.label;
+    popover.append(item);
+  }
+  byId("threadLinksToggle").checked = true;
+  note.hidden = false;
+}
+
+/** Loads capture state for the extension popup. */
 async function loadCaptureState(target) {
   const activePagePromise = pageMetadata().catch(() => ({}));
   const optionsPromise = requestWith(target, "/api/capture/options", {
@@ -447,6 +747,7 @@ async function loadCaptureState(target) {
   return { options, activePage, saved: status.saved === true };
 }
 
+/** Presents capture state for the extension popup. */
 async function presentCaptureState(state) {
   await prepareCapture(state.options, state.activePage);
   await updateSavedBadge(state.saved);
@@ -454,16 +755,18 @@ async function presentCaptureState(state) {
   else showCapture();
 }
 
+/** Discards connection for the extension popup. */
 async function discardConnection(message) {
   connection = null;
   await browserApi.storage.local.remove("laterGatorConnection");
   showConnection(message);
 }
 
+/** Initializes ialize for the extension popup. */
 async function initialize() {
   showLoading();
   const stored = await browserApi.storage.local.get("laterGatorConnection");
-  connection = validStoredConnection(stored.laterGatorConnection) ?? null;
+  connection = storedConnection(stored.laterGatorConnection) ?? null;
   if (connection === null) {
     await browserApi.storage.local.remove("laterGatorConnection");
     showConnection();
@@ -543,8 +846,12 @@ document.addEventListener("click", event => {
 byId("captureForm").addEventListener("submit", async event => {
   event.preventDefault();
   const button = byId("saveButton");
+  const label = button.textContent;
+  // The button says what it is doing, so the status line no longer has to hold
+  // a row of empty space open underneath just to announce it.
   button.disabled = true;
-  byId("status").textContent = "Saving…";
+  button.textContent = "Saving…";
+  byId("status").textContent = "";
   try {
     const body = await request("/api/capture/bookmarks", {
       method: "POST",
@@ -559,6 +866,17 @@ byId("captureForm").addEventListener("submit", async event => {
         tags: [...selectedTags.keys()],
         favorite: byId("favorite").checked,
         thumbnailUrl: metadata.image || null,
+        /*
+         * The checkbox is the owner's veto over links they can see listed.
+         * Read defensively: this runs inside submit, so a missing control must
+         * cost a link at worst, never the bookmark.
+         */
+        postLinks: (byId("threadLinksToggle")?.checked ?? true)
+          ? [...new Set([
+              ...threadLinks.map(link => link.url),
+              ...(await readPostLinks(metadata.tabId)).map(link => link.url),
+            ])].slice(0, 4)
+          : [],
       }),
     });
     await updateSavedBadge(true);
@@ -571,6 +889,7 @@ byId("captureForm").addEventListener("submit", async event => {
     }
   } finally {
     button.disabled = false;
+    button.textContent = label;
   }
 });
 

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { settingsPage } from "../../src/v6/routes/pages";
+import { settingsPage } from "../../src/routes/pages";
 
 function json(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -89,6 +89,9 @@ describe("settings navigation lifecycle", () => {
     const fetchMock = vi.fn((input: RequestInfo | URL): Promise<Response> => {
       const path = requestPath(input);
       if (path === "/api/bootstrap") return Promise.resolve(json({ state: settingsState() }));
+      if (path === "/api/mcp/connections") {
+        return Promise.resolve(json({ endpoint: location.origin + "/mcp", connections: [] }));
+      }
       if (path === "/api/capture/credentials") {
         return Promise.resolve(json({ credential: { token } }));
       }
@@ -117,33 +120,58 @@ describe("settings navigation lifecycle", () => {
     document.querySelector<HTMLButtonElement>("#pairExtension")?.click();
     await vi.waitFor(() => {
       expect(document.querySelector("#extensionCredential")?.textContent)
-        .toMatch(/^later-gator-v1\./u);
+        .toMatch(/^later-gator\./u);
     });
     const code = document.querySelector("#extensionCredential")?.textContent ?? "";
     expect(code).not.toContain(location.origin);
     expect(code).not.toContain(token);
-    document.querySelector<HTMLButtonElement>("#copyExtensionCredential")?.click();
+    // The confirmation happens on the button rather than in a status line
+    // elsewhere on the panel, where it was easy to miss.
+    const copyButton = document.querySelector<HTMLButtonElement>("#copyExtensionCredential");
+    copyButton?.click();
     await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(code));
-    expect(document.querySelector("#extensionCredentialStatus")?.textContent).toBe(
-      "Connection code copied.",
-    );
+    await vi.waitFor(() => {
+      expect(copyButton?.textContent).toBe("Copied");
+      expect(copyButton?.classList.contains("copied")).toBe(true);
+    });
+    // Nothing is written to the status line, which is reserved for failures.
+    expect(document.querySelector("#extensionCredentialStatus")?.textContent).toBe("");
     expect(document.querySelector("#extensionName")).toBeNull();
     window.dispatchEvent(new Event("pagehide"));
   });
 
-  it("reveals copyable iOS and MCP secrets and opens their tutorials in a dialog", async () => {
+  it("reveals iOS secrets and manages OAuth-connected AI assistants", async () => {
     const token = "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFG";
-    const mcpUrl = "https://later-gator.test/mcp/one-time-secret";
-    const fetchMock = vi.fn((input: RequestInfo | URL): Promise<Response> => {
+    const endpoint = location.origin + "/mcp";
+    let connected = true;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const path = requestPath(input);
       if (path === "/api/bootstrap") return Promise.resolve(json({ state: settingsState() }));
       if (path === "/api/capture/credentials") {
         return Promise.resolve(json({ credential: { token } }));
       }
-      if (path === "/api/mcp/rotate") return Promise.resolve(json({ url: mcpUrl }));
+      if (path === "/api/mcp/connections") {
+        return Promise.resolve(json({
+          endpoint,
+          connections: connected ? [{
+            id: "11111111-1111-4111-8111-111111111111",
+            clientType: "chatgpt",
+            displayName: "ChatGPT",
+            scope: "library:read",
+            connectedAt: new Date().toISOString(),
+            lastUsedAt: new Date().toISOString(),
+          }] : [],
+        }));
+      }
+      if (path.endsWith("/api/mcp/connections/11111111-1111-4111-8111-111111111111") &&
+          init?.method === "DELETE") {
+        connected = false;
+        return Promise.resolve(json({ ok: true }));
+      }
       throw new Error("Unexpected request: " + path);
     });
     const writeText = vi.fn().mockResolvedValue(undefined);
+    const open = vi.spyOn(window, "open").mockImplementation(() => null);
     vi.stubGlobal("fetch", fetchMock);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -173,16 +201,38 @@ describe("settings navigation lifecycle", () => {
       .toBe("Save from your iPhone");
     document.querySelector<HTMLButtonElement>("#closeHowTo")?.click();
 
-    document.querySelector<HTMLButtonElement>("#rotateMcp")?.click();
     await vi.waitFor(() => {
-      expect(document.querySelector<HTMLElement>("#mcpCredentialPanel")?.hidden).toBe(false);
+      expect(document.querySelector("#mcpConnections")?.textContent)
+        .toContain("ChatGPT — Connected ✓");
     });
-    document.querySelector<HTMLButtonElement>("#copyMcpCredential")?.click();
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(mcpUrl));
+    expect(document.querySelector("#mcpConnections")?.textContent)
+      .toContain("Read-only access · Last used just now");
+    document.querySelector<HTMLButtonElement>("#connectChatGpt")?.click();
+    await vi.waitFor(() => expect(open).toHaveBeenCalledWith(
+      "https://chatgpt.com/#settings/Connectors",
+      "_blank",
+      "noopener,noreferrer",
+    ));
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(endpoint));
+    document.querySelector<HTMLButtonElement>("#connectClaude")?.click();
+    await vi.waitFor(() => expect(open.mock.calls.some(([url]) =>
+      String(url).startsWith("https://claude.ai/customize/connectors?") &&
+      String(url).includes("connectorUrl=" + encodeURIComponent(endpoint))
+    )).toBe(true));
+    document.querySelector<HTMLButtonElement>("#mcpConnections button")?.click();
+    await vi.waitFor(() => {
+      expect(document.querySelector("#mcpConnections")?.textContent)
+        .toContain("No AI assistants connected yet.");
+    });
     document.querySelector<HTMLButtonElement>('[data-how-to="mcp"]')?.click();
     expect(dialog?.open).toBe(true);
     expect(document.querySelector<HTMLElement>("#howToTitle")?.textContent)
       .toBe("Connect ChatGPT or Claude");
+    const guide = document.querySelector<HTMLElement>("#howToBody")?.textContent ?? "";
+    expect(guide).toContain("you never copy a secret token");
+    expect(guide).toContain("Turn on Developer mode");
+    expect(guide).toContain("not claude_desktop_config.json");
+    expect(guide).toContain("Use Later Gator to get my library status");
     window.dispatchEvent(new Event("pagehide"));
   });
 });
@@ -207,6 +257,9 @@ describe("provider form under the settings refresh poll", () => {
       calls.push(requestPath(input));
       const path = requestPath(input);
       if (path.startsWith("/api/bootstrap")) return Promise.resolve(json({ state: settingsState() }));
+      if (path.startsWith("/api/mcp/connections")) {
+        return Promise.resolve(json({ endpoint: location.origin + "/mcp", connections: [] }));
+      }
       if (path.startsWith("/api/providers/test")) {
         return Promise.resolve(new Response(JSON.stringify({
           ok: false,

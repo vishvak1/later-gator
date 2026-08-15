@@ -9,3 +9,5 @@ coverage/
 *.log
 .DS_Store
 web/public/
+extension/chrome/
+extension/firefox/

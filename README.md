@@ -14,10 +14,12 @@ connects to, changes, or deletes data in your Raindrop account.
 
 1. Press **Deploy to Cloudflare**.
 2. Sign in to GitHub and Cloudflare and approve the requested resources.
-3. In the blank **Later Gator password** field, choose a non-empty password.
-   Sixteen or more characters is strongly recommended, and it should be saved
-   somewhere safe. Login does not impose a 10-character minimum so an existing
-   deployment password remains usable.
+3. In the blank **PASSWORD** field, choose a non-empty password. Sixteen or more
+   characters is strongly recommended, and it should be saved somewhere safe:
+   this is the password you will type to sign in, and there is no email-based
+   reset. Login does not impose a minimum length, so an existing deployment
+   password remains usable. The sign-in form has a **Show** button so the
+   password can be checked before it becomes the only way in.
 4. In the **Vectorize** section, enter these two values exactly:
 
    | Field | Value |
@@ -43,8 +45,7 @@ sequential background Queue. There is no scheduled Cron trigger.
 
 The guided setup asks for:
 
-- 5–20 topics most relevant to you.
-- Your career and what you aspire to become.
+- At least five topics most relevant to you; the vocabulary can grow freely.
 - Optional personal instructions for the organizing AI.
 - An optional Raindrop CSV import for either a full-library export or a
   single-folder/collection export.
@@ -57,11 +58,11 @@ For a Raindrop import, Later Gator offers two choices:
   Later Gator vocabulary, place the bookmarks in Unsorted, and ask AI to choose
   permanent folders without removing imported tags.
 
-The import is previewed before it is committed. Duplicate URLs inside the CSV
-are skipped after the first valid row. If a URL already exists in Later Gator,
-the current bookmark is kept unchanged. AI is paused while a set-based D1
-operation adds accepted rows to Unsorted, then background organization resumes
-according to the owner's pause setting. Imported CSV files are not retained.
+Duplicate URLs inside the CSV are skipped after the first valid row. If a URL
+already exists in Later Gator, the current bookmark is kept unchanged. A direct,
+chunked D1 operation adds accepted rows to Unsorted, then background
+organization resumes according to the owner's pause setting. Imported CSV files
+are not retained.
 Thumbnail discovery remains independent background work. The dashboard
 preserves thumbnail aspect ratios in a masonry layout.
 
@@ -93,16 +94,26 @@ preserves thumbnail aspect ratios in a masonry layout.
 
 ## Capture and connections
 
-Settings can create separately scoped credentials for:
+Run `npm run build:extensions` to generate the browser install folders. Settings
+can then create separately scoped credentials for:
 
 - The included Chrome extension in `extension/chrome`.
 - The included Firefox extension in `extension/firefox`.
 - An iOS Share Sheet Shortcut that accepts only a URL and reports Saved or
   Failed.
-- A read-only MCP URL for supported AI clients.
+- Read-only OAuth connections for ChatGPT, Claude, and compatible MCP clients.
 
-Generated credentials are shown once. They can be revoked or rotated without
-changing the Later Gator password.
+Capture credentials are shown once and can be revoked without changing the
+Later Gator password. AI assistants use OAuth instead of a copied secret.
+
+In Settings, select **Connect ChatGPT** or **Connect Claude**. Claude opens with
+the connector name and stable `/mcp` address prefilled; ChatGPT opens its
+connector settings and Later Gator copies the address for the remaining paste.
+The provider then redirects to Later Gator, where the owner signs in and approves
+read-only access. Settings lists each grant independently, including last-used
+activity and a Disconnect action. A successful install is confirmed by a Later
+Gator tool call—not by asking the model whether a connector is installed. Enable
+Later Gator's tools in each chat before using them.
 
 ## AI providers and usage
 
@@ -119,14 +130,14 @@ account dashboard, which is the source for account-wide Workers AI usage.
 Use Node.js 22.18+ (or 24.11+) and install dependencies with `npm install`.
 
 ```sh
-npm run db:migrate:local
+npm run db:init:local
 npm run dev
 npm run check
 npm run build
 ```
 
 `npm run build` is a dry-run production bundle and does not deploy. Production
-deployment and migrations are deliberate release actions.
+schema initialization and deployment are deliberate release actions.
 
 ## Documentation
 
@@ -135,9 +146,9 @@ deployment and migrations are deliberate release actions.
 - [Developer Guide](docs/developer-guide.md)
 - [Security status](SECURITY.md)
 
-These three versionless files are the only active product, architecture, and
-developer specifications. Superseded versions remain available through Git
-history rather than as competing documents in `docs/`.
+These three files are the only active product, architecture, and developer
+specifications for 1.0.0. Earlier history remains in Git rather than as
+competing documents in `docs/`.
 
 ## Uninstall
 

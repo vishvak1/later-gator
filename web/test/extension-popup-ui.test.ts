@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import popupHtml from "../../extension/chrome/popup.html?raw";
+import popupHtml from "../../extension/shared/popup.html?raw";
 import { extensionConnectionCode } from "../src/extension-connection";
 
 const deployment = "https://later-gator.example.workers.dev";
@@ -61,11 +61,13 @@ function browserMock(storedConnection: { deployment: string; token: string } | n
 }
 
 async function renderPopup(): Promise<void> {
-  const body = /<body>([\s\S]*?)<script src="popup\.js"><\/script>/u.exec(popupHtml)?.[1];
+  const body = /<body>([\s\S]*?)<\/body>/u.exec(popupHtml)?.[1];
   if (body === undefined) throw new Error("Extension popup body was not rendered");
-  document.body.innerHTML = body;
+  document.body.innerHTML = body.replaceAll(/\s*<script[^>]*><\/script>/gu, "");
   // @ts-expect-error The shipped WebExtension script is intentionally plain JavaScript.
-  await import("../../extension/chrome/popup.js");
+  await import("../../extension/shared/common.js");
+  // @ts-expect-error The shipped WebExtension script is intentionally plain JavaScript.
+  await import("../../extension/shared/popup.js");
 }
 
 function visiblePanels(): string[] {
@@ -271,6 +273,15 @@ describe("extension popup connection lifecycle", () => {
       tags: ["new-topic"],
       linkedUrl: "https://target.example/read",
     });
+    /*
+     * The thread-link read runs inside submit, and this mock answers every
+     * injection with the page-metadata object rather than a list of links.
+     * Saving has to survive that: spreading whatever came back straight into
+     * the request body once threw here and lost the bookmark entirely.
+     */
+    const sent = captureBody as unknown as { postLinks?: unknown };
+    expect(Array.isArray(sent.postLinks)).toBe(true);
+    expect(sent.postLinks).toEqual([]);
     await vi.waitFor(() => expect(visiblePanels()).toEqual(["successPanel"]));
     expect(document.querySelector("#successTitle")?.textContent).toBe("Saved and linked!");
     expect(document.querySelector<HTMLAnchorElement>("#openLaterGator")?.href)

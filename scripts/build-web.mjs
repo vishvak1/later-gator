@@ -1,6 +1,6 @@
 // Bundles the browser frontend into content-hashed files under web/assets and
 // writes a manifest the Worker imports. The hash is the cache key, so there is
-// no manual asset version to forget to bump.
+// no manual cache key to forget to refresh.
 import esbuild from "esbuild";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -10,11 +10,11 @@ import { join } from "node:path";
 const PUBLIC_DIR = "web/public";
 const OUT_DIR = `${PUBLIC_DIR}/assets`;
 const IMG_SRC = "web/img";
-const MANIFEST = "src/v6/generated/asset-manifest.ts";
+const MANIFEST = "src/generated/asset-manifest.ts";
 
 rmSync(PUBLIC_DIR, { recursive: true, force: true });
 mkdirSync(OUT_DIR, { recursive: true });
-mkdirSync("src/v6/generated", { recursive: true });
+mkdirSync("src/generated", { recursive: true });
 
 // web/public is rebuilt from scratch every run, so illustrations and setup
 // screenshots live in a tracked source directory and are copied in. They are
@@ -41,6 +41,10 @@ try {
     entryPoints: ["web/src/main.ts", compiledCss],
     outdir: OUT_DIR,
     bundle: true,
+    // CSS url() paths that begin with / are served by the Worker at runtime from
+    // web/public, not inputs to this bundle. Without this esbuild tries to
+    // resolve them from disk relative to the compiled stylesheet and fails.
+    external: ["/img/*", "/assets/*", "/api/*"],
     minify: true,
     sourcemap: false,
     format: "esm",

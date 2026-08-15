@@ -1,1270 +1,351 @@
 # Later Gator — Developer Guide
 
-**Applies to:** the current Later Gator product and implementation architecture
+**Product version:** 1.0.0
+**Status:** current implementation guide
 
-**Companion documents:** [Product Requirements](product-requirements.md) and
-[Technical Design](technical-design.md)
+## 1. Start here
 
-**Last consolidated:** 2026-07-31
+Later Gator is a strict TypeScript Cloudflare Worker. D1 owns the bookmark
+library and application state; Workers KV contains only thumbnail bytes; Queues
+carry small validated job messages; Vectorize contains derived embeddings.
 
-**Current repository status:** `src/index.ts` now selects the v6 implementation
-under `src/v6`. The older source tree is retained temporarily as migration
-history but is excluded from the active TypeScript, lint, test, and deployment
-entry points.
+Read these files before changing behavior:
 
----
+1. `docs/product-requirements.md` — user-visible contract.
+2. `docs/technical-design.md` — architecture and invariants.
+3. `docs/developer-guide.md` — implementation workflow.
 
-## 1. The mental model
+Those are the only authoritative documents in `docs/`.
 
-Later Gator is the bookmark manager.
+## 2. Install and validate
 
-```mermaid
-flowchart LR
-    UI["Dashboard"] --> W["Later Gator Worker"]
-    EXT["Browser extension"] --> W
-    IOS["iOS Shortcut"] --> W
-    MCP["MCP client"] --> W
-    W <--> D1["D1: authoritative library"]
-    W <--> KV["Workers KV: private thumbnails"]
-    W --> AQ["AI/background Queue: job IDs"]
-    AQ --> W
-    W --> TQ["Thumbnail Queue: job IDs"]
-    TQ --> W
-    W --> AI["Selected AI provider"]
-```
-
-The most important rules are:
-
-1. D1 is the system of record.
-2. Workers KV contains only thumbnail binaries.
-3. Queue messages contain only a job ID or an ID-free dispatcher signal.
-4. AI never writes without rechecking the bookmark revision.
-5. Raindrop is only a CSV import source.
-6. View and edit remain usable when AI is unavailable.
-
-If you remember those six rules, most of the design follows naturally.
-
----
-
-## 2. What changed from the retired Raindrop architecture
-
-The previous implementation was built around Raindrop:
-
-- Cron searches Raindrop Unsorted.
-- Queue messages refer to Raindrop bookmarks.
-- KV contains onboarding, leases, folder IDs, and a tag registry.
-- Raindrop remains authoritative.
-
-The current implementation replaces that architecture:
-
-| Retired concept              | Current replacement                              |
-| ---------------------------- | ------------------------------------------------ |
-| Raindrop bookmark            | D1 `bookmarks` row                               |
-| Raindrop folder IDs          | Seeded immutable D1 `folders` rows               |
-| Raindrop tag registry        | D1 `tags` and `bookmark_tags`                    |
-| Registry resynchronization   | Not needed                                       |
-| 15-minute discovery Cron     | Immediate job creation when a bookmark is stored |
-| Dispatch lease               | Not needed                                       |
-| Lease revision               | Bookmark revision and job state                  |
-| Raindrop rate-limit deferral | Provider-specific waiting state only             |
-| KV operational documents     | Relational D1 state                              |
-| Raindrop search through MCP  | D1/FTS search                                    |
-| Raindrop onboarding reset    | Personal setup plus optional CSV import          |
-
-The active implementation entry point is verified. Remove remaining legacy source files only as a
-separate housekeeping change after confirming no release tooling references
-them.
-
----
-
-## 3. Authoritative state
-
-### D1
-
-D1 owns:
-
-- Bookmarks.
-- Tags and bookmark-tag associations.
-- Fixed folders.
-- Related-bookmark relationships.
-- Favorite and Trash state.
-- Setup and personalization.
-- AI jobs and provider/model configuration.
-- Import progress.
-- Sessions.
-- Encrypted provider settings.
-- Capture and MCP credential hashes.
-- Thumbnail metadata.
-
-### Workers KV
-
-Workers KV owns:
-
-- One optimized thumbnail value per bookmark when available.
-
-It does not own:
-
-- Bookmark text.
-- Provider credentials.
-- Import files.
-- Public image URLs.
-
-### Queue
-
-The Queue owns no durable application truth. It carries:
-
-```json
-{
-  "version": 1,
-  "jobId": "..."
-}
-```
-
-If a message is duplicated, delayed, or retried, the consumer asks D1 whether the job is still eligible.
-
-### AI provider
-
-The provider supplies a proposal and may include usage metadata in its response.
-Neither is authoritative: application code validates the proposal and does not
-persist provider token or neuron usage.
-
----
-
-## 4. Request entry points
-
-There are four authorization lanes.
-
-### Dashboard lane
-
-- Secure HTTP-only session cookie.
-- Same-origin validation.
-- CSRF token on mutations.
-- Full single-user administration privileges.
-
-### Browser-extension lane
-
-- Scoped bearer token.
-- Can fetch fixed folders and tag suggestions.
-- Can search a bounded projection of active bookmarks.
-- Can create the active-tab bookmark and relate it to the selected existing bookmark.
-- Can inspect only the result of its own request.
-
-### iOS Shortcut lane
-
-- Separate minimal bearer token.
-- Can create one URL in Unsorted.
-- Cannot send tags, notes, folders, favorite, or Linked to.
-
-### MCP lane
-
-- Separate opaque path credential.
-- Read-only tools.
-- Cannot mutate the library or control AI.
-
-Never let credentials cross lanes. In particular:
-
-- The extension and Shortcut do not receive the Later Gator password.
-- MCP does not receive a dashboard session.
-- A dashboard cookie does not authorize capture routes.
-- A capture bearer cannot call MCP.
-
----
-
-## 5. Deployment and first login
-
-The user presses **Deploy to Cloudflare** and enters one blank secret labelled
-**Later Gator password**. It must be non-empty. The interface recommends a
-strong password but does not reject an existing deployment password merely
-because it is shorter than 10 characters.
-
-The form also asks for the Vectorize index **Dimensions** (`1024`) and **Metric**
-(`cosine`). The Wrangler config schema sets `additionalProperties: false` on the
-`vectorize` block, so a template cannot pre-fill them
-(`cloudflare/workers-sdk#14075`). The values are therefore carried in the
-`cloudflare.bindings.VECTORS` description in `package.json`, which the deploy
-form renders beside those fields, and repeated in the README install steps. If
-the embedding model in `src/v6/application/embeddings.ts` ever changes, update
-the dimensions in all three places together.
-
-Cloudflare provisions:
-
-- Worker and static assets.
-- D1.
-- Workers KV.
-- Queue.
-- Workers AI.
-- Vectorize.
-
-The user opens the root URL.
-
-```mermaid
-flowchart TD
-    ROOT["GET /"] --> AUTH{"Authenticated?"}
-    AUTH -->|No| LOGIN["Login page"]
-    AUTH -->|Yes| SETUP{"Setup complete?"}
-    SETUP -->|No| S["/setup"]
-    SETUP -->|Yes| D["/dashboard"]
-```
-
-The user never needs to append `/setup`.
-
-### Password initialization
-
-The deployment password is a bootstrap input. On first valid login, the application:
-
-1. Generates a random data-encryption key.
-2. Derives a wrapping key with PBKDF2-SHA256 at the hosted Workers maximum of 100,000 iterations.
-3. Encrypts the data-encryption key.
-4. Stores the wrapped key and KDF parameters in D1.
-
-Provider keys are encrypted with the data-encryption key.
-
-Changing the password rewraps the same data-encryption key and revokes sessions. It does not have to decrypt and rewrite every provider credential.
-
-Both dashboard-key wrapping and background provider-credential encryption use
-the same hosted-compatible iteration constant. If a stored KDF configuration is
-unsupported, login fails closed with a controlled 503 response; it must never
-fall through to Cloudflare Error 1101.
-
-There is no application-side forgotten-password recovery that can decrypt provider keys. The user must protect the Later Gator password and keep a library export.
-
----
-
-## 6. Setup
-
-Setup is product personalization, not Raindrop onboarding.
-
-Required:
-
-- At least five relevant tags.
-- Career context.
-- Aspiration context.
-
-Optional:
-
-- Personal AI instructions.
-- Raindrop CSV import.
-
-MCP is configured later from Settings and is not part of setup.
-
-Completing setup seeds:
-
-- Fixed folders.
-- Starting tags.
-- Profile context.
-- Initial provider configuration.
-
-It does not:
-
-- Connect to Raindrop.
-- Delete or modify Raindrop data.
-- Start an import unless the user submits a CSV file.
-
----
-
-## 7. Bookmark creation
-
-Every capture surface eventually calls the same application use case with a different authorization policy.
-
-### Normal flow
-
-```mermaid
-sequenceDiagram
-    participant C as Client
-    participant W as Worker
-    participant D as D1
-    participant Q as Queue
-
-    C->>W: Create bookmark
-    W->>W: Validate and normalize URL
-    W->>D: Insert bookmark and pending job
-    D-->>W: Committed
-    W->>Q: Send job ID
-    Q-->>W: Accepted
-    W-->>C: Saved
-```
-
-The client receives **Saved** only after D1 commits.
-
-### Queue-send failure
-
-D1 and Queue cannot participate in one atomic transaction.
-
-If the bookmark commits but Queue send fails:
-
-- Bookmark is still saved.
-- Job remains `pending_dispatch`.
-- Response says automation is pending.
-- The UI offers a retry.
-
-Never roll back a safely stored bookmark merely because background organization could not start.
-
-### Duplicate URL
-
-Normalized URL is the default identity.
-
-A duplicate:
-
-- Returns the existing bookmark.
-- Is a successful **Already saved** result for capture surfaces.
-- Does not create a second AI job.
-
----
-
-## 8. Source URL and Linked to
-
-These fields represent two bookmarks.
-
-Example:
-
-- Source URL: an X post.
-- Linked to: the article referenced by the post.
-
-Later Gator:
-
-1. Saves or reuses the X bookmark.
-2. Saves or reuses the article bookmark.
-3. Creates one bidirectional related-bookmark relationship.
-
-It does not replace the X URL with the article URL.
-
-Relationships are stored once using canonical bookmark-ID order. The UI renders them in both directions.
-
-Deleting one bookmark does not delete the related bookmark.
-
----
-
-## 9. Why there is still a Queue
-
-The Queue is not used to discover work.
-
-It is used so that:
-
-- The browser can close.
-- Imports can continue.
-- A temporary provider problem can retry.
-- AI runs one bookmark at a time.
-
-Consumer configuration is one message and one concurrent invocation.
-
-There are no dispatch leases because D1 already knows:
-
-- Which job exists.
-- Which bookmark it belongs to.
-- Whether it is pending, running, paused, complete, or cancelled.
-- Which bookmark revision it was created for.
-
-The Queue can deliver the same job more than once. Only one delivery can transition an eligible D1 job to `running`.
-
----
-
-## 10. Bookmark revision safety
-
-Every bookmark has a monotonically increasing `revision`.
-
-An AI job records `expected_revision`.
-
-Before saving AI output:
-
-```text
-current bookmark revision == expected revision
-AND job is still running
-AND owner pause is inactive
-AND organization generation still matches
-```
-
-If the revision or generation changed, the AI result is stale and is discarded.
-The same job is refreshed against the current bookmark rather than cancelled
-while leaving the bookmark pending.
-
-This is the central protection for simultaneous user and AI activity.
-
-### Example race
-
-1. AI begins processing revision 4.
-2. User changes the note and folder, producing revision 5.
-3. AI returns a proposal for revision 4.
-4. Conditional apply fails.
-5. Revision 5 remains untouched.
-6. A new job is created only if revision 5 still needs organization.
-
-No time-based lease is involved.
-
----
-
-## 11. Bookmark details and editing
-
-Clicking a card opens a non-mutating details modal with its description, note,
-tags, dates, folder, relationships, thumbnail, and an explicit external-link
-action. The user can open the editor for that bookmark from the modal.
-
-There is no library-wide edit mode. Editing one bookmark does not pause other AI
-jobs. Every PATCH carries `expectedRevision`; a concurrent AI commit produces a
-revision conflict, while a user edit that commits first causes the stale AI
-proposal to be rejected and the job to refresh against the current revision.
-
-An expired browser session clears stale cookies and redirects to login. It
-cannot leave automation globally paused because bookmark editing owns no global
-automation state.
-
----
-
-## 12. AI organization pipeline
-
-For each eligible bookmark:
-
-1. Load current bookmark and revision.
-2. Resolve safe metadata and a thumbnail candidate.
-3. Objectively require at least one primary content field beyond a title, URL,
-   hostname, author, engagement count, thumbnail, or link-only placeholder.
-4. If primary content is absent, skip AI and record an insufficient-evidence
-   attempt. Otherwise let AI decide whether the retrieved content is meaningful
-   enough or is generic/ambiguous.
-5. Build the provider-neutral organization input.
-6. Call the selected provider.
-7. Validate either an `organized` or `insufficient_evidence` result. An
-   insufficient result cannot contain a generated description or tags.
-8. Retry retrieval once after the first insufficient result from either the
-   Worker gate or AI. A second completed insufficient result moves the bookmark
-   to Need for Review.
-9. Ignore provider usage metadata for product accounting; do not persist token
-   or neuron usage.
-10. Normalize tags for an organized result.
-11. Apply deterministic folder rules.
-12. Recheck revision and application state.
-13. Commit the valid result.
-
-The proposal contains:
-
-- Status.
-- Description.
-- Tags.
-- Folder.
-- Confidence.
-- Review reason.
-
-### Deterministic code remains in charge
-
-The model may suggest a folder, but deterministic rules handle obvious cases:
-
-- GitHub-like code hosts → Code.
-- YouTube-like sites → Videos & Talks.
-- arXiv/direct papers → Papers.
-- Documentation sites → Docs & Reference.
-- X and Twitter → Social Posts through a deterministic hostname override.
-- Reddit and LinkedIn → Social Posts.
-
-The model may suggest tags, but code:
-
-- Normalizes them.
-- Removes duplicates.
-- Rejects operational/folder terms.
-- Blocks retired tags.
-
----
-
-## 13. Structured output and invalid responses
-
-All providers should use their supported structured-output feature when the selected model supports it.
-
-That is not the final validation boundary.
-
-The adapter returns `unknown`. The shared Zod schema validates it again because:
-
-- A provider may refuse.
-- Output may hit the maximum token limit.
-- A model may not support the requested schema.
-- API behavior may change.
-- Semantic constraints can still fail even when JSON shape is valid.
-
-Failure sequence:
-
-1. One corrective request may run in the same processing attempt.
-2. If still invalid, increment quality attempts.
-3. Retry later within a bounded limit.
-4. Move to Need for Review after the quality limit.
-
-Queue retries do not increment quality attempts.
-
-Insufficient evidence uses one bounded lifecycle across both layers. Objective
-absence of primary content records `content_unavailable`; a valid AI abstention
-records `ai_insufficient_evidence`. The first code retries retrieval later. If
-the next completed attempt produces either code, the bookmark moves to Need for
-Review without applying a description or tags. A timeout or failed Queue
-delivery is not a completed content attempt.
-
----
-
-## 14. Temporary provider failures
-
-Temporary means the same request may work later without changing configuration.
-
-Examples:
-
-- Timeout.
-- HTTP 429.
-- HTTP 5xx.
-- Workers AI daily free allocation exhausted.
-
-The bookmark:
-
-- Remains stored.
-- Keeps its existing content.
-- Stays pending or waiting.
-- Does not accumulate an AI-quality failure.
-
-If the provider supplies a short retry time, the Queue message retries with delay.
-
-If the condition requires owner action—invalid key, billing disabled, inaccessible model—it is not temporary. The application pauses new AI work and directs the user to Settings.
-
----
-
-## 15. Usage presentation
-
-Later Gator does not store token or neuron usage for Workers AI, OpenAI, or Anthropic.
-
-The dashboard presents account-wide Workers AI usage through Cloudflare's authoritative dashboard. If Cloudflare does not expose an authoritative account-wide neuron total to the Worker, the application says so and provides the dashboard link. It never substitutes a local counter, per-request metadata, or a character-based estimate.
-
-Never show a calculated account balance or invoice as authoritative.
-
----
-
-## 16. Tags
-
-Tags live in D1, so there is no registry resynchronization.
-
-The setup topics seed useful starting interests only. The organizer prompt treats
-the active registry as open: it reuses an accurate tag or inserts a new
-`created_by = 'ai'` tag for a missing subject. The Library sidebar shows the
-eight most-used topics; **View all** opens the full filter/delete vocabulary in
-a modal. Settings does not own tag vocabulary management.
-
-There is no 20-topic or global vocabulary ceiling. Normalization applies
-canonical aliases for known equivalents, and the organizer prompt requires reuse
-of canonical registry wording rather than synonym or abbreviation duplicates.
-
-Setup's custom topic field tokenizes comma-separated values live. All tag entry
-paths—setup, AI, CSV, dashboard edits, capture, and MCP-adjacent repository
-calls—canonicalize values to lowercase single words or lowercase hyphenated
-words. Bootstrap performs an idempotent set-based merge of legacy equivalent
-tags before returning the registry.
-
-The bookmark editor and browser extension use the same `#` autocomplete
-contract: existing results render as `#tag`, a missing normalized value renders
-as `Create #tag`, and neither menu adds “Existing tag” or “New tag” helper
-labels. Selected values render as removable chips.
-
-### Add/remove on one bookmark
-
-Update `bookmark_tags` and usage count in the same transaction.
-
-### Delete globally
-
-Global deletion:
-
-1. Shows affected bookmark count.
-2. Removes all associations.
-3. Marks the tag retired.
-4. Leaves bookmarks in place.
-5. Increments affected bookmark revisions.
-
-The retired row is intentionally retained. It tells future AI output not to recreate the tag.
-
-Explicit restore makes the tag active again but does not automatically reattach it.
-
----
-
-## 17. Folders
-
-Folders are seeded database rows.
-
-Permanent destinations:
-
-- Social Posts
-- Articles
-- Videos & Talks
-- Code
-- Docs & Reference
-- Papers
-- Websites & Apps
-- Need for Review
-
-System views:
-
-- Unsorted
-- Imports as a hidden compatibility row; new CSV imports go to Unsorted
-- Trash
-- All Bookmarks
-
-API routes reject rename/delete even if a malicious client bypasses disabled UI controls.
-
-Trash is represented by `deleted_at`. It is not a folder that AI can select.
-
----
-
-## 18. Thumbnails
-
-Thumbnail priority:
-
-1. User or extension preview candidate.
-2. Server-resolved page image metadata.
-3. Declared page icon or conventional favicon.
-4. Built-in placeholder.
-
-The bookmark save never depends on thumbnail success.
-
-### Safe image fetch
-
-Remote images are untrusted:
-
-- HTTP/HTTPS only.
-- No private, loopback, link-local, reserved, or metadata-service destination.
-- Recheck redirects.
-- Enforce timeout, redirect count, byte limit, media type, and magic bytes.
-- Do not forward cookies or authorization.
-- Use the shared browser-compatible public-page headers for HTML and image
-  discovery; do not add site-specific YouTube or social-network branches.
-- Reject SVG in the initial release.
-
-### Storage
-
-- Normalize to an uncropped WebP bounded by 960 × 1,600 pixels and 500 KiB.
-- Write the private bytes under an immutable Workers KV key.
-- Store object key and metadata in D1.
-- Serve through an authenticated, versioned Worker route using one-year
-  `private, immutable` browser caching.
-
-Workers KV is never made public.
-
-If Workers KV is unavailable or full, save the bookmark without a thumbnail.
-
----
-
-## 19. Raindrop CSV import
-
-Raindrop is not connected at runtime.
-
-The supplied representative CSV fields are:
-
-```text
-id,title,note,excerpt,url,folder,tags,created,cover,highlights,favorite
-```
-
-Single-folder or collection exports omit `folder`; both layouts are accepted.
-
-Mapping:
-
-| CSV field | Treatment                                      |
-| --------- | ---------------------------------------------- |
-| `url`     | Required; normalized for duplicate identity    |
-| `title`   | Optional; falls back to the URL hostname       |
-| `tags` | Normalized and retained only in preserve mode |
-| `excerpt` | Retained as description only in preserve mode |
-| all other fields | Ignored and not stored                  |
-
-### Direct import
-
-Submitting the file starts the import immediately. There is no preview,
-separate commit, or resume action. Setup and Settings both require one explicit
-mode: reorganize everything, or preserve imported tags and descriptions while
-AI assigns only the permanent folder.
-
-The Worker:
-
-- Parses quoted commas, multiline cells, Unicode, and both common Raindrop
-  export layouts.
-- Performs only the minimum safe checks needed to read valid HTTP(S) URLs.
-- Keeps the first occurrence of a normalized URL inside the file.
-- Inserts rows into Unsorted in chunks using D1's active-URL uniqueness as the
-  final duplicate guard.
-- In preserve mode, normalizes `tags` and retains `excerpt` as description; in
-  reorganize mode, both are discarded.
-- Updates processed, added, duplicate, and invalid counts after every chunk so
-  the dashboard can show real progress.
-- Creates one recoverable AI job and one independent thumbnail job for each
-  newly inserted Unsorted bookmark.
-- Commits both job records before signaling their separate Queue consumers.
-- Does not pause AI or the library, import notes, favorites, folders, or
-  Raindrop covers, or perform remote fetches inside the import request.
-
-Only bookmarks currently in Unsorted may be processed by AI. X/Twitter routing
-is applied when such a job successfully commits, never during import or
-bootstrap. Moving a pending bookmark to a permanent folder cancels its AI job.
-
-If an import is interrupted, upload the same CSV again. Existing normalized
-URLs are skipped, so this safely fills only bookmarks that were not inserted by
-the earlier attempt.
-
----
-
-## 20. Browser extension
-
-Chrome and Firefox share one WebExtension codebase.
-
-Popup fields:
-
-- Thumbnail/title/description preview.
-- Note.
-- Folder.
-- Tags, enabled for permanent folders with `#` existing-or-create completion.
-- Linked to, enabled for permanent folders as an existing-bookmark search.
-- Favorite.
-- Save.
-
-The source URL is always the active tab URL and is not an editable field.
-Unsorted disables and clears Tags and Linked to. The Worker enforces the same
-rule even if a client bypasses the popup. Linked to search calls
-`POST /api/capture/bookmark-search` after at least two characters and receives
-only active bookmark ID, title, URL, hostname, and folder name.
-
-Use minimal permissions:
-
-- `activeTab`
-- extension storage
-- temporary scripting only to read the current page's metadata
-- access to the configured Later Gator host
-
-Do not request browsing-history permission.
-
-On popup startup, keep both primary forms hidden while the stored capture
-credential is checked against `GET /api/capture/options`. Show only the capture
-form after a successful check. Missing, malformed, rejected, or permission-less
-credentials show only the connection form. Preserve a credential through
-temporary network and deployment failures and offer Retry. Test a newly entered
-credential before saving it to extension-local storage.
-
-Settings combines `location.origin` and the newly issued extension token into a
-single `later-gator-v1.` connection code. Keep the code out of links, query
-parameters, logs, and browser navigation. Present it once with an explicit Copy
-action. The extension decodes one pasted value, validates its version and
-fields, requests host permission, and tests the credential before storing the
-decoded connection. Encoding does not make the code non-secret.
-
-Chrome and Firefox self-install instructions open in the Settings-page dialog,
-not a new tab. Keep browser-specific steps in that dialog synchronized with the
-actual `extension/chrome` and `extension/firefox` folders.
-
-The normal capture form has no full-size Connection action. A compact settings
-control may open the connection form deliberately, with Cancel available while
-the existing credential remains valid. Capture credentials have no automatic
-expiry; revocation and application reset are the server-side invalidation paths,
-while lost extension storage or host permission requires local reconnection.
-
-### Save feedback
-
-Render the server's committed result:
-
-- Saved.
-- Already saved.
-- Saved and linked.
-- Source saved; automation pending.
-- Source saved; link failed.
-- Failed.
-
-Do not infer success from a completed `fetch` alone. Parse and validate the application response.
-After a confirmed result, hide the capture form and header and render the full
-success panel with the exact outcome, dashboard link, and Done action. Options
-validation and active-tab metadata retrieval run concurrently; Linked to search
-does not run until the user types at least two characters.
-
-The popup also POSTs the active URL to `/api/capture/bookmark-status`. A live
-normalized-URL match renders **Already saved** immediately and sets a per-tab
-tick badge; a new page clears the badge. A status-only failure degrades to the
-capture form and never invalidates an otherwise working connection.
-The background script repeats this check for the active tab on navigation and
-activation. The required `tabs` permission is used only to read that current URL;
-do not persist it or scan inactive browsing history.
-
----
-
-## 21. iOS Share Sheet Shortcut
-
-The Shortcut sends:
-
-- Request ID.
-- One shared HTTP/HTTPS URL.
-
-It cannot send:
-
-- Note.
-- Tags.
-- Folder.
-- Favorite.
-- Linked to.
-
-The server always stores a new valid URL in Unsorted and creates an organization job.
-
-The Shortcut shows:
-
-- **Saved to Later Gator**
-- **Already saved in Later Gator**
-- **Failed to save to Later Gator**
-
-There is no offline queue in v6. A timeout is failure, not “probably saved.”
-
-Settings reveals the Shortcut endpoint and token once with separate Copy
-actions. **Create in Shortcuts** opens `shortcuts://create-shortcut`; Apple's URL
-scheme opens an empty editor and cannot prefill actions. The setup tutorial
-therefore lists the required actions in a Settings-page dialog. Do not advertise
-this as one-tap installation until the project has an Apple-validated iCloud
-Shortcut link with endpoint and token import questions.
-
----
-
-## 22. MCP
-
-MCP is a stateless read-only view over D1.
-
-Use current `createMcpHandler` with Streamable HTTP.
-
-Do not use the deprecated stateful `McpAgent` path; Later Gator does not need MCP session memory.
-
-Tools:
-
-- `get_context`
-- `search_bookmarks`
-- `get_bookmark`
-- `get_library_status`
-
-MCP cannot mutate or resume anything.
-
-Search excludes Trash and respects output limits.
-
-Rotating the MCP URL invalidates the old credential without affecting capture tokens or dashboard sessions.
-The rotated URL is shown once with a Copy action. Its setup tutorial opens in a
-Settings dialog. D1 retains only the secret hash, so an old URL cannot be
-recovered for reuse.
-
----
-
-## 23. Search and filtering
-
-Search combines:
-
-- D1 FTS5 for text.
-- Indexed SQL filters for folder, tag, site, dates, favorite, AI state, and thumbnail state.
-- Keyset pagination.
-
-Date added descending is the default. The dashboard loads 48 results at a time,
-shows `loaded of total`, and follows the validated next cursor. Bootstrap
-returns grouped non-trashed counts beside every fixed folder and a separate
-Trash count.
-
-In selection mode, **Select all** snapshots the current folder, search, sort,
-and filter query, then follows every validated cursor page to select all
-matching bookmark IDs. It is not limited to the 48 cards currently rendered.
-
-Text search is hybrid. A query matches when FTS5 matches, when every term
-matches an active tag name, or when the query embedding is semantically close to
-the bookmark embedding held in Vectorize. Embeddings come from
-`@cf/baai/bge-large-en-v1.5` (1024 dimensions, cosine); queries carry the bge
-retrieval prefix and documents do not. Matches are gated at
-`max(0.3, 0.85 × top score)`. `bookmarks.embedded_revision` marks stale rows and
-an `embed_pending` Queue message drains the backlog. Every semantic failure
-degrades to lexical results; search never fails because embeddings are missing.
-
-The dashboard translates `#` input into a dynamic tag picker and sends selected
-tags as structured filters. A bare `#` returns every active tag; typed text
-narrows the complete registry rather than a fixed top-eight slice. Sort order,
-site, dates, and favorite state live in one modal rather than a row of
-always-visible controls.
-
-Settings polls bootstrap while visible and renders actual D1 state counts:
-organized, waiting, processing, provider wait, owner pause, review, and failed.
-Bootstrap also repairs legacy `paused_edit`, stale queued/running work older than
-the recovery window, and pending bookmarks that have no active job. Independent
-dispatcher notifications resume AI/background and thumbnail work from their D1
-pending records.
-
-Never concatenate a user-supplied sort column or FTS expression.
-
-Map allowlisted sort names to known SQL fragments in code.
-
-Supported sorts:
-
-- Date added.
-- Date modified.
-- Date created.
-- Site.
-- Title.
-
----
-
-## 24. Failure states developers should recognize
-
-| State              | Meaning                                         | Developer action                      |
-| ------------------ | ----------------------------------------------- | ------------------------------------- |
-| `pending_dispatch` | Bookmark stored; Queue send did not succeed     | Redispatch idempotently               |
-| `queued`           | Queue accepted job                              | Wait for consumer                     |
-| `running`          | Consumer owns current attempt                   | Inspect safe event trail              |
-| `waiting_provider` | Provider temporarily unavailable                | Wait, switch, or explicit retry       |
-| `paused_edit`      | Legacy state from a pre-removal deployment      | Bootstrap recovery converts it        |
-| `paused_owner`     | User explicitly paused AI                       | Do nothing until resume               |
-| `review`           | AI quality attempts exhausted or low confidence | User reviews bookmark                 |
-| `cancelled`        | Terminal historical job                         | Pending bookmarks get a replacement   |
-| `completed`        | Organization committed                          | No action                             |
-| `failed`           | Non-recoverable internal job failure            | Diagnose systemic invariant           |
-
-There is no generic “deferral time” product concept. Waiting is attached to a job/provider and has a concrete reason.
-
----
-
-## 25. Logging and privacy
-
-Allowed in logs:
-
-- Request/event name.
-- Opaque bookmark/job/import ID.
-- Provider/model.
-- Safe status/error code.
-- Duration and attempt.
-
-Forbidden:
-
-- Full URL.
-- Title.
-- Description.
-- Note.
-- Tag names.
-- CSV contents.
-- Prompt or model output.
-- Thumbnail source URL.
-- Any credential or token.
-
-When debugging locally, resist logging the whole request or provider response. Add a redacted event with the one field needed to understand the branch.
-
----
-
-## 26. Local development
-
-Repository commands:
+Use a supported Node release from `package.json`, then:
 
 ```bash
-npm run types
-npm run typecheck
-npm run lint
-npm test
+npm install
+npm run db:init:local
 npm run check
 npm run build
 ```
 
-Expected workflow:
+Useful commands:
+
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Build assets and start local Wrangler development |
+| `npm run build:extensions` | Generate Chrome and Firefox install folders |
+| `npm run build:web` | Generate extensions and content-hashed dashboard assets |
+| `npm run types` | Regenerate `worker-configuration.d.ts` |
+| `npm run typecheck` | Strict Worker TypeScript check |
+| `npm run typecheck:web` | Strict dashboard TypeScript check |
+| `npm run check:function-docs` | Require JSDoc on named production functions |
+| `npm run lint` | Typed ESLint, including floating Promise checks |
+| `npm test` | Worker-runtime tests |
+| `npm run test:web` | Browser DOM tests |
+| `npm run check` | All local gates |
+| `npm run build` | Wrangler production dry run |
+| `npm run db:init:remote` | Initialize an empty/current remote D1 database |
+| `npm run deploy` | Initialize schema, then deploy |
+
+Do not deploy while investigating or testing unless the owner explicitly asks.
+Workers AI and remote Vectorize bindings may incur usage even from local tests;
+use the existing mocks and fixtures whenever the behavior does not require a
+live provider.
+
+## 3. Module rules
+
+- `src/domain`: pure normalization, schemas, fixed data, and presentation
+  constants. No network or database calls.
+- `src/application`: use-case orchestration across repositories and providers.
+- `src/adapters`: D1 queries, provider calls, remote fetches, rendering, and live
+  event integration.
+- `src/routes`: HTTP transport, status codes, and server-rendered page output.
+- `src/security`: cryptography, sessions, and scoped credentials.
+- `src/worker.ts`: routing only; extract substantial behavior into the proper
+  boundary.
+- `web/src`: dashboard behavior. Reuse domain constants when safe for browser
+  bundling.
+- `extension/shared`: one browser-extension source. Never edit generated browser
+  packages as a source of truth.
+
+Keep request state local. Never place a request, session, URL, bookmark, or
+credential in module-level mutable state. Use generated `Env` types. Do not
+hand-write binding interfaces or use `any` to bypass binding checks.
+
+## 4. Function documentation
+
+Every named production function—including named nested helpers and Worker
+methods—has a JSDoc comment that states its responsibility. Anonymous one-use
+callbacks do not require comments when their enclosing call is self-explanatory.
+
+The documentation gate scans:
+
+- `src`;
+- `web/src`;
+- `extension/shared`; and
+- `scripts`.
+
+When adding a function, describe the observable job it performs, not merely its
+name or implementation syntax. Keep comments synchronized when responsibility
+changes. Use inline comments for non-obvious invariants, races, privacy rules,
+and provider quirks; avoid narrating routine statements.
+
+## 5. D1 workflow
+
+`schema.sql` is the single current schema. There is no numbered application
+migration directory. Initialize local D1 with `npm run db:init:local`.
+
+For a schema change:
+
+1. Update `schema.sql` directly.
+2. Update every affected query and row type.
+3. Update tests that initialize or assert the schema.
+4. Add behavior and failure-path coverage.
+5. Run `npm run check` and `npm run build`.
+6. Update all three documents if the data or behavior contract changed.
+
+Use parameterized D1 statements. Prefer a D1 batch when several statements must
+be applied as one logical write. Rely on constraints for uniqueness and valid
+states, then convert expected constraint failures into safe product outcomes.
+
+`schema.sql` is repeatable for a fresh or already-current database. Do not add
+request-time schema alteration, old-state repair, or hidden data transformation.
+If a future destructive schema change is genuinely required, stop and obtain an
+explicit backup and release decision.
+
+## 6. Bookmark write lifecycle
+
+### Create
+
+1. Validate the request with a Zod schema.
+2. Normalize and safety-check the URL.
+3. Check active normalized-URL uniqueness.
+4. Insert the bookmark in Unsorted unless an explicit manual folder disables AI.
+5. Normalize tags once and maintain usage counts.
+6. Create organization and thumbnail jobs as applicable.
+7. Attempt Queue dispatch; leave `pending_dispatch` on failure.
+8. Notify open dashboard tabs after the visible write.
+
+### Edit
+
+Clients send `expectedRevision`. The D1 update matches both bookmark ID and
+revision, increments the revision, and updates the job expectation where the job
+remains eligible. If the row count is zero, return a conflict and reload rather
+than overwriting another write.
 
-1. Read the consolidated Product Requirements and Technical Design.
-2. Create or update a numbered D1 migration.
-3. Implement domain rule and Zod schema.
-4. Implement adapter/repository behavior.
-5. Implement application use case.
-6. Add route/UI translation.
-7. Add regression and fault-injection tests.
-8. Run the complete check gate.
+Moving a bookmark out of Unsorted cancels active organization work. Moving it
+into Unsorted creates or refreshes eligible work. Editing one bookmark does not
+pause automation for any other bookmark.
 
-Use generated `Env` types. Never hand-write a partial binding interface.
+### Delete and restore
 
-### Local resources
+Soft deletion sets `deleted_at`, cancels active work, and attempts vector cleanup.
+Restore clears deletion state and recreates eligible work. Permanent deletion
+requires the explicit destructive UI flow. D1 cascades relationships and
+bookmark tags; thumbnail KV deletion remains best effort and recoverable.
 
-Use local Wrangler persistence for:
+## 7. Queue development
 
-- D1.
-- Workers KV.
-- Queue.
+Queue messages are strict and contain only a type plus an opaque
+job ID when required. Never include bookmark URLs, titles, page content,
+credentials, or provider responses.
 
-Provider calls should default to fakes or recorded redacted fixtures. Live provider tests require explicit opt-in.
+Assume at-least-once delivery:
 
-Never point local development at production D1 or Workers KV by default.
+- claim work from D1 with state conditions;
+- treat completed/cancelled/missing work as an acknowledgement;
+- compare `expected_revision` before applying output;
+- leave recoverable work represented in D1;
+- retry transport and temporary provider failures;
+- never cancel stale work without refreshing or replacing it.
 
----
+The background Queue is sequential. Do not increase its concurrency without a
+provider-pressure and ordering review. Thumbnail work is deliberately separate
+so image latency cannot block organization.
 
-## 27. D1 development rules
+Every Promise must be awaited, returned, passed to an execution context, or
+handled with an intentional catch. A bare Queue send or fetch is a bug.
 
-- Use prepared statements.
-- Keep SQL in the D1 adapter/repository boundary.
-- Return typed rows and validate them.
-- Use `batch()` for multi-statement atomic changes.
-- Add indexes with the query that needs them.
-- Inspect D1 `meta.rows_read` and `meta.rows_written` in performance tests.
-- Never edit an applied migration.
-- Test foreign-key behavior.
+## 8. Organization provider development
 
-Any bookmark mutation that changes user-visible state must increment `revision`.
+Provider adapters return one common organization shape or throw
+`OrganizationProviderError` with a safe category, safe code, and optional retry
+time. They must:
 
-Any tag-association change must update usage count in the same transaction.
+- bound request and response sizes;
+- avoid logging bodies or secrets;
+- distinguish authentication/configuration errors from temporary allocation,
+  throttling, timeout, and transport failures;
+- preserve provider-specific required headers;
+- validate every response with Zod; and
+- route Workers AI through the configured Gateway ID only when present.
 
----
+Structured output does not replace application validation. Refusals, truncation,
+model changes, and malformed envelopes remain possible.
 
-## 28. Queue development rules
+Prompt changes must preserve:
 
-- Message contains job ID only.
-- Batch size one.
-- Concurrency one.
-- Load authoritative state from D1.
-- Transition state conditionally.
-- Acknowledge terminal or missing jobs.
-- Distinguish transport retry from AI-quality retry.
-- Never rely on one-time delivery.
-- Never place bookmark content or secrets in the message.
+- Unsorted-only eligibility;
+- deterministic Social Posts routing for X/Twitter status URLs;
+- preserve-mode descriptions and imported tags;
+- current active/retired vocabulary guidance;
+- avoidance of synonym and abbreviation duplicates; and
+- personal instructions as preferences, never permission to violate security or
+  output schema.
 
-If you add a new background job type, prove why it belongs in the same sequential lane. Do not casually add parallel consumers that can race on bookmark or vocabulary state.
+## 9. Safe page retrieval
 
----
+All remote URL work goes through the safe-remote adapter. Never concatenate a
+URL string or call unrestricted `fetch` from a new feature.
 
-## 29. Provider adapter rules
+Required controls:
 
-Every adapter must:
-
-- Validate configuration.
-- Use a bounded timeout.
-- Request structured output when supported.
-- Return proposal as `unknown`.
-- Tolerate provider usage metadata without persisting or presenting it as
-  Later Gator usage.
-- Convert provider errors to the shared safe taxonomy.
-- Never log request/response bodies.
-- Expose a synthetic connection test.
-
-Connection test uses synthetic content, not a real bookmark.
-
-Provider activation happens only after the candidate passes.
-
----
-
-## 30. Thumbnail development rules
-
-- Treat remote URLs and bytes as hostile.
-- Do not store the remote URL as the serving URL.
-- Do not make Workers KV public.
-- Put object before referencing it in D1.
-- Clean up orphaned objects.
-- Keep thumbnail failure independent of bookmark success.
-- Keep thumbnail messages on `THUMBNAIL_QUEUE`; never route them through the
-  sequential AI/background consumer.
-- Treat the thumbnail UUID in `/api/thumbnails/:bookmarkId/:thumbnailId` as the
-  immutable browser-cache version.
-- Measure normalized size.
-
-Browser Rendering is not bound in the current deployment. Thumbnail candidates
-come from capture input, bounded page metadata, declared icons, conventional
-favicons, and the built-in placeholder. Thumbnail jobs retry and recover
-independently from AI organization jobs.
-
----
-
-## 31. Extension development
-
-The extension is a separate client of the capture API.
-
-Test:
-
-- Chrome and Firefox manifests.
-- Internal active-tab URL capture with no editable Source URL field.
-- Metadata permission failure.
-- Missing/expired/revoked token.
-- Duplicate clicks.
-- Popup closing after commit.
-- Unsorted organization controls disabled and server-side values discarded.
-- Permanent-folder `#` tag selection and creation.
-- Existing-bookmark search and Linked to selection.
-- Partial automation result.
-
-Do not import dashboard code that assumes cookie authentication into the extension client.
-
----
-
-## 32. Shortcut development
-
-Keep the Shortcut endpoint deliberately small.
-
-The request schema must reject extra bookmark fields. This is not only a UI convention; it prevents an exposed Shortcut token from becoming a general mutation credential.
-
-Test response wording and status on:
-
-- New URL.
-- Duplicate URL.
-- Invalid URL.
-- Revoked token.
-- Worker unavailable.
-- Timeout.
-
----
-
-## 33. MCP development
-
-Create a fresh server per request.
-
-Each tool:
-
-- Has a strict input schema.
-- Uses application query services rather than direct ad hoc SQL.
-- Has result and pagination limits.
-- Returns stable safe fields.
-- Excludes Trash.
-- Emits redacted timing/outcome events.
-
-MCP tool descriptions must state their return shape and errors clearly enough for clients to call them reliably.
-
----
-
-## 34. Testing expectations
-
-Every behavior change receives a regression test.
-
-High-risk changes also require fault injection:
-
-- Bookmark commit versus Queue send.
-- AI response versus user edit.
-- Workers KV put versus D1 thumbnail reference.
-- Import chunk interruption.
-- Password rewrap.
-- Provider activation.
-
-The essential invariants are:
-
-1. Stored bookmarks are not silently lost.
-2. User edits win over stale AI work.
-3. Duplicate delivery is harmless.
-4. Thumbnail failure does not fail bookmark creation.
-5. Secrets never cross authorization lanes.
-6. Provider output never bypasses validation.
-7. Retired tags are not recreated silently.
-
----
-
-## 35. Free-tier thinking
-
-The free tier is an operating envelope, not business logic.
-
-Do not create a local fake limit that blocks work before Cloudflare does.
-
-Measure:
-
-- D1 rows read and written.
-- D1 storage.
-- Workers KV bytes and operations.
-- Queue operations.
-- Workers requests.
-- AI job counts, durations, success states, and provider-wait states without
-  storing token or neuron usage.
-- Account-wide Workers AI usage only through Cloudflare's authoritative
-  dashboard entry point.
-
-Graceful degradation:
-
-- No Workers KV capacity → save without thumbnail.
-- No AI capacity → keep library usable and job waiting.
-- Queue send failure → save bookmark and expose pending dispatch.
-- D1 mutation limit → protect existing data and explain read-only behavior.
-
----
-
-## 36. Common debugging paths
-
-### Bookmark says automation pending
-
-Check:
-
-1. `background_jobs.state`.
-2. Whether Queue send was recorded.
-3. Owner pause.
-4. Provider configuration.
-
-Do not create a second bookmark.
-
-### AI result disappeared
-
-Check the revision and organization generation. A discarded stale result is
-expected when the bookmark changed. The job should immediately become
-retryable; a pending bookmark without an active job is repaired on bootstrap.
-
-### Tag returned after deletion
-
-This is a bug. Confirm:
-
-- Tag row remains `retired`.
-- Prompt includes retired prohibition.
-- Normalization resolves the proposed spelling to the retired normalized name.
-- Apply path rejects it.
-
-### Thumbnail missing
-
-Check safe outcome codes:
-
-- no candidate
-- unsafe destination
-- timeout
-- too large
-- unsupported type
-- transformation failed
-- Workers KV limit/unavailable
-
-Do not inspect or log the full source URL in production.
-
-### Queue message repeated
-
-Expected under at-least-once delivery. The D1 conditional state transition should make it harmless.
-
-### Workers AI usage is unavailable
-
-If Cloudflare does not expose authoritative account-wide usage to the Worker,
-show the Cloudflare dashboard link and **unavailable**. Do not add a heuristic,
-local counter, or per-request reconstruction.
-
-### MCP cannot find a bookmark
-
-Check:
-
-- Bookmark is not in Trash.
-- FTS/index synchronization.
-- Filters and cursor.
-- MCP result limit.
-- MCP credential validity.
-
-MCP never queries Raindrop.
-
----
-
-## 37. Migration discipline
-
-During the Raindrop-to-D1 architecture replacement:
-
-- Keep the current code understandable until its replacement exists.
-- Do not mix Raindrop and D1 as co-authoritative sources.
-- Do not add a “temporary sync” layer.
-- Do not migrate KV operational records as bookmarks.
-- Do not update README installation claims ahead of deployed behavior.
-- Do not test against a production Raindrop library.
-
-The supported migration path for user content is the CSV importer.
-
----
-
-## 38. Definition of done for a current feature
-
-A feature is complete when:
-
-- Product behavior matches the consolidated Product Requirements.
-- Technical behavior matches the consolidated Technical Design.
-- External inputs have Zod validation.
-- D1 migration and indexes exist.
-- Authorization and CSRF/scope rules are enforced.
-- Redacted observability exists.
-- Regression tests pass.
-- Relevant fault injection passes.
-- Free-tier operations are measured where material.
-- User-facing success is based on committed state.
-- Documentation describes what is actually implemented.
-
----
-
-## 39. Source documents
-
-- [Product Requirements](product-requirements.md)
-- [Technical Design](technical-design.md)
-- [Cloudflare D1 documentation](https://developers.cloudflare.com/d1/)
-- [Cloudflare Workers KV documentation](https://developers.cloudflare.com/kv/)
-- [Cloudflare Queues documentation](https://developers.cloudflare.com/queues/)
-- [Cloudflare Workers AI pricing](https://developers.cloudflare.com/workers-ai/platform/pricing/)
-- [Cloudflare stateless MCP handler](https://developers.cloudflare.com/agents/model-context-protocol/apis/handler-api/)
-- [OpenAI Responses API](https://platform.openai.com/docs/api-reference/responses)
-- [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create)
-
-Revalidate provider APIs, model support, Wrangler configuration, and Cloudflare limits before implementation and release.
+- only HTTP and HTTPS;
+- no URL credentials;
+- block loopback, private, link-local, and unsafe IPv6 ranges;
+- validate every redirect;
+- omit cookies and authorization;
+- bound redirects, bytes, and response time;
+- cancel streams after the limit; and
+- parse only the content needed for the feature.
+
+Browser Rendering is a last fallback, not a default fetch path. Respect the
+per-job attempt field and daily blocked-until latch.
+
+## 10. Thumbnail development
+
+Candidate discovery and byte ingestion are separate responsibilities. Preserve
+the ordered candidate strategy and placeholder rejection. Before KV storage:
+
+1. fetch through safe-remote;
+2. enforce byte and content constraints;
+3. validate a supported raster signature;
+4. transform to bounded WebP through Images; and
+5. store metadata in D1 only after KV succeeds.
+
+The authenticated delivery route must match the bookmark's current thumbnail
+ID. It must never become a public KV proxy.
+
+## 11. Import development
+
+CSV parsing is bounded to 10 MiB and 5,000 rows. Keep parsing deterministic for
+quoted fields and embedded line breaks. Validate headers before writing.
+
+Imports write valid bookmarks directly in chunks and update one import session;
+do not add a second staging table or migration workflow. Preserve and reorganize
+are distinct contracts:
+
+- preserve keeps normalized tags and the imported excerpt as description;
+- reorganize discards them for AI generation;
+- both begin in Unsorted; and
+- AI chooses only the folder for preserve-mode bookmarks.
+
+Duplicate and invalid rows are counted, not silently discarded. The dashboard
+polls status until the direct commit promise completes.
+
+## 12. Search development
+
+FTS is the reliable baseline. Add filter clauses through parameterized SQL and
+keep cursor encoding/decoding deterministic with the selected sort and direction.
+
+Semantic search is derived and optional. Join Vectorize IDs back to D1 and apply
+the same deletion, folder, tag, date, favorite, and pagination conditions.
+Never treat a vector as authoritative bookmark data. Incrementing a bookmark
+revision must make `embedded_revision != revision` so backlog processing can
+refresh it.
+
+## 13. Dashboard development
+
+Server-rendered pages live in `src/routes/pages.ts`; interactive behavior lives
+in `web/src/main.ts`; styles live in `web/src/app.css`. Shared folder icons,
+how-to panels, and provider-status text come from domain modules so server and
+browser do not drift.
+
+For every UI change verify:
+
+- setup topic controls remain clickable and selected state is visible;
+- text does not overlap at supported widths;
+- padding and gaps remain consistent;
+- light and dark themes have sufficient contrast;
+- dialogs trap the intended action and restore sensible focus;
+- status text uses `role=status` or an alert only when appropriate;
+- selection checkboxes and destructive confirmation remain present; and
+- keyboard and pointer behavior agree.
+
+Live notifications are hints. Refresh on notification, visibility, and focus,
+and compare the library fingerprint before repainting. Do not introduce a
+constant polling loop.
+
+## 14. Extension development
+
+Edit only:
+
+- `extension/shared/background.js`;
+- `extension/shared/popup.js`;
+- `extension/shared/popup.html`;
+- `extension/shared/popup.css`;
+- `extension/shared/icons`; or
+- a browser manifest in `extension/manifests`.
+
+Run `npm run build:extensions` afterward. The generated `extension/chrome` and
+`extension/firefox` directories are ignored and may be safely regenerated.
+
+Keep WebExtension code compatible with both browser APIs through the existing
+`browser ?? chrome` adapter. New permissions require a privacy and UX review.
+Pairing codes contain the origin and token but must never appear in links, query
+strings, logs, or analytics. Validate the deployment origin before requesting a
+host permission.
+
+## 15. Security checklist
+
+- Validate every external input and stored JSON boundary with Zod or an equally
+  strict parser.
+- Use `URL` and `URLSearchParams`; never concatenate untrusted URL components.
+- Use Web Crypto random values and constant-time comparisons for secrets.
+- Never log URL, title, note, description, excerpt, page body, token, credential,
+  ciphertext, OAuth code, grant, or MCP request content.
+- Require session, origin, and CSRF checks for dashboard mutations.
+- Require scoped bearer credentials for capture routes.
+- Keep MCP read-only and require the `library:read` OAuth scope.
+- Verify MCP with DCR, S256 PKCE consent, code exchange, initialize, and
+  tools/list against `/mcp`. The scan must expose exactly the intended read-only
+  tools; a missing or revoked bearer token returns 401.
+- Keep thumbnail delivery authenticated and content-addressed.
+- Do not expose raw provider errors to users.
+- Do not persist bookmark content in KV.
+
+## 16. Testing expectations
+
+Worker tests use the Cloudflare runtime and the complete `schema.sql`. Browser
+tests use a DOM environment and import the shared extension source.
+
+Every behavior change needs a regression test at the narrowest useful layer.
+High-risk changes also need fault injection for:
+
+- Queue-send failure and duplicate delivery;
+- stale revision and edit/AI races;
+- provider timeout, malformed output, and allocation wait;
+- import duplicates, invalid rows, chunk boundaries, and dispatch failure;
+- SSRF redirects, oversized bodies, and invalid image signatures;
+- authentication, CSRF, idempotency, and credential revocation;
+- reset continuation and storage failure; and
+- destructive selection and confirmation UI.
+
+Do not weaken or delete a test merely to make a refactor pass. If a deliberately
+removed historical state is the subject of the test, replace it with coverage of
+the current invariant.
+
+## 17. Definition of done
+
+A change is done when:
+
+1. behavior matches the product requirements;
+2. module boundaries and DRY ownership remain clear;
+3. named functions have accurate JSDoc;
+4. current schema and queries agree;
+5. regression and fault tests cover the change;
+6. `npm run check` passes;
+7. `npm run build` passes without deploying;
+8. generated extension packages match shared source;
+9. `git diff --check` is clean; and
+10. all three documents remain authoritative and mutually consistent.

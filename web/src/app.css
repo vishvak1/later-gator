@@ -204,9 +204,13 @@ h2 { letter-spacing: -.01em; }
 .logo { font-size: 3rem; }
 .logo.small { font-size: 2rem; }
 /* The extension's mark, so the toolbar icon and the web app read as one product. */
+.brand-mark { display: block; object-fit: contain; }
 .logo .brand-mark { width: 3.4rem; height: 3.4rem; }
 .logo.small .brand-mark { width: 2.4rem; height: 2.4rem; }
-.brand .brand-mark { width: 1.6rem; height: 1.6rem; vertical-align: -.3rem; margin-right: .1rem; }
+/* The topbar carries the mark alone — the wordmark next to it was redundant
+   with the page title and wrapped under the icon on narrow viewports. */
+.brand { display: inline-flex; align-items: center; }
+.brand .brand-mark { width: 2.1rem; height: 2.1rem; }
 
 /* ---- Unsorted mascot -------------------------------------------------- */
 .library-heading { display: flex; align-items: center; flex-wrap: wrap; gap: .1rem .6rem; }
@@ -239,6 +243,24 @@ h2 { letter-spacing: -.01em; }
   border-radius: 1.4rem;
   box-shadow: var(--shadow);
 }
+/* Sign-in password field with an inline reveal control. */
+.password-field { position: relative; display: flex; align-items: center; }
+.password-field input { padding-right: 4.6rem; }
+.reveal-button {
+  position: absolute;
+  right: .35rem;
+  min-height: 2rem;
+  padding: .25rem .6rem;
+  background: transparent;
+  color: var(--accent-strong);
+  font-size: .82rem;
+  font-weight: 700;
+  box-shadow: none;
+}
+.reveal-button:hover { background: var(--accent-soft); color: var(--accent-strong); box-shadow: none; }
+.auth-card label { font-weight: 680; }
+#loginValidation:not([hidden]) { margin: 0; }
+
 .setup-shell, .settings-shell { max-width: 76rem; margin: auto; padding: 2rem; }
 .setup-header { display: flex; align-items: center; flex-wrap: wrap; gap: 1rem; margin-bottom: 2rem; }
 .setup-heading { flex: 1 1 22rem; }
@@ -388,7 +410,8 @@ label.choice-card { align-items: flex-start; gap: .7rem; min-width: 0; padding: 
 .header-actions { display: flex; align-items: center; gap: .7rem; }
 .mode-badge { padding: .34rem .6rem; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); font-size: .78rem; font-weight: 750; }
 .mode-badge.active { border-color: var(--warm); background: var(--warning-soft); color: var(--warning-ink); }
-.discovery-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; gap: .6rem; margin: 1rem 0 .6rem; }
+.discovery-bar { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .6rem; margin: 1rem 0 .6rem; }
+.discovery-controls { display: flex; align-items: center; gap: .6rem; min-width: 0; }
 .search-shell { position: relative; display: flex; align-items: center; }
 .search-shell > span { position: absolute; left: .85rem; z-index: 1; color: var(--muted); font-size: 1.15rem; }
 .search-shell input { height: 2.7rem; padding-left: 2.5rem; border-radius: .6rem; }
@@ -432,6 +455,44 @@ label.choice-card { align-items: flex-start; gap: .7rem; min-width: 0; padding: 
 .bookmark-tag-field .selected-tags:empty { display: none; }
 .bookmark-tag-autocomplete { position: relative; }
 .bookmark-tag-field > small { display: block; margin-top: .35rem; }
+
+/* ---- Linked bookmark picker ------------------------------------------- */
+/* Matches the extension popup: the owner searches their own library instead of
+   pasting a URL they have to go and look up first. */
+.bookmark-link-field { min-width: 0; margin: 0; padding: 0; border: 0; }
+.bookmark-link-field legend { margin-bottom: .4rem; padding: 0; font-weight: 650; }
+.bookmark-link-field legend small { color: var(--muted); font-weight: 500; }
+.bookmark-link-autocomplete { position: relative; }
+.bookmark-link-field > small { display: block; margin-top: .35rem; }
+.selected-link {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  margin-bottom: .45rem;
+  padding: .4rem .4rem .4rem .7rem;
+  border: 1px solid var(--accent);
+  border-radius: .55rem;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-weight: 620;
+}
+.selected-link span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-remove {
+  min-height: 1.6rem;
+  width: 1.6rem;
+  flex: 0 0 1.6rem;
+  margin-left: auto;
+  padding: 0;
+  border-radius: .35rem;
+  background: transparent;
+  color: inherit;
+  font-size: 1.1rem;
+  box-shadow: none;
+}
+.chip-remove:hover { background: color-mix(in srgb, var(--accent) 20%, transparent); color: inherit; box-shadow: none; }
+.suggestion-menu .suggestion-copy { display: grid; gap: .1rem; min-width: 0; text-align: left; }
+.suggestion-menu .suggestion-copy small { color: var(--muted); font-size: .74rem; }
+.suggestion-menu button strong { font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bookmark-grid { columns: 17rem; column-gap: .85rem; padding-top: .5rem; }
 .load-more-wrap { display: flex; justify-content: center; padding: 1.2rem 0 2rem; }
 .bookmark-card {
@@ -439,7 +500,11 @@ label.choice-card { align-items: flex-start; gap: .7rem; min-width: 0; padding: 
   border: 1px solid var(--line);
   border-radius: .7rem;
   overflow: hidden;
-  display: inline-block;
+  /* Block, not inline-block. An inline-block card is inline-level content, so
+     the multi-column balancer measures line boxes instead of the cards and
+     settles on a column tall enough to hold every card in the first column —
+     two bookmarks stacked vertically with three empty columns beside them. */
+  display: block;
   width: 100%;
   margin: 0 0 .85rem;
   break-inside: avoid;
@@ -479,6 +544,110 @@ label.choice-card { align-items: flex-start; gap: .7rem; min-width: 0; padding: 
 .card-meta { display: flex; align-items: center; gap: .35rem; margin-top: .55rem; color: var(--muted); font-size: .74rem; min-width: 0; }
 .card-meta .site { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-meta .fav { margin-left: auto; color: var(--warm); }
+
+/* ---- Card favourite --------------------------------------------------- */
+/* A control, not a badge: the old star only reported state, so favouriting
+   meant opening the bookmark and editing it. */
+.card-fav {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.85rem;
+  height: 1.85rem;
+  min-height: 0;
+  padding: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+}
+.card-fav svg { width: 1.05rem; height: 1.05rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.card-fav:hover { background: var(--accent-soft); color: var(--danger); box-shadow: none; }
+.card-fav.on { color: var(--danger); }
+.card-fav.on svg { fill: currentColor; }
+.card-fav:disabled { opacity: .6; }
+
+/* A copy button confirms on itself rather than in a status line elsewhere on
+   the panel. "Copied" is shorter than every label it replaces, and script pins
+   the original width, so the row holds still while it swaps. The colour change
+   carries the confirmation — a tick would make the button wider than the label
+   it replaced and reflow the very row the pinned width is protecting. */
+button.copied {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ---- Workers AI limit indicator --------------------------------------- */
+.ai-alert-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
+.ai-alert-wrap[hidden] { display: none; }
+.ai-alert {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  min-height: 0;
+  padding: 0;
+  border-radius: 999px;
+  background: var(--warning-soft);
+  color: var(--warning-ink);
+  box-shadow: none;
+}
+.ai-alert svg { width: 1.1rem; height: 1.1rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ai-alert:hover { background: var(--warning-soft); color: var(--warning-ink); box-shadow: none; }
+.ai-alert-popover {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + .45rem);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: min(22rem, 70vw);
+  padding: .55rem .7rem;
+  border: 1px solid var(--line);
+  border-radius: .6rem;
+  background: var(--surface-strong);
+  color: var(--ink);
+  font-size: .82rem;
+  font-weight: 500;
+  line-height: 1.4;
+  box-shadow: var(--shadow);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .12s ease, visibility .12s ease;
+}
+.ai-alert-wrap:hover .ai-alert-popover,
+.ai-alert:focus-visible + .ai-alert-popover { opacity: 1; visibility: visible; }
+
+/* ---- Workers AI limit notice ------------------------------------------ */
+.ai-notice {
+  position: fixed;
+  z-index: 65;
+  left: 50%;
+  bottom: 1.25rem;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: flex-start;
+  gap: .7rem;
+  width: min(32rem, calc(100vw - 2rem));
+  padding: .8rem .9rem;
+  border: 1px solid color-mix(in srgb, var(--warm) 55%, var(--line));
+  border-radius: .75rem;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.ai-notice[hidden] { display: none; }
+.ai-notice-icon { display: inline-flex; flex: 0 0 auto; margin-top: .1rem; color: var(--warning-ink); }
+.ai-notice-icon svg { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.ai-notice-body { flex: 1 1 auto; min-width: 0; }
+.ai-notice-body p { margin: 0 0 .5rem; font-size: .88rem; line-height: 1.45; }
+.ai-notice-mute { font-size: .82rem; font-weight: 500; gap: .4rem; color: var(--muted); }
+.ai-notice .icon-button { flex: 0 0 2rem; width: 2rem; min-width: 2rem; min-height: 2rem; font-size: 1.15rem; }
+@media (max-width: 620px) {
+  .ai-notice { left: .5rem; right: .5rem; width: auto; transform: none; }
+}
 .card-date { margin-top: .72rem; color: var(--muted); font-size: .73rem; }
 .empty-state { padding: 4rem 1rem; text-align: center; color: var(--muted); column-span: all; }
 .bookmark-grid.list-view { columns: auto; column-gap: 0; }
@@ -525,6 +694,29 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
 .icon-button { width: 2.55rem; min-width: 2.55rem; min-height: 2.55rem; flex: 0 0 2.55rem; padding: 0; border-radius: .35rem; background: transparent; color: var(--ink); font-size: 1.45rem; box-shadow: none; }
 .icon-button:hover { background: var(--subtle); box-shadow: none; }
 .filter-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .85rem; }
+
+/* ---- Date range ------------------------------------------------------- */
+/* Field, From and To are one filter, so they sit inside one bordered group
+   rather than reading as three independent controls beside Site and Sort. */
+.date-filter {
+  min-width: 0;
+  margin: .85rem 0 0;
+  padding: .9rem 1rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: .75rem;
+  background: var(--subtle);
+}
+.date-filter legend { padding: 0 .4rem; color: var(--ink); font-weight: 680; }
+.date-filter-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: .55rem;
+}
+.date-filter-field { min-width: 0; font-size: .88rem; font-weight: 620; }
+.date-filter-arrow { padding-bottom: .7rem; color: var(--muted); }
+.date-filter-help { margin: .6rem 0 0; font-size: .82rem; }
+.date-filter input[aria-invalid="true"] { border-color: var(--danger); }
 .actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: .65rem; }
 .actions.split { justify-content: space-between; }
 .actions > div { display: flex; flex-wrap: wrap; align-items: center; gap: .65rem; }
@@ -540,6 +732,25 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
 .control-row { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; }
 .control-row > input { flex: 1 1 13rem; }
 .connection-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; }
+.ai-connection-list { display: grid; gap: .65rem; }
+.ai-connection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: .9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: .8rem;
+  background: var(--subtle);
+}
+.ai-connection-copy { min-width: 0; }
+.ai-connection-title { margin: 0; font-weight: 750; }
+.ai-connection-meta { margin: .2rem 0 0; color: var(--muted); font-size: .9rem; }
+.connection-check { color: var(--accent-strong); }
+.advanced-connection { padding-top: .2rem; }
+.advanced-connection summary { cursor: pointer; color: var(--muted); font-weight: 650; }
+.endpoint-row { display: flex; align-items: center; gap: .65rem; margin-top: .65rem; }
+.endpoint-row code { min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
 .connection-secret + .connection-secret { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--line); }
 .connection-secret .eyebrow { margin: 0; }
 .secret-output { white-space: pre-wrap; word-break: break-all; background: var(--code-bg); color: var(--code-ink); padding: 1rem; border-radius: .7rem; min-height: 2.5rem; }
@@ -576,24 +787,112 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
 .automation-progress .progress-track { margin-top: .8rem; }
 .progress-states { display: flex; flex-wrap: wrap; gap: .4rem; }
 .progress-state { padding: .25rem .55rem; border-radius: 999px; background: var(--subtle); color: var(--muted); font-size: .76rem; font-weight: 700; }
+/* ---- Drawer sidebar --------------------------------------------------- */
+/* The sidebar is a permanent column on wide viewports and an overlay drawer
+   below 900px, where a static block of folders and topics pushed the library
+   itself off the first screen. The toggle only exists in the narrow layout. */
+.nav-toggle { display: none; }
+.sidebar-scrim { display: none; }
+
 @media (max-width: 900px) {
-  .app-layout { grid-template-columns: 1fr; }
-  .sidebar { position: static; height: auto; border-right: 0; border-bottom: 1px solid var(--line); }
-  .sidebar nav { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .app-layout { grid-template-columns: minmax(0, 1fr); }
+  .nav-toggle { display: inline-flex; }
+  .sidebar {
+    position: fixed;
+    z-index: 45;
+    top: 3.4rem;
+    left: 0;
+    width: min(19rem, 84vw);
+    height: calc(100vh - 3.4rem);
+    padding: 1rem;
+    border-right: 1px solid var(--line);
+    box-shadow: var(--shadow);
+    transform: translateX(-102%);
+    visibility: hidden;
+    transition: transform .22s ease, visibility .22s ease;
+  }
+  body.sidebar-open .sidebar { transform: none; visibility: visible; }
+  .sidebar-scrim {
+    display: block;
+    position: fixed;
+    z-index: 40;
+    inset: 3.4rem 0 0;
+    background: var(--backdrop);
+    opacity: 0;
+    transition: opacity .22s ease;
+  }
+  .sidebar-scrim[hidden] { display: none; }
+  body.sidebar-open .sidebar-scrim { opacity: 1; }
+  body.sidebar-open { overflow: hidden; }
   .all-tag-navigation { grid-template-columns: 1fr; }
   .settings-grid { grid-template-columns: 1fr; }
   .span-two { grid-column: auto; }
+  .topic-picker, .choice-grid { grid-template-columns: 1fr; }
 }
+@media (prefers-reduced-motion: reduce) {
+  .sidebar, .sidebar-scrim { transition: none; }
+}
+
+/* ---- Narrow viewports ------------------------------------------------- */
 @media (max-width: 620px) {
-  .topbar { gap: .5rem; padding: .55rem .75rem; flex-wrap: wrap; }
-  .brand { font-size: 0; }
-  .brand span { font-size: 1.5rem; }
-  .library, .setup-shell, .settings-shell { padding: 1rem; }
+  .topbar { min-height: 3.4rem; gap: .4rem; padding: .4rem .6rem; flex-wrap: nowrap; }
+  .topbar nav { flex: 1 1 auto; min-width: 0; justify-content: flex-end; gap: .15rem; }
+  .topbar nav a { padding: .4rem .5rem; font-size: .84rem; }
+  .brand .brand-mark { width: 1.85rem; height: 1.85rem; }
+  /* Log out becomes an icon: its label is the first thing worth dropping when
+     the row has to hold a drawer toggle, two links and help as well. */
+  .topbar-logout { width: 2.35rem; min-width: 2.35rem; height: 2.35rem; min-height: 2.35rem; padding: 0; }
+  .topbar-logout-label { display: none; }
+  .topbar-logout-icon { display: inline-flex; }
+  .topbar-logout-icon svg { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+
+  .library, .setup-shell, .settings-shell { padding: .85rem; }
   .library-header { align-items: flex-start; }
   .header-actions { flex-direction: column; align-items: flex-end; }
-  .discovery-bar, .filter-grid, .metadata-grid, .topic-picker, .custom-topic, .choice-grid { grid-template-columns: 1fr; }
-  .bookmark-grid { columns: 1; }
-  .actions.split { align-items: stretch; flex-direction: column; }
+
+  /* Search takes the full row; the controls that were squeezed beside it get a
+     row of their own where they can keep a comfortable tap target. */
+  .discovery-bar { grid-template-columns: minmax(0, 1fr); gap: .5rem; }
+  .discovery-bar .search-shell { grid-column: 1 / -1; }
+  .discovery-controls { display: flex; align-items: center; gap: .45rem; }
+  .discovery-controls .filter-button { flex: 1 1 auto; min-width: 0; }
+  .discovery-controls .view-toggle { flex: 0 0 auto; }
+
+  .filter-grid, .metadata-grid, .custom-topic { grid-template-columns: 1fr; }
+  .date-filter-grid { grid-template-columns: minmax(0, 1fr); }
+  .date-filter-arrow { display: none; }
+  .bookmark-grid { columns: 1; column-gap: 0; }
+  .actions.split { align-items: stretch; flex-direction: column-reverse; }
+  .actions.split > div { flex-direction: column; align-items: stretch; }
+  .actions.split > div > * { width: 100%; }
+
+  /* A modal at this width is the screen, so it uses it instead of floating in
+     the middle with a sliver of backdrop around the edge. */
+  /* `inset: 0` on the base rule already spans the viewport; an explicit width
+     would leave the UA's default margin box narrower than the screen. The
+     height is pinned to the dynamic viewport so a tall form scrolls inside the
+     dialog — left to grow, a fixed-position dialog puts its own footer buttons
+     past the bottom of the screen with no way to reach them. */
+  dialog {
+    width: auto;
+    max-width: none;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+    padding: 1rem;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+  .dialog-heading h2 { font-size: 1.3rem; }
+  .detail-preview { margin-inline: -1rem; }
+  .theme-options { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .35rem; }
+  .theme-option { font-size: .78rem; padding: .3rem .3rem .4rem; }
+  .wizard-nav { flex-wrap: wrap; }
+  .wizard-nav .status { order: 3; flex-basis: 100%; }
+  .connection-actions > *, .control-row > button, .control-row > .button-link { flex: 1 1 12rem; }
+  .ai-connection, .endpoint-row { align-items: stretch; flex-direction: column; }
 }
 /* ---- Loading states -------------------------------------------------- */
 @keyframes lg-shimmer {
@@ -602,7 +901,9 @@ dialog::backdrop { background: var(--backdrop); backdrop-filter: blur(4px); }
 }
 @keyframes lg-spin { to { transform: rotate(360deg); } }
 .skeleton-card {
-  display: inline-block;
+  /* Block for the same reason as .bookmark-card, so placeholders occupy every
+     column while results load rather than queueing up in the first one. */
+  display: block;
   width: 100%;
   margin: 0 0 .85rem;
   break-inside: avoid;
@@ -776,21 +1077,37 @@ body.selecting .bookmark-grid { padding-bottom: 5rem; }
   border: 0;
 }
 
-/* Themed placeholder for bookmarks without a preview. */
+/* ---- Cover fallbacks --------------------------------------------------
+ * A bookmark without a stored cover used to show a grey ring that looked like
+ * a spinner waiting on something. For most of these there is nothing to wait
+ * for, so the space now carries the folder's own illustration instead, and
+ * anything without one gets the mark on a themed panel. */
 .thumbnail.placeholder {
   display: grid;
   place-items: center;
   aspect-ratio: 16/10;
   background: var(--thumb-bg);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
 }
-.thumbnail.placeholder::after {
-  content: "";
-  width: 1.9rem;
-  height: 1.9rem;
-  border: 2px solid var(--muted);
-  border-radius: 50%;
-  opacity: .35;
+.thumbnail.placeholder.illustrated[data-folder="social-posts"] { background-image: url("/img/folders/social-posts.jpg"); }
+.thumbnail.placeholder.illustrated[data-folder="articles"] { background-image: url("/img/folders/articles.jpg"); }
+.thumbnail.placeholder.illustrated[data-folder="videos-talks"] { background-image: url("/img/folders/videos-talks.jpg"); }
+.thumbnail.placeholder.illustrated[data-folder="code"] { background-image: url("/img/folders/code.jpg"); }
+.thumbnail.placeholder.illustrated[data-folder="docs-reference"] { background-image: url("/img/folders/docs-reference.jpg"); }
+.thumbnail.placeholder.illustrated[data-folder="papers"] { background-image: url("/img/folders/papers.jpg"); }
+.thumbnail.placeholder.illustrated[data-folder="websites-apps"] { background-image: url("/img/folders/websites-apps.jpg"); }
+
+/* Unsorted, Need for Review and anything still being processed: the mark on a
+   panel that follows the theme, so it reads as "no cover" rather than "broken". */
+.thumbnail.placeholder.marked {
+  background-image: url("/img/icon-transparent.png");
+  background-size: min(38%, 5.5rem) auto;
+  background-color: var(--subtle);
+  background-blend-mode: normal;
 }
+.bookmark-grid.list-view .thumbnail.placeholder.marked { background-size: min(60%, 3.2rem) auto; }
 
 /* Topic management selection */
 .tag-nav-row.manage { grid-template-columns: auto minmax(0, 1fr); }

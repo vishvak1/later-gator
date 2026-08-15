@@ -1,23 +1,43 @@
 import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
-import { readD1Migrations } from "@cloudflare/vitest-pool-workers";
+import { readFileSync } from "node:fs";
 import { defineConfig } from "vitest/config";
 
-const migrations = await readD1Migrations("./migrations");
+/** Converts each schema statement to one line, as required by D1Database.exec. */
+function compactD1Schema(source: string): string {
+  const statements: string[] = [];
+  let current: string[] = [];
+  let trigger = false;
+  for (const rawLine of source.split("\n")) {
+    const line = rawLine.trim();
+    if (line === "") continue;
+    if (current.length === 0) trigger = line.startsWith("CREATE TRIGGER");
+    current.push(line);
+    if ((!trigger && line.endsWith(";")) || (trigger && line === "END;")) {
+      statements.push(current.join(" "));
+      current = [];
+      trigger = false;
+    }
+  }
+  if (current.length > 0) throw new Error("schema.sql contains an incomplete statement");
+  return statements.join("\n");
+}
+
+const schema = compactD1Schema(readFileSync("./schema.sql", "utf8"));
 
 export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.test.jsonc" },
       miniflare: {
-        // BOOTSTRAP_PASSWORD is pinned so a developer's .dev.vars cannot leak
-        // into the test environment.
-        bindings: { TEST_MIGRATIONS: migrations, BOOTSTRAP_PASSWORD: "test-pass" },
+        // Test bindings are pinned so a developer's .dev.vars cannot leak into
+        // the test environment.
+        bindings: { TEST_SCHEMA: schema, PASSWORD: "test-pass" },
       },
     }),
   ],
   test: {
-    include: ["test/v6/**/*.test.ts"],
-    setupFiles: ["./test/v6/setup.ts"],
+    include: ["test/**/*.test.ts"],
+    setupFiles: ["./test/setup.ts"],
     testTimeout: 10_000,
     coverage: {
       provider: "v8",

@@ -3,7 +3,7 @@
   "name": "later-gator",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "workers_dev": true,
   "observability": {
     "enabled": true,
@@ -14,18 +14,22 @@
     "TIMEZONE": "UTC"
   },
   "secrets": {
-    "required": ["BOOTSTRAP_PASSWORD"]
+    "required": ["PASSWORD"]
   },
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "later-gator",
-      "migrations_dir": "migrations"
+      "database_name": "later-gator"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "THUMBNAILS"
+    },
+    {
+      // Deploy to Cloudflare provisions this private namespace automatically,
+      // so the owner does not need to create or identify another resource.
+      "binding": "OAUTH_KV"
     }
   ],
   "assets": {
@@ -33,6 +37,17 @@
     "binding": "ASSETS",
     "html_handling": "none",
     "not_found_handling": "none"
+  },
+  // Holds the dashboard's live connections. A Durable Object is the only thing
+  // a queue consumer in another isolate can address that is also able to keep a
+  // socket open, which is what lets an organized bookmark reach an open tab.
+  "durable_objects": {
+    "bindings": [
+      { "name": "LIBRARY_EVENTS", "class_name": "LibraryEvents" }
+    ]
+  },
+  "exports": {
+    "LibraryEvents": { "type": "durable-object", "storage": "sqlite" }
   },
   "build": { "command": "npm run build:web" },
   "images": { "binding": "IMAGES" },

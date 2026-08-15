@@ -10,18 +10,21 @@ import type {
 } from "./types";
 import { extensionConnectionCode } from "./extension-connection";
 // One source of truth with the server-rendered toolbar icons.
-import { FOLDER_ICONS } from "../../src/v6/domain/icons";
-import { HOW_TO_PANELS } from "../../src/v6/domain/how-to";
+import { FOLDER_ICONS, ICONS } from "../../src/domain/icons";
+import { HOW_TO_PANELS } from "../../src/domain/how-to";
+import { isWorkersAiLimit, providerStatusMessage } from "../../src/domain/provider-status";
 
 /**
  * The how-to overlay is shared by the dashboard (walk every panel) and Settings
  * (open one panel directly), so both call the same renderer.
  */
 const HOW_TO_SEEN_KEY = "lg-how-to-seen";
+/** Initializes how to for the dashboard UI. */
 function initHowTo(): void {
   const dialog = maybe<HTMLDialogElement>("#howToDialog");
   if (dialog === null) return;
   let index = 0;
+  /** Renders render for the dashboard UI. */
   const render = (): void => {
     const panel = HOW_TO_PANELS[index];
     if (panel === undefined) return;
@@ -34,6 +37,7 @@ function initHowTo(): void {
     el<HTMLButtonElement>("#howToNext").disabled = index === HOW_TO_PANELS.length - 1;
     el("#howToBody").scrollTop = 0;
   };
+  /** Opens the UI or connection managed by its enclosing component. */
   const open = (panelId?: string): void => {
     const found = HOW_TO_PANELS.findIndex(panel => panel.id === panelId);
     index = found === -1 ? 0 : found;
@@ -73,10 +77,12 @@ function el<T = HTMLElement>(selector: string): T {
   return node;
 }
 
+/** Returns an optional dashboard element when it exists. */
 function maybe<T = HTMLElement>(selector: string): T | null {
   return document.querySelector(selector) as T | null;
 }
 
+/** Returns all dashboard elements matching a selector. */
 function all<T = HTMLElement>(selector: string): T[] {
   return [...document.querySelectorAll(selector)] as T[];
 }
@@ -90,6 +96,7 @@ function messageOf(error: unknown): string {
 /* ---- Theme ------------------------------------------------------------ */
 type Theme = "light" | "dark" | "system";
 
+/** Applies theme for the dashboard UI. */
 function applyTheme(theme: Theme): void {
   if (theme === "system") delete document.documentElement.dataset.theme;
   else document.documentElement.dataset.theme = theme;
@@ -103,11 +110,13 @@ function applyTheme(theme: Theme): void {
   }
 }
 
+/** Returns the active light or dark theme from the document root. */
 function currentTheme(): Theme {
   const match = /(?:^|;\s*)lg_theme=(light|dark|system)(?:;|$)/u.exec(document.cookie);
   return (match?.[1] as Theme | undefined) ?? "system";
 }
 
+/** Initializes theme controls for the dashboard UI. */
 function initThemeControls(): void {
   applyTheme(currentTheme());
   for (const button of all<HTMLButtonElement>("[data-theme-choice]")) {
@@ -118,6 +127,7 @@ function initThemeControls(): void {
 }
 
 const page = document.body.dataset.page;
+/** Reads the dashboard CSRF token from its cookie. */
 const csrf = () => document.cookie.split("; ").find(value => value.startsWith("lg_csrf="))?.slice(8) ?? "";
 
 initThemeControls();
@@ -138,6 +148,7 @@ interface ApiErrorBody {
   error?: { message?: string; code?: string };
 }
 
+/** Sends an authenticated dashboard API request and returns its parsed JSON body. */
 async function api<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers ?? {});
   if (options.body && !(options.body instanceof FormData)) {
@@ -177,6 +188,7 @@ function escapeHtml(value: string | null | undefined): string {
     .replaceAll("'", "&#39;");
 }
 
+/** Normalizes tag for the dashboard UI. */
 function normalizeTag(value: string): string {
   const normalized = value.normalize("NFKC").trim().toLocaleLowerCase("en-US")
     .replace(/[^\p{L}\p{N}]+/gu, "-")
@@ -187,20 +199,24 @@ function normalizeTag(value: string): string {
   return normalized === "ai" ? "artificial-intelligence" : normalized;
 }
 
+/** Parses and de-duplicates the comma-separated tag values from an input. */
 function tagValues(value: string): string[] {
   return [...new Set(value.split(",").map(normalizeTag).filter(Boolean))];
 }
 
+/** Formats a stored timestamp for display in the current locale. */
 function friendlyDate(value: string | null | undefined): string {
   if (!value) return "Not available";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Not available" : date.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
 }
 
+/** Returns a promise that settles after the requested delay. */
 function delay(milliseconds: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, milliseconds));
 }
 
+/** Ends the authenticated session and returns the browser to the login page. */
 async function logout() {
   try {
     await api("/auth/logout", { method: "POST" });
@@ -211,8 +227,50 @@ async function logout() {
 
 maybe<HTMLButtonElement>("#logoutButton")?.addEventListener("click", logout);
 
+/**
+ * Sign-in field controls. The form carries `novalidate` so an empty submit
+ * reports in the page's own voice instead of a browser bubble, and the reveal
+ * button exists because a password typed blind into a field with no recovery
+ * path is the easiest way to get locked out of a fresh deployment.
+ */
+if (page === "login") {
+  const form = el<HTMLFormElement>("#loginForm");
+  const field = el<HTMLInputElement>("#loginPassword");
+  const validation = el("#loginValidation");
+  const reveal = el<HTMLButtonElement>("#loginReveal");
+
+  /** Sets validation for the dashboard UI. */
+  const setValidation = (message: string): void => {
+    validation.textContent = message;
+    validation.hidden = message === "";
+    field.setAttribute("aria-invalid", message === "" ? "false" : "true");
+  };
+
+  reveal.addEventListener("click", () => {
+    const shown = field.type === "text";
+    field.type = shown ? "password" : "text";
+    reveal.textContent = shown ? "Show" : "Hide";
+    reveal.setAttribute("aria-pressed", shown ? "false" : "true");
+    reveal.title = shown ? "Show password" : "Hide password";
+    // Revealing must not cost the caret position mid-typing.
+    const caret = field.value.length;
+    field.focus();
+    field.setSelectionRange(caret, caret);
+  });
+
+  field.addEventListener("input", () => setValidation(""));
+  form.addEventListener("submit", event => {
+    if (field.value.length === 0) {
+      event.preventDefault();
+      setValidation("Enter your Later Gator password.");
+      field.focus();
+    }
+  });
+}
+
 let currentImportId: string | null = null;
 
+/** Sets import panel for the dashboard UI. */
 function setImportPanel(
   visible: boolean,
   title?: string,
@@ -240,6 +298,7 @@ function setImportPanel(
   }
 }
 
+/** Sets import progress for the dashboard UI. */
 function setImportProgress(status: ImportSession): void {
   const wrap = maybe("#importProgressWrap");
   const bar = maybe("#importProgressBar");
@@ -269,6 +328,7 @@ function setImportProgress(status: ImportSession): void {
   maybe("#importProgressPanel")?.setAttribute("aria-busy", busy ? "true" : "false");
 }
 
+/** Waits for for import for the dashboard UI. */
 async function waitForImport(importId: string): Promise<ImportSession> {
   let consecutiveStatusFailures = 0;
   for (;;) {
@@ -327,6 +387,7 @@ async function waitForImport(importId: string): Promise<ImportSession> {
   }
 }
 
+/** Starts raindrop import for the dashboard UI. */
 async function beginRaindropImport(
   file: File | undefined,
   option: "reorganize" | "preserve",
@@ -373,11 +434,14 @@ async function refreshImportStatusPanels(importId: string): Promise<void> {
 if (page === "setup") {
   const selectedTopics = new Set<string>();
   const customTopics = new Set<string>();
+  /** Reads normalized personalization topics from the setup topic field. */
   const typedTopics = () => tagValues(el<HTMLInputElement>("#customTopic").value);
+  /** Combines typed and suggested setup topics without duplicates. */
   const allSelectedTopics = () => {
     const topics = new Set([...selectedTopics, ...customTopics, ...typedTopics()]);
     return [...topics];
   };
+  /** Renders custom topics for the dashboard UI. */
   const renderCustomTopics = () => {
     const container = el("#customTopicTokens");
     container.innerHTML = [...customTopics].map(topic =>
@@ -391,6 +455,7 @@ if (page === "setup") {
       syncTopics();
     }));
   };
+  /** Synchronizes topics for the dashboard UI. */
   const syncTopics = () => {
     all(".topic-chip").forEach(button => {
       if (button.dataset.customTopic) return;
@@ -411,7 +476,9 @@ if (page === "setup") {
    */
   const LAST_STEP = 3;
   let step = 1;
+  /** Reports whether the owner selected enough topics to continue setup. */
   const topicsSatisfied = () => allSelectedTopics().length >= 5;
+  /** Renders wizard for the dashboard UI. */
   function renderWizard(): void {
     for (const screen of all("[data-step]")) {
       screen.hidden = screen.dataset.step !== String(step);
@@ -432,6 +499,7 @@ if (page === "setup") {
     next.disabled = step === 1 && !topicsSatisfied();
     finish.disabled = !topicsSatisfied();
   }
+  /** Activates one setup step and updates navigation, progress, and focus. */
   const goToStep = (nextStep: number): void => {
     step = Math.min(LAST_STEP, Math.max(1, nextStep));
     renderWizard();
@@ -519,10 +587,12 @@ const selectedBookmarks = new Set<string>();
 let lastSelectedId: string | null = null;
 let undoTimer: ReturnType<typeof setTimeout> | null = null;
 
+/** Reports whether the current folder filter represents Trash. */
 function inTrashView(): boolean {
   return currentFolder === "trash";
 }
 
+/** Renders bulk bar for the dashboard UI. */
 function renderBulkBar(): void {
   const bar = el("#bulkBar");
   const count = selectedBookmarks.size;
@@ -536,6 +606,7 @@ function renderBulkBar(): void {
   el<HTMLButtonElement>("#bulkDelete").hidden = !inTrashView();
 }
 
+/** Synchronizes card selection for the dashboard UI. */
 function syncCardSelection(): void {
   for (const card of all(".bookmark-card")) {
     const id = card.dataset.id ?? "";
@@ -547,6 +618,7 @@ function syncCardSelection(): void {
   renderBulkBar();
 }
 
+/** Sets selection mode for the dashboard UI. */
 function setSelectionMode(active: boolean): void {
   selectionMode = active;
   document.body.classList.toggle("selecting", active);
@@ -557,6 +629,7 @@ function setSelectionMode(active: boolean): void {
   syncCardSelection();
 }
 
+/** Toggles selected for the dashboard UI. */
 function toggleSelected(id: string, extend: boolean): void {
   const ids = all(".bookmark-card").map(card => card.dataset.id ?? "");
   if (extend && lastSelectedId !== null) {
@@ -577,6 +650,7 @@ function toggleSelected(id: string, extend: boolean): void {
   syncCardSelection();
 }
 
+/** Shows toast for the dashboard UI. */
 function showToast(message: string, undo: (() => Promise<void>) | null): void {
   const toast = el("#toast");
   el("#toastMessage").textContent = message;
@@ -615,6 +689,7 @@ async function bulkApply(
   return { done, failed };
 }
 
+/** Summarizes success and failure counts after a bulk bookmark mutation. */
 function bulkOutcome(verb: string, done: number, failed: number): string {
   return done.toString() + " bookmark" + (done === 1 ? "" : "s") + " " + verb +
     (failed > 0 ? " · " + failed.toString() + " failed" : "");
@@ -637,6 +712,7 @@ let notesOnly = false;
 let nextBookmarkCursor: string | null = null;
 let loadedBookmarkCount = 0;
 
+/** Loads bootstrap for the dashboard UI. */
 async function loadBootstrap() {
   bootstrap = (await api<{ state: BootstrapState }>("/api/bootstrap")).state;
   const siteOptions = el<HTMLDataListElement>("#siteOptions");
@@ -646,11 +722,85 @@ async function loadBootstrap() {
   return bootstrap;
 }
 
+/** Renders selectable permanent folders while excluding system-only choices. */
 function folderOptions() {
   return state().folders
     .filter(folder => folder.slug !== "imports")
     .map(folder => '<option value="' + folder.id + '">' + escapeHtml(folder.name) + "</option>")
     .join("");
+}
+
+/* ---- Workers AI limit surfacing ---------------------------------------
+ * The pause is invisible otherwise: sorting simply stops, and the only hint is
+ * a count that never moves. The indicator says it permanently, the notice says
+ * it once per occurrence, and the mute is remembered per error code so muting
+ * a spent allowance does not also mute a future, different fault.
+ */
+const AI_NOTICE_MUTE_KEY = "lg-ai-notice-muted";
+
+/** Detects whether provider status indicates the current AI allowance is exhausted. */
+function aiLimitReached(): boolean {
+  const provider = state().provider;
+  return (
+    provider.operational_status === "waiting" &&
+    isWorkersAiLimit(provider.last_safe_error_code)
+  );
+}
+
+/** Reads whether the owner dismissed the current AI allowance notice. */
+function aiNoticeMuted(code: string): boolean {
+  try {
+    return localStorage.getItem(AI_NOTICE_MUTE_KEY) === code;
+  } catch {
+    return false;
+  }
+}
+
+/** Renders ai alert for the dashboard UI. */
+function renderAiAlert(): void {
+  const wrap = maybe("#aiAlertWrap");
+  if (wrap === null) return;
+  const reached = aiLimitReached();
+  wrap.hidden = !reached;
+  if (!reached) return;
+  const message = providerStatusMessage(
+    state().provider.last_safe_error_code,
+    "AI sorting needs attention.",
+  );
+  el("#aiAlertPopover").textContent = message;
+  el<HTMLButtonElement>("#aiAlert").setAttribute("aria-label", message);
+}
+
+/** Shows ai notice for the dashboard UI. */
+function showAiNotice(): void {
+  const notice = maybe("#aiNotice");
+  if (notice === null || !aiLimitReached()) return;
+  const code = state().provider.last_safe_error_code ?? "";
+  if (aiNoticeMuted(code)) return;
+  el("#aiNoticeMessage").textContent = providerStatusMessage(
+    code,
+    "AI sorting needs attention.",
+  );
+  el<HTMLInputElement>("#aiNoticeMute").checked = false;
+  notice.hidden = false;
+}
+
+/** Initializes ai notice for the dashboard UI. */
+function initAiNotice(): void {
+  const notice = maybe("#aiNotice");
+  if (notice === null) return;
+  /** Hides the AI allowance notice and remembers that choice locally. */
+  const dismiss = (): void => {
+    if (el<HTMLInputElement>("#aiNoticeMute").checked) {
+      try {
+        localStorage.setItem(AI_NOTICE_MUTE_KEY, state().provider.last_safe_error_code ?? "");
+      } catch {
+        // Muting is a convenience; the indicator still reports the state.
+      }
+    }
+    notice.hidden = true;
+  };
+  el<HTMLButtonElement>("#aiNoticeClose").addEventListener("click", dismiss);
 }
 
 /** The mascot only waves where AI actually works: Unsorted. */
@@ -659,6 +809,7 @@ function syncUnsortedMascot(): void {
   if (mascot !== null) mascot.hidden = currentFolder !== "folder_unsorted";
 }
 
+/** Renders folders for the dashboard UI. */
 function renderFolders() {
   const nav = el("#folderNavigation");
   const visibleFolders = state().folders.filter(folder => folder.slug !== "imports");
@@ -694,17 +845,45 @@ function renderFolders() {
 }
 
 /**
+ * A fingerprint of everything the sidebar and grid are derived from. Comparing
+ * it is what makes a repaint a consequence of changed state rather than of a
+ * clock: identical state repaints nothing.
+ */
+let lastLibraryFingerprint = "";
+
+/** Creates a stable summary key used to skip redundant library rerenders. */
+function libraryFingerprint(): string {
+  const current = state();
+  return JSON.stringify([
+    current.folders.map(folder => [folder.id, Number(folder.bookmark_count || 0)]),
+    Number(current.trashCount || 0),
+    current.tags
+      .filter(tag => tag.status === "active")
+      .map(tag => [tag.id, Number(tag.usage_count)]),
+    current.automationProgress,
+    current.activeImport?.id ?? null,
+    // A provider going into or out of its limit is a state change the dashboard
+    // has to repaint for, even when no bookmark moved.
+    current.provider.operational_status,
+    current.provider.last_safe_error_code,
+  ]);
+}
+
+/**
  * Sidebar counts, tag registry, and the grid are one consistent view of the
  * library, so they are always refreshed together. Refreshing only some of them
  * is what previously let the sidebar drift out of sync with the results.
  */
 async function refreshLibraryViews() {
   await loadBootstrap();
+  lastLibraryFingerprint = libraryFingerprint();
   renderFolders();
   renderTagNavigation();
+  renderAiAlert();
   await loadBookmarks();
 }
 
+/** Binds tag navigation for the dashboard UI. */
 function bindTagNavigation(nav: HTMLElement): void {
   nav.querySelectorAll<HTMLElement>("[data-filter-tag]").forEach(button => button.addEventListener("click", () => {
     const key = button.dataset.filterTag;
@@ -726,6 +905,7 @@ function bindTagNavigation(nav: HTMLElement): void {
  * with no undo path. */
 const selectedTopics = new Set<string>();
 
+/** Renders tag filter navigation with counts and active-state accessibility. */
 function tagNavigationMarkup(tags: TagSummary[], manage = false): string {
   if (tags.length === 0) {
     return '<p class="muted">Topics appear here as your library grows.</p>';
@@ -749,6 +929,7 @@ function tagNavigationMarkup(tags: TagSummary[], manage = false): string {
   }).join("");
 }
 
+/** Renders topic selection for the dashboard UI. */
 function renderTopicSelection(): void {
   const bar = maybe("#topicBulkBar");
   if (bar === null) return;
@@ -758,6 +939,7 @@ function renderTopicSelection(): void {
     count.toString() + " topic" + (count === 1 ? "" : "s") + " selected";
 }
 
+/** Binds topic selection for the dashboard UI. */
 function bindTopicSelection(nav: HTMLElement): void {
   for (const box of [...nav.querySelectorAll<HTMLInputElement>("[data-topic-id]")]) {
     box.addEventListener("change", () => {
@@ -770,6 +952,7 @@ function bindTopicSelection(nav: HTMLElement): void {
   renderTopicSelection();
 }
 
+/** Renders tag navigation for the dashboard UI. */
 function renderTagNavigation() {
   const nav = el("#tagNavigation");
   const allNav = el("#allTagNavigation");
@@ -787,6 +970,7 @@ function renderTagNavigation() {
   el<HTMLButtonElement>("#viewAllTopicsButton").hidden = tags.length === 0;
 }
 
+/** Builds the encoded bookmark-list query from search, folder, and tag filters. */
 function searchQuery(cursor: string | null = null): URLSearchParams {
   const params = new URLSearchParams({
     sort: el<HTMLSelectElement>("#sortSelect").value,
@@ -822,6 +1006,7 @@ function searchQuery(cursor: string | null = null): URLSearchParams {
   return params;
 }
 
+/** Selects all matching bookmarks for the dashboard UI. */
 async function selectAllMatchingBookmarks(): Promise<void> {
   const button = el<HTMLButtonElement>("#bulkSelectAll");
   const status = el("#libraryStatus");
@@ -862,29 +1047,72 @@ async function selectAllMatchingBookmarks(): Promise<void> {
   }
 }
 
+/**
+ * Folders whose illustration exists in web/img/folders. Anything not listed —
+ * Unsorted, Need for Review, Trash — falls back to the mark on a themed panel,
+ * which is also what a bookmark still being processed gets.
+ */
+const ILLUSTRATED_FOLDERS = new Set([
+  "social-posts",
+  "articles",
+  "videos-talks",
+  "code",
+  "docs-reference",
+  "papers",
+  "websites-apps",
+]);
+
+/** Resolves a folder ID to the slug used in routes and filter state. */
+function folderSlugOf(bookmark: Bookmark | BookmarkDetail): string {
+  if (bootstrap === null) return "";
+  return state().folders.find(folder => folder.id === bookmark.folder_id)?.slug ?? "";
+}
+
+/**
+ * A bookmark with no stored cover shows its folder's artwork rather than a
+ * spinner that never resolves: for many bookmarks there will never be a cover
+ * to load, so a perpetual loading state was describing a wait that was not
+ * happening. The slug drives a CSS rule rather than an inline style, because
+ * the page's content-security-policy rejects style attributes.
+ */
+function placeholderPreview(
+  bookmark: Bookmark | BookmarkDetail,
+  className: string,
+): string {
+  const slug = folderSlugOf(bookmark);
+  const illustrated = ILLUSTRATED_FOLDERS.has(slug);
+  return '<div class="' + className + ' placeholder' + (illustrated ? " illustrated" : " marked") +
+    '"' + (illustrated ? ' data-folder="' + escapeHtml(slug) + '"' : "") +
+    ' aria-hidden="true"></div>';
+}
+
+/** Renders a dimensioned thumbnail image or the deterministic placeholder. */
 function previewImage(bookmark: Bookmark | BookmarkDetail, className = "thumbnail"): string {
   if (bookmark.thumbnail_id || ("thumbnailAvailable" in bookmark && bookmark.thumbnailAvailable)) {
     const width = Number(bookmark.thumbnail_width) || 960;
     const height = Number(bookmark.thumbnail_height) || 540;
-    const version = bookmark.thumbnail_id;
-    if (!version) return '<div class="' + className + ' placeholder" aria-hidden="true"></div>';
-    return '<img class="' + className + '" src="/api/thumbnails/' + bookmark.id + '/' + version + '" width="' +
+    const thumbnailId = bookmark.thumbnail_id;
+    if (!thumbnailId) return placeholderPreview(bookmark, className);
+    return '<img class="' + className + '" src="/api/thumbnails/' + bookmark.id + '/' + thumbnailId + '" width="' +
       width.toString() + '" height="' + height.toString() + '" loading="lazy" decoding="async" alt="">';
   }
-  return '<div class="' + className + ' placeholder" aria-hidden="true"></div>';
+  return placeholderPreview(bookmark, className);
 }
 
+/** Renders at most four bookmark tags as compact chips. */
 function cardTags(bookmark: Bookmark): string {
   const values = (bookmark.tag_names || "").split(",").filter(Boolean).slice(0, 4);
   return values.map(tag => '<span class="chip">#' + escapeHtml(tag) + "</span>").join("");
 }
 
+/** Selects and safely truncates the most useful bookmark summary text. */
 function cardExcerpt(bookmark: Bookmark): string {
   const text = (bookmark.description || "").trim();
   if (!text) return "";
   return '<p class="card-excerpt">' + escapeHtml(text.length > 220 ? text.slice(0, 220) + "…" : text) + "</p>";
 }
 
+/** Renders the current bookmark result set with selection and mutation controls. */
 function bookmarkCards(bookmarks: Bookmark[]): string {
   return bookmarks.map(bookmark =>
     // A card the AI is working on right now gets a travelling corner glow.
@@ -898,11 +1126,62 @@ function bookmarkCards(bookmarks: Bookmark[]): string {
     '</h2>' + cardExcerpt(bookmark) + '<div class="chips">' + cardTags(bookmark) +
     '</div><div class="card-meta"><span class="site">' + escapeHtml(bookmark.hostname) +
     '</span><span>·</span><span>' + friendlyDate(bookmark.added_at) + "</span>" +
-    (bookmark.favorite ? '<span class="fav" aria-label="Favorite">★</span>' : "") +
+    favoriteButton(bookmark) +
     "</div></div></article>"
   ).join("");
 }
 
+/**
+ * Favouriting is one click on the card. It used to be a star that only reported
+ * state, so the only way to favourite something was to open it and edit it.
+ */
+function favoriteButton(bookmark: Bookmark): string {
+  const on = Boolean(bookmark.favorite);
+  return '<button type="button" class="card-fav' + (on ? " on" : "") +
+    '" data-favorite-id="' + escapeHtml(bookmark.id) +
+    '" aria-pressed="' + (on ? "true" : "false") +
+    '" title="' + (on ? "Remove from favorites" : "Add to favorites") +
+    '" aria-label="' + (on ? "Remove from favorites" : "Add to favorites") + '">' +
+    ICONS.heart + "</button>";
+}
+
+/**
+ * Optimistic: the heart fills on click and reverts if the write fails, because
+ * waiting for a round trip to acknowledge a toggle feels broken.
+ */
+async function toggleFavorite(button: HTMLButtonElement): Promise<void> {
+  const id = button.dataset.favoriteId;
+  if (id === undefined || button.disabled) return;
+  const next = button.getAttribute("aria-pressed") !== "true";
+  /** Updates the favorite control to reflect its current state. */
+  const paint = (on: boolean): void => {
+    button.classList.toggle("on", on);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    const label = on ? "Remove from favorites" : "Add to favorites";
+    button.title = label;
+    button.setAttribute("aria-label", label);
+  };
+  button.disabled = true;
+  paint(next);
+  try {
+    const detail = (await api<{ bookmark: BookmarkDetail }>("/api/bookmarks/" + id)).bookmark;
+    await api("/api/bookmarks/" + id, {
+      method: "PATCH",
+      body: JSON.stringify({ expectedRevision: detail.revision, favorite: next }),
+    });
+    // Only the sidebar counts can have moved, so the grid is left alone: a
+    // rebuild here would drop the card out from under the pointer.
+    await loadBootstrap();
+    lastLibraryFingerprint = libraryFingerprint();
+  } catch (error) {
+    paint(!next);
+    showToast(messageOf(error), null);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+/** Sets view mode for the dashboard UI. */
 function setViewMode(mode: string): void {
   const grid = el("#bookmarkGrid");
   grid.classList.toggle("list-view", mode === "list");
@@ -913,6 +1192,7 @@ function setViewMode(mode: string): void {
   }
 }
 
+/** Binds bookmark cards for the dashboard UI. */
 function bindBookmarkCards() {
   all(".bookmark-card:not([data-bound])").forEach(card => {
     card.dataset.bound = "true";
@@ -924,9 +1204,19 @@ function bindBookmarkCards() {
         toggleSelected(box.dataset.selectId ?? "", (event as MouseEvent).shiftKey);
       });
     }
+    const favorite = card.querySelector<HTMLButtonElement>(".card-fav");
+    if (favorite !== null) {
+      favorite.addEventListener("click", event => {
+        // The whole card opens the bookmark, so the heart has to keep its click.
+        event.stopPropagation();
+        event.preventDefault();
+        void toggleFavorite(favorite);
+      });
+    }
     card.addEventListener("click", event => {
       const id = card.dataset.id ?? "";
       if ((event.target as HTMLElement).closest(".card-select") !== null) return;
+      if ((event.target as HTMLElement).closest(".card-fav") !== null) return;
       if (selectionMode) {
         event.preventDefault();
         toggleSelected(id, event.shiftKey);
@@ -966,15 +1256,23 @@ function skeletonCards(count: number): string {
   return markup;
 }
 
-async function loadBookmarks(append = false): Promise<void> {
+/**
+ * `quiet` renders without the skeleton flash and without the "Loading
+ * bookmarks…" line. It is for a repaint the owner did not ask for — returning
+ * to the tab — where tearing the grid down and rebuilding it looks like the page
+ * reloading itself for no reason.
+ */
+async function loadBookmarks(append = false, quiet = false): Promise<void> {
   const status = el("#libraryStatus");
-  status.className = "status loading";
-  status.innerHTML =
-    '<span class="spinner"></span>' +
-    (append ? "Loading more bookmarks…" : "Loading bookmarks…");
   const grid = el("#bookmarkGrid");
-  if (append) grid.insertAdjacentHTML("beforeend", skeletonCards(4));
-  else grid.innerHTML = skeletonCards(8);
+  if (!quiet) {
+    status.className = "status loading";
+    status.innerHTML =
+      '<span class="spinner"></span>' +
+      (append ? "Loading more bookmarks…" : "Loading bookmarks…");
+    if (append) grid.insertAdjacentHTML("beforeend", skeletonCards(4));
+    else grid.innerHTML = skeletonCards(8);
+  }
   try {
     const cursor = append ? nextBookmarkCursor : null;
     const result = await api<BookmarkPageResponse>("/api/bookmarks?" + searchQuery(cursor).toString());
@@ -999,6 +1297,7 @@ async function loadBookmarks(append = false): Promise<void> {
   }
 }
 
+/** Renders selected tags for the dashboard UI. */
 function renderSelectedTags() {
   const container = el("#searchTagChips");
   container.innerHTML = [...selectedSearchTags.entries()].map(([normalized, display]) =>
@@ -1012,6 +1311,7 @@ function renderSelectedTags() {
   }));
 }
 
+/** Updates tag suggestions for the dashboard UI. */
 function updateTagSuggestions() {
   const input = el<HTMLInputElement>("#searchInput");
   const menu = el("#tagSuggestions");
@@ -1044,12 +1344,16 @@ function updateTagSuggestions() {
   }));
 }
 
+/** Counts non-default search filters for the filter-button badge. */
 function activeFilterCount() {
+  const from = el<HTMLInputElement>("#dateFrom").value;
+  const to = el<HTMLInputElement>("#dateTo").value;
   return [
     el<HTMLInputElement>("#siteInput").value,
     el<HTMLSelectElement>("#favoriteFilter").value,
-    el<HTMLInputElement>("#dateFrom").value,
-    el<HTMLInputElement>("#dateTo").value,
+    // Field, From and To are one date-range filter, so a range counts once
+    // however many of its ends are set.
+    from || to ? "date" : "",
     el<HTMLSelectElement>("#sortSelect").value !== "added_at" ? "sort" : "",
     el<HTMLSelectElement>("#directionSelect").value !== "desc" ? "direction" : "",
     favoritesOnly ? "favorites" : "",
@@ -1057,16 +1361,40 @@ function activeFilterCount() {
   ].filter(Boolean).length;
 }
 
+/**
+ * Keeps the two ends of the one range consistent: each end bounds the other in
+ * the native picker, so an inverted range that silently matches nothing cannot
+ * be chosen in the first place.
+ */
+function syncDateRange(): boolean {
+  const from = el<HTMLInputElement>("#dateFrom");
+  const to = el<HTMLInputElement>("#dateTo");
+  const help = el("#dateFilterHelp");
+  from.max = to.value;
+  to.min = from.value;
+  const inverted = from.value !== "" && to.value !== "" && from.value > to.value;
+  from.setAttribute("aria-invalid", inverted ? "true" : "false");
+  to.setAttribute("aria-invalid", inverted ? "true" : "false");
+  help.textContent = inverted
+    ? "The From date is after the To date, so nothing can match."
+    : 'Leave either end open for "any time before" or "any time after".';
+  help.className = inverted ? "error date-filter-help" : "muted date-filter-help";
+  return !inverted;
+}
+
+/** Updates filter count for the dashboard UI. */
 function updateFilterCount() {
   const count = activeFilterCount();
   el("#filterCount").textContent = count === 0 ? "" : count.toString();
 }
 
+/** Renders the editable tag chips for the open bookmark detail panel. */
 function detailTags(detail: BookmarkDetail): string {
   return (detail.tags || []).map(tag => '<span class="chip">#' + escapeHtml(tag.display_name) + "</span>").join("") ||
     '<span class="muted">No tags</span>';
 }
 
+/** Renders bookmark tags for the dashboard UI. */
 function renderBookmarkTags(): void {
   const container = el("#bookmarkSelectedTags");
   container.innerHTML = [...selectedBookmarkTags.entries()].map(([normalized, display]) =>
@@ -1082,6 +1410,7 @@ function renderBookmarkTags(): void {
   });
 }
 
+/** Adds a normalized tag to the bookmark editor when it is not already present. */
 function addBookmarkTag(normalized: string, display = normalized): void {
   if (normalized === "" || selectedBookmarkTags.size >= 50) return;
   selectedBookmarkTags.set(normalized, display);
@@ -1092,6 +1421,7 @@ function addBookmarkTag(normalized: string, display = normalized): void {
   renderBookmarkTags();
 }
 
+/** Updates bookmark tag suggestions for the dashboard UI. */
 function updateBookmarkTagSuggestions(): void {
   const input = el<HTMLInputElement>("#bookmarkTagInput");
   const menu = el("#bookmarkTagSuggestions");
@@ -1141,6 +1471,123 @@ function updateBookmarkTagSuggestions(): void {
   });
 }
 
+/* ---- Linked bookmark picker -------------------------------------------
+ * The editor used to take a raw related-bookmark URL, which meant leaving the
+ * dialog to go and find that URL. This searches the library the same way the
+ * extension popup does. The chosen URL still lands in the hidden
+ * #bookmarkLinkedUrl field, so the save path is unchanged.
+ */
+let linkedSearchTimer: ReturnType<typeof setTimeout> | null = null;
+let linkedSearchGeneration = 0;
+
+/** Sets linked help for the dashboard UI. */
+function setLinkedHelp(message: string): void {
+  el("#bookmarkLinkedHelp").textContent = message;
+}
+
+/** Hides linked suggestions for the dashboard UI. */
+function hideLinkedSuggestions(): void {
+  const menu = el("#bookmarkLinkedSuggestions");
+  menu.hidden = true;
+  menu.innerHTML = "";
+  el<HTMLInputElement>("#bookmarkLinkedSearch").setAttribute("aria-expanded", "false");
+}
+
+/** Clears linked bookmark for the dashboard UI. */
+function clearLinkedBookmark(focus = false): void {
+  linkedSearchGeneration += 1;
+  if (linkedSearchTimer !== null) {
+    clearTimeout(linkedSearchTimer);
+    linkedSearchTimer = null;
+  }
+  el<HTMLInputElement>("#bookmarkLinkedUrl").value = "";
+  el("#bookmarkLinkedSelected").hidden = true;
+  el("#bookmarkLinkedLabel").textContent = "";
+  const search = el<HTMLInputElement>("#bookmarkLinkedSearch");
+  search.hidden = false;
+  search.value = "";
+  hideLinkedSuggestions();
+  setLinkedHelp("Type at least 2 characters to search your bookmarks.");
+  if (focus) search.focus();
+}
+
+/** Shows linked bookmark for the dashboard UI. */
+function showLinkedBookmark(url: string, label: string, detail = ""): void {
+  el<HTMLInputElement>("#bookmarkLinkedUrl").value = url;
+  el("#bookmarkLinkedLabel").textContent = label;
+  el("#bookmarkLinkedSelected").hidden = false;
+  el<HTMLInputElement>("#bookmarkLinkedSearch").hidden = true;
+  setLinkedHelp(detail === "" ? "One linked bookmark selected." : detail);
+  hideLinkedSuggestions();
+}
+
+/** Builds the folder-and-host subtitle for a linked-bookmark suggestion. */
+function linkedSuggestionDetail(bookmark: Bookmark): string {
+  return [bookmark.hostname, bookmark.folder_name].filter(Boolean).join(" · ");
+}
+
+/** Renders accessible linked-bookmark search suggestions. */
+function linkedSuggestionMarkup(bookmark: Bookmark): string {
+  const label = bookmark.title || bookmark.url;
+  const detail = linkedSuggestionDetail(bookmark);
+  return '<button type="button" role="option" data-linked-url="' + escapeHtml(bookmark.url) +
+    '" data-linked-label="' + escapeHtml(label) + '" data-linked-detail="' + escapeHtml(detail) +
+    '"><span class="suggestion-copy"><strong>' + escapeHtml(label) + "</strong>" +
+    (detail === "" ? "" : "<small>" + escapeHtml(detail) + "</small>") +
+    "</span></button>";
+}
+
+/** Schedules linked search for the dashboard UI. */
+function scheduleLinkedSearch(): void {
+  const search = el<HTMLInputElement>("#bookmarkLinkedSearch");
+  const query = search.value.trim();
+  linkedSearchGeneration += 1;
+  const generation = linkedSearchGeneration;
+  if (linkedSearchTimer !== null) clearTimeout(linkedSearchTimer);
+  if (query.length < 2) {
+    hideLinkedSuggestions();
+    setLinkedHelp("Type at least 2 characters to search your bookmarks.");
+    return;
+  }
+  setLinkedHelp("Searching…");
+  linkedSearchTimer = setTimeout(() => {
+    void (async () => {
+      try {
+        const params = new URLSearchParams({ q: query, limit: "8", sort: "added_at", direction: "desc" });
+        const result = await api<BookmarkPageResponse>("/api/bookmarks?" + params.toString());
+        // A stale response must never overwrite a newer query's suggestions.
+        if (generation !== linkedSearchGeneration) return;
+        const editingId = el<HTMLInputElement>("#bookmarkId").value;
+        const currentUrl = el<HTMLInputElement>("#bookmarkUrl").value.trim();
+        const matches = result.bookmarks.filter(
+          bookmark => bookmark.id !== editingId && bookmark.url !== currentUrl,
+        );
+        const menu = el("#bookmarkLinkedSuggestions");
+        menu.innerHTML = matches.map(linkedSuggestionMarkup).join("");
+        menu.hidden = menu.childElementCount === 0;
+        search.setAttribute("aria-expanded", menu.hidden ? "false" : "true");
+        menu.querySelectorAll<HTMLButtonElement>("[data-linked-url]").forEach(button => {
+          button.addEventListener("click", () => {
+            showLinkedBookmark(
+              button.dataset.linkedUrl ?? "",
+              button.dataset.linkedLabel ?? "",
+              button.dataset.linkedDetail ?? "",
+            );
+          });
+        });
+        setLinkedHelp(matches.length === 0
+          ? "No matching bookmarks found."
+          : "Choose one existing bookmark.");
+      } catch (error) {
+        if (generation !== linkedSearchGeneration) return;
+        hideLinkedSuggestions();
+        setLinkedHelp(messageOf(error));
+      }
+    })();
+  }, 220);
+}
+
+/** Resets bookmark tag editor for the dashboard UI. */
 function resetBookmarkTagEditor(tags: BookmarkDetail["tags"] = []): void {
   selectedBookmarkTags.clear();
   for (const tag of tags) selectedBookmarkTags.set(tag.normalized_name, tag.display_name);
@@ -1149,6 +1596,7 @@ function resetBookmarkTagEditor(tags: BookmarkDetail["tags"] = []): void {
   renderBookmarkTags();
 }
 
+/** Shows detail for the dashboard UI. */
 function showDetail(detail: BookmarkDetail): void {
   currentBookmark = detail;
   el("#bookmarkDetailView").hidden = false;
@@ -1173,12 +1621,14 @@ function showDetail(detail: BookmarkDetail): void {
   el<HTMLButtonElement>("#deleteDetailButton").hidden = !inTrash;
 }
 
+/** Opens the selected bookmark detail and loads its editable relationships. */
 async function openBookmark(id: string): Promise<void> {
   const detail = (await api<{ bookmark: BookmarkDetail }>("/api/bookmarks/" + id)).bookmark;
   showDetail(detail);
   el<HTMLDialogElement>("#bookmarkDialog").showModal();
 }
 
+/** Copies bookmark detail into the editor fields and resets transient controls. */
 function populateEditor(detail: BookmarkDetail | null): void {
   el("#bookmarkDetailView").hidden = true;
   el<HTMLFormElement>("#bookmarkForm").hidden = false;
@@ -1188,7 +1638,8 @@ function populateEditor(detail: BookmarkDetail | null): void {
   el<HTMLInputElement>("#bookmarkRevision").value = String(detail?.revision ?? "");
   el<HTMLInputElement>("#relatedBookmarkId").value = related?.id || "";
   el<HTMLInputElement>("#bookmarkUrl").value = detail?.url || "";
-  linkedInput.value = related?.url || "";
+  clearLinkedBookmark();
+  if (related !== null) showLinkedBookmark(related.url, related.title || related.url);
   linkedInput.dataset.original = related?.url || "";
   el<HTMLInputElement>("#bookmarkTitle").value = detail?.title || "";
   el<HTMLTextAreaElement>("#bookmarkDescription").value = detail?.description || "";
@@ -1202,8 +1653,61 @@ function populateEditor(detail: BookmarkDetail | null): void {
   el<HTMLButtonElement>("#trashBookmarkButton").hidden = !detail;
 }
 
+/**
+ * The sidebar is a drawer below 900px. Only the narrow layout renders the
+ * toggle, so the wide layout is unaffected and needs no matching teardown.
+ */
+function initSidebarDrawer(): void {
+  const toggle = maybe<HTMLButtonElement>("#sidebarToggle");
+  const sidebar = maybe("#appSidebar");
+  const scrim = maybe("#sidebarScrim");
+  if (toggle === null || sidebar === null || scrim === null) return;
+
+  /** Sets open for the dashboard UI. */
+  const setOpen = (open: boolean): void => {
+    document.body.classList.toggle("sidebar-open", open);
+    toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    scrim.hidden = !open;
+    if (open) sidebar.querySelector<HTMLElement>("button, a")?.focus();
+    else toggle.focus();
+  };
+
+  toggle.addEventListener("click", () => {
+    setOpen(!document.body.classList.contains("sidebar-open"));
+  });
+  scrim.addEventListener("click", () => setOpen(false));
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape" && document.body.classList.contains("sidebar-open")) {
+      setOpen(false);
+    }
+  });
+  /*
+   * Choosing a folder or topic is the end of what the drawer is for.
+   *
+   * Capture phase, because a folder button's own handler re-renders the whole
+   * navigation: by the time a bubbling listener ran, the clicked button would be
+   * detached and `closest` would no longer find it inside the sidebar.
+   */
+  sidebar.addEventListener("click", event => {
+    if (!(event.target instanceof Element)) return;
+    if (event.target.closest("#folderNavigation button, #tagNavigation button, #addBookmarkButton") === null) return;
+    if (document.body.classList.contains("sidebar-open")) setOpen(false);
+  }, { capture: true });
+  // Growing past the breakpoint leaves the permanent sidebar visible, so the
+  // open state and its scroll lock have to be dropped.
+  const wide = window.matchMedia("(min-width: 901px)");
+  wide.addEventListener("change", event => {
+    if (event.matches && document.body.classList.contains("sidebar-open")) {
+      document.body.classList.remove("sidebar-open");
+      toggle.setAttribute("aria-expanded", "false");
+      scrim.hidden = true;
+    }
+  });
+}
+
 if (page === "dashboard") {
   initHowTo();
+  initSidebarDrawer();
   let storedView = "grid";
   try { storedView = localStorage.getItem("lg-view-mode") || "grid"; } catch {
     // Fall back to the grid when browser storage is unavailable.
@@ -1277,8 +1781,10 @@ if (page === "dashboard") {
   });
   el<HTMLButtonElement>("#viewGridButton")?.addEventListener("click", () => setViewMode("grid"));
   el<HTMLButtonElement>("#viewListButton")?.addEventListener("click", () => setViewMode("list"));
+  initAiNotice();
   void (async () => {
     await refreshLibraryViews();
+    showAiNotice();
     try {
       const setupImportError = sessionStorage.getItem("lg-import-error");
       if (setupImportError !== null) {
@@ -1313,37 +1819,173 @@ if (page === "dashboard") {
   /**
    * Bookmarks also arrive from the extension and the iOS Shortcut, and AI moves
    * them out of Unsorted long after the page loaded. Neither reaches this tab,
-   * so the sidebar counts and the grid silently go stale.
+   * so the sidebar counts and the grid can go stale.
    *
-   * Returning to the tab is the moment a capture has almost certainly just
-   * happened, so that drives the refresh. The timer only covers work already
-   * known to be in flight, and stops as soon as the queue drains — polling
-   * /api/bootstrap is not free, since it runs the backlog repair sweeps.
+   * There is no interval. Coming back to the tab is a real event — and the one
+   * moment a capture has almost certainly just happened — so that is what
+   * triggers a check. The check reads state, compares it against what is already
+   * painted, and returns without touching the DOM when nothing changed, so a
+   * repaint only ever follows a state change. Repaints from the owner's own
+   * edits stay immediate, driven by the mutation that caused them.
    */
   let refreshing = false;
-  const refreshIfIdle = async (): Promise<void> => {
+  /** Repaints if state changed for the dashboard UI. */
+  const repaintIfStateChanged = async (): Promise<void> => {
     if (refreshing || document.hidden) return;
     refreshing = true;
     try {
-      await refreshLibraryViews();
+      await loadBootstrap();
+      const fingerprint = libraryFingerprint();
+      if (fingerprint === lastLibraryFingerprint) return;
+      lastLibraryFingerprint = fingerprint;
+      renderFolders();
+      renderTagNavigation();
+      renderAiAlert();
+      await loadBookmarks(false, true);
+      /*
+       * Counts are read before the list, so anything the queue moves between
+       * the two requests leaves them disagreeing — a sidebar reading "Unsorted
+       * 1" beside a folder that opens empty, because AI filed the bookmark in
+       * the gap. Re-reading after the list closes that window: the counts end
+       * up at least as fresh as the rows they label.
+       */
+      await loadBootstrap();
+      const settled = libraryFingerprint();
+      if (settled !== lastLibraryFingerprint) {
+        lastLibraryFingerprint = settled;
+        renderFolders();
+        renderTagNavigation();
+        renderAiAlert();
+      }
     } catch {
-      // A failed refresh leaves the last good view; the next one recovers it.
+      // A failed check leaves the last good view; the next one recovers it.
     } finally {
       refreshing = false;
     }
   };
-  const aiWorkPending = (): boolean => {
-    const progress = state().automationProgress;
-    return Number(progress.pending) + Number(progress.processing) > 0;
-  };
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) void refreshIfIdle();
+    if (!document.hidden) void repaintIfStateChanged();
   });
-  window.addEventListener("focus", () => void refreshIfIdle());
-  window.setInterval(() => {
-    if (aiWorkPending()) void refreshIfIdle();
-  }, 30_000);
+  window.addEventListener("focus", () => void repaintIfStateChanged());
 
+  /*
+   * The live connection. Organizing happens in a queue consumer minutes after
+   * a capture, in another isolate, so nothing in this tab is party to that
+   * write — there is no local event to react to. This is that missing event:
+   * the consumer announces the change and the tab checks, so a repaint is still
+   * only ever a consequence of state having actually changed.
+   *
+   * The reconnect delay is a connection backoff, not a refresh interval: it
+   * governs when a dropped socket is re-established, never when the DOM is
+   * touched.
+   */
+  /** Connects live updates for the dashboard UI. */
+  const connectLiveUpdates = (): void => {
+    let socket: WebSocket | null = null;
+    let reconnectDelay = 1000;
+    let keepAlive: ReturnType<typeof setInterval> | null = null;
+
+    /** Stops keep alive for the dashboard UI. */
+    const stopKeepAlive = (): void => {
+      if (keepAlive !== null) {
+        clearInterval(keepAlive);
+        keepAlive = null;
+      }
+    };
+
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    /** Schedules reconnect for the dashboard UI. */
+    const scheduleReconnect = (delay: number): void => {
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      retryTimer = setTimeout(() => {
+        retryTimer = null;
+        open();
+      }, delay);
+    };
+
+    /** Opens the UI or connection managed by its enclosing component. */
+    const open = (): void => {
+      if (socket !== null) return;
+      const endpoint = (location.protocol === "https:" ? "wss://" : "ws://") +
+        location.host + "/api/events";
+      try {
+        socket = new WebSocket(endpoint);
+      } catch {
+        /*
+         * Previously this returned and nothing ever tried again, so one failed
+         * construction — mid-deploy, offline for a moment — left the page
+         * permanently disconnected and silently back to needing a reload.
+         */
+        socket = null;
+        scheduleReconnect(reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 60_000);
+        return;
+      }
+      socket.addEventListener("open", () => {
+        reconnectDelay = 1000;
+        stopKeepAlive();
+        /*
+         * Anything announced while this tab was disconnected was announced to
+         * nobody — the notification is a signal, not a queue, so there is
+         * nothing to replay. Checking once on every connection is what makes a
+         * dropped socket self-healing instead of a silent stall until reload.
+         */
+        void repaintIfStateChanged();
+        // Intermediaries drop a silent socket; this keeps it answered.
+        keepAlive = setInterval(() => {
+          if (socket?.readyState === WebSocket.OPEN) socket.send("ping");
+        }, 45_000);
+      });
+      socket.addEventListener("message", event => {
+        let payload: unknown;
+        try {
+          payload = JSON.parse(String(event.data));
+        } catch {
+          return;
+        }
+        if ((payload as { type?: unknown }).type !== "library-changed") return;
+        void repaintIfStateChanged();
+      });
+      socket.addEventListener("close", () => {
+        stopKeepAlive();
+        socket = null;
+        // Backing off avoids hammering a deployment that is redeploying.
+        scheduleReconnect(reconnectDelay);
+        reconnectDelay = Math.min(reconnectDelay * 2, 60_000);
+      });
+      socket.addEventListener("error", () => socket?.close());
+    };
+
+    /*
+     * A backgrounded tab has its timers throttled to minutes, so a socket that
+     * dies while the tab is away — sleep, a redeploy, a network change — can
+     * still be waiting on its backoff when the owner looks again. Returning to
+     * the tab is the moment a live connection matters, so it reconnects then
+     * rather than whenever the timer happens to come round.
+     */
+    /** Restores the dragged bookmark when the drop target rejects the move. */
+    const reviveIfDropped = (): void => {
+      if (document.hidden) return;
+      if (socket === null || socket.readyState === WebSocket.CLOSED) {
+        reconnectDelay = 1000;
+        socket = null;
+        open();
+      }
+    };
+    document.addEventListener("visibilitychange", reviveIfDropped);
+    window.addEventListener("focus", reviveIfDropped);
+    window.addEventListener("online", reviveIfDropped);
+
+    open();
+    window.addEventListener("pagehide", () => {
+      stopKeepAlive();
+      if (retryTimer !== null) clearTimeout(retryTimer);
+      socket?.close();
+    }, { once: true });
+  };
+  connectLiveUpdates();
+
+  /** Binds toolbar toggle for the dashboard UI. */
   const bindToolbarToggle = (
     selector: string,
     read: () => boolean,
@@ -1381,11 +2023,27 @@ if (page === "dashboard") {
       el("#bookmarkTagSuggestions").hidden = true;
       el<HTMLInputElement>("#bookmarkTagInput").setAttribute("aria-expanded", "false");
     }
+    if (!(event.target instanceof Element) || event.target.closest(".bookmark-link-field") === null) {
+      hideLinkedSuggestions();
+    }
   });
+  el<HTMLInputElement>("#bookmarkLinkedSearch").addEventListener("input", scheduleLinkedSearch);
+  el<HTMLInputElement>("#bookmarkLinkedSearch").addEventListener("keydown", event => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      hideLinkedSuggestions();
+    }
+  });
+  el<HTMLButtonElement>("#bookmarkLinkedClear").addEventListener("click", () => clearLinkedBookmark(true));
   el<HTMLButtonElement>("#filterButton").addEventListener("click", () => el<HTMLDialogElement>("#filterDialog").showModal());
+  el<HTMLInputElement>("#dateFrom").addEventListener("change", () => syncDateRange());
+  el<HTMLInputElement>("#dateTo").addEventListener("change", () => syncDateRange());
   el<HTMLFormElement>("#filterForm").addEventListener("submit", event => {
     if ((event.submitter as HTMLButtonElement | null)?.value === "cancel") return;
     event.preventDefault();
+    // An inverted range keeps the dialog open rather than applying a filter
+    // that can only ever return nothing.
+    if (!syncDateRange()) return;
     updateFilterCount();
     el<HTMLDialogElement>("#filterDialog").close();
     void loadBookmarks();
@@ -1398,6 +2056,7 @@ if (page === "dashboard") {
     el<HTMLSelectElement>("#dateField").value = "added_at";
     el<HTMLInputElement>("#dateFrom").value = "";
     el<HTMLInputElement>("#dateTo").value = "";
+    syncDateRange();
     updateFilterCount();
   });
   el<HTMLButtonElement>("#loadMoreBookmarks").addEventListener("click", () => {
@@ -1541,25 +2200,57 @@ if (page === "dashboard") {
   });
 }
 
+/** Shows secret for the dashboard UI. */
 function showSecret(selector: string, value: string): void {
   el(selector).textContent = value;
 }
 
+/**
+ * Confirms a copy on the button itself, then puts it back.
+ *
+ * The confirmation used to be a sentence in a status line elsewhere on the
+ * panel, which is easy to miss when your attention is on the thing you just
+ * clicked. Failure still goes to the status line, because "nothing was copied,
+ * select it by hand" is more than a button can say.
+ */
+const copyResetTimers = new WeakMap<HTMLButtonElement, ReturnType<typeof setTimeout>>();
+
+/** Copies secret for the dashboard UI. */
 async function copySecret(
   valueSelector: string,
   statusSelector: string,
-  successMessage: string,
+  button: HTMLButtonElement,
 ): Promise<void> {
   const value = el(valueSelector).textContent?.trim() ?? "";
   if (value.length === 0) return;
   try {
     await navigator.clipboard.writeText(value);
-    el(statusSelector).textContent = successMessage;
   } catch {
     el(statusSelector).textContent = "Copy failed. Select and copy the value manually.";
+    return;
   }
+  el(statusSelector).textContent = "";
+  // Clicking again before it reverts restarts the confirmation rather than
+  // letting the earlier timer put the original label back mid-flash.
+  const running = copyResetTimers.get(button);
+  if (running !== undefined) clearTimeout(running);
+  else {
+    button.dataset.copyLabel = button.textContent ?? "Copy";
+    // Hold the width the label had, so the row does not reflow between
+    // "Copy code" and the shorter "Copied" and back.
+    button.style.minWidth = `${button.getBoundingClientRect().width.toString()}px`;
+  }
+  button.textContent = "Copied";
+  button.classList.add("copied");
+  copyResetTimers.set(button, setTimeout(() => {
+    button.textContent = button.dataset.copyLabel ?? "Copy";
+    button.classList.remove("copied");
+    button.style.minWidth = "";
+    copyResetTimers.delete(button);
+  }, 1600));
 }
 
+/** Renders automation progress for the dashboard UI. */
 function renderAutomationProgress() {
   const progress = state().automationProgress;
   const total = Number(progress.total || 0);
@@ -1601,6 +2292,118 @@ function setStatus(selector: string, text: string, kind: "" | "error" | "loading
   node.className = kind === "" ? "status" : "status " + kind;
 }
 
+interface McpConnection {
+  id: string;
+  clientType: "chatgpt" | "claude" | "other";
+  displayName: string;
+  scope: "library:read";
+  connectedAt: string;
+  lastUsedAt: string | null;
+}
+
+interface McpConnectionsResponse {
+  endpoint: string;
+  connections: McpConnection[];
+}
+
+/** Describes privacy-safe connection activity without exposing exact request history. */
+function mcpLastUsedLabel(value: string | null): string {
+  if (value === null) return "Not used yet";
+  const elapsed = Math.max(0, Date.now() - Date.parse(value));
+  if (!Number.isFinite(elapsed) || elapsed < 60_000) return "Last used just now";
+  if (elapsed < 60 * 60_000) {
+    const minutes = Math.max(1, Math.floor(elapsed / 60_000));
+    return `Last used ${minutes.toString()} min ago`;
+  }
+  if (elapsed < 24 * 60 * 60_000) {
+    const hours = Math.max(1, Math.floor(elapsed / (60 * 60_000)));
+    return `Last used ${hours.toString()} hr ago`;
+  }
+  return `Last used ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium" }).format(
+    new Date(value),
+  )}`;
+}
+
+/** Renders the owner's independently revocable OAuth connections using safe DOM APIs. */
+function renderMcpConnections(connections: McpConnection[]): void {
+  const list = el("#mcpConnections");
+  list.replaceChildren();
+  if (connections.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "muted";
+    empty.textContent = "No AI assistants connected yet.";
+    list.appendChild(empty);
+    return;
+  }
+  for (const connection of connections) {
+    const row = document.createElement("article");
+    row.className = "ai-connection";
+    const copy = document.createElement("div");
+    copy.className = "ai-connection-copy";
+    const title = document.createElement("p");
+    title.className = "ai-connection-title";
+    title.appendChild(document.createTextNode(`${connection.displayName} — Connected `));
+    const check = document.createElement("span");
+    check.className = "connection-check";
+    check.setAttribute("aria-label", "connected");
+    check.textContent = "✓";
+    title.appendChild(check);
+    const meta = document.createElement("p");
+    meta.className = "ai-connection-meta";
+    meta.textContent = `Read-only access · ${mcpLastUsedLabel(connection.lastUsedAt)}`;
+    copy.appendChild(title);
+    copy.appendChild(meta);
+    const disconnect = document.createElement("button");
+    disconnect.type = "button";
+    disconnect.className = "secondary";
+    disconnect.textContent = "Disconnect";
+    disconnect.addEventListener("click", async () => {
+      disconnect.disabled = true;
+      disconnect.textContent = "Disconnecting…";
+      try {
+        await api(`/api/mcp/connections/${encodeURIComponent(connection.id)}`, {
+          method: "DELETE",
+        });
+        await loadMcpConnections();
+        setStatus("#mcpConnectionStatus", `${connection.displayName} disconnected.`);
+      } catch (error) {
+        disconnect.disabled = false;
+        disconnect.textContent = "Disconnect";
+        setStatus("#mcpConnectionStatus", messageOf(error), "error");
+      }
+    });
+    row.appendChild(copy);
+    row.appendChild(disconnect);
+    list.appendChild(row);
+  }
+}
+
+/** Refreshes the stable MCP address and the active per-assistant OAuth grants. */
+async function loadMcpConnections(): Promise<void> {
+  const response = await api<McpConnectionsResponse>("/api/mcp/connections");
+  el("#mcpEndpoint").textContent = response.endpoint;
+  renderMcpConnections(response.connections);
+}
+
+/** Opens an external setup page while keeping the self-hosted endpoint easy to paste. */
+async function openMcpSetup(destination: string, assistant: string): Promise<void> {
+  const endpoint = el("#mcpEndpoint").textContent?.trim() || `${location.origin}/mcp`;
+  window.open(destination, "_blank", "noopener,noreferrer");
+  try {
+    await navigator.clipboard.writeText(endpoint);
+    setStatus(
+      "#mcpConnectionStatus",
+      `${assistant} setup opened. The Later Gator address is copied—paste it when asked.`,
+    );
+  } catch {
+    setStatus(
+      "#mcpConnectionStatus",
+      `${assistant} setup opened. Copy the address under Advanced connection details if asked.`,
+    );
+  }
+}
+
+/** Loads settings for the dashboard UI. */
 async function loadSettings() {
   bootstrap = (await api<{ state: BootstrapState }>("/api/bootstrap")).state;
   const providerSelect = el<HTMLSelectElement>("#providerName");
@@ -1617,10 +2420,15 @@ async function loadSettings() {
     gateway.value = state().provider.ai_gateway_id ?? "";
   }
   if (el("#providerStatus").dataset.transient !== "true") {
+    // The raw safe code used to be printed here, so the same pause read one way
+    // in Settings and another in the test result.
     setStatus(
       "#providerStatus",
       state().provider.operational_status === "waiting"
-        ? "AI needs attention: " + (state().provider.last_safe_error_code || "provider unavailable")
+        ? providerStatusMessage(
+            state().provider.last_safe_error_code,
+            "AI needs attention: the provider is unavailable.",
+          )
         : "AI provider is ready.",
       state().provider.operational_status === "waiting" ? "error" : "",
     );
@@ -1635,6 +2443,7 @@ async function loadSettings() {
   return bootstrap;
 }
 
+/** Toggles key for the dashboard UI. */
 function toggleKey() {
   el("#providerKeyLabel").hidden = el<HTMLSelectElement>("#providerName").value === "workers-ai";
 }
@@ -1642,11 +2451,12 @@ function toggleKey() {
 if (page === "settings") {
   initHowTo();
   let settingsPageActive = true;
+  /** Displays an actionable settings error and reports whether handling should stop. */
   const shouldReportSettingsError = (): boolean =>
     settingsPageActive && !document.hidden && document.body.dataset.page === "settings";
   void (async () => {
     try {
-      await loadSettings();
+      await Promise.all([loadSettings(), loadMcpConnections()]);
       const activeImport = state().activeImport;
       if (activeImport !== null) {
         currentImportId = activeImport.id;
@@ -1691,6 +2501,7 @@ if (page === "settings") {
   const markProviderDirty = (): void => {
     el<HTMLInputElement>("#providerModel").dataset.dirty = "true";
   };
+  /** Releases provider fields for the dashboard UI. */
   const releaseProviderFields = (): void => {
     delete el<HTMLInputElement>("#providerModel").dataset.dirty;
     delete el("#providerStatus").dataset.transient;
@@ -1818,7 +2629,7 @@ if (page === "settings") {
     el("#extensionCredentialStatus").textContent = "Connection code generated. Copy it before leaving this page.";
   });
   el<HTMLButtonElement>("#copyExtensionCredential").addEventListener("click", async () => {
-    await copySecret("#extensionCredential", "#extensionCredentialStatus", "Connection code copied.");
+    await copySecret("#extensionCredential", "#extensionCredentialStatus", el<HTMLButtonElement>("#copyExtensionCredential"));
   });
   el<HTMLButtonElement>("#pairIos").addEventListener("click", async () => {
     const result = await api<{ credential: { token: string } }>("/api/capture/credentials", {
@@ -1831,19 +2642,27 @@ if (page === "settings") {
     el("#iosCredentialStatus").textContent = "Connection details generated. Copy them before leaving this page.";
   });
   el<HTMLButtonElement>("#copyIosEndpoint").addEventListener("click", async () => {
-    await copySecret("#iosEndpoint", "#iosCredentialStatus", "Endpoint copied.");
+    await copySecret("#iosEndpoint", "#iosCredentialStatus", el<HTMLButtonElement>("#copyIosEndpoint"));
   });
   el<HTMLButtonElement>("#copyIosToken").addEventListener("click", async () => {
-    await copySecret("#iosToken", "#iosCredentialStatus", "Token copied.");
+    await copySecret("#iosToken", "#iosCredentialStatus", el<HTMLButtonElement>("#copyIosToken"));
   });
-  el<HTMLButtonElement>("#rotateMcp").addEventListener("click", async () => {
-    const result = await api<{ url: string }>("/api/mcp/rotate", { method: "POST", body: "{}" });
-    showSecret("#mcpCredential", result.url);
-    el("#mcpCredentialPanel").hidden = false;
-    el("#mcpCredentialStatus").textContent = "MCP URL generated. Copy it before leaving this page.";
+  el<HTMLButtonElement>("#connectChatGpt").addEventListener("click", async () => {
+    await openMcpSetup("https://chatgpt.com/#settings/Connectors", "ChatGPT");
   });
-  el<HTMLButtonElement>("#copyMcpCredential").addEventListener("click", async () => {
-    await copySecret("#mcpCredential", "#mcpCredentialStatus", "MCP URL copied.");
+  el<HTMLButtonElement>("#connectClaude").addEventListener("click", async () => {
+    const endpoint = el("#mcpEndpoint").textContent?.trim() || `${location.origin}/mcp`;
+    const destination = "https://claude.ai/customize/connectors?modal=add-custom-connector" +
+      `&connectorName=${encodeURIComponent("Later Gator")}` +
+      `&connectorUrl=${encodeURIComponent(endpoint)}`;
+    await openMcpSetup(destination, "Claude");
+  });
+  el<HTMLButtonElement>("#copyMcpEndpoint").addEventListener("click", async () => {
+    await copySecret(
+      "#mcpEndpoint",
+      "#mcpConnectionStatus",
+      el<HTMLButtonElement>("#copyMcpEndpoint"),
+    );
   });
   el<HTMLButtonElement>("#resetApplicationButton").addEventListener("click", async () => {
     const confirmation = prompt("This permanently deletes the complete Later Gator library and returns to setup. Type DELETE EVERYTHING to continue.");

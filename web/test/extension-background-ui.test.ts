@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import chromeManifestRaw from "../../extension/chrome/manifest.json?raw";
+import chromeManifestRaw from "../../extension/manifests/chrome.json?raw";
 
 const deployment = "https://later-gator.example.workers.dev";
 const token = "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFG";
@@ -53,7 +53,9 @@ describe("extension saved-page background indicator", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     // @ts-expect-error The shipped WebExtension background script is intentionally plain JavaScript.
-    await import("../../extension/chrome/background.js");
+    await import("../../extension/shared/common.js");
+    // @ts-expect-error The shipped WebExtension background script is intentionally plain JavaScript.
+    await import("../../extension/shared/background.js");
 
     await vi.waitFor(() => {
       expect(browser.action.setBadgeText).toHaveBeenCalledWith({ text: "✓", tabId: 7 });

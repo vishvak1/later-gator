@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { dashboardPage } from "../../src/v6/routes/pages";
+import { dashboardPage } from "../../src/routes/pages";
 
 const importId = "00000000-0000-4000-8000-000000000268";
 
@@ -137,7 +137,7 @@ describe("dashboard import progress", () => {
         return Promise.resolve(json({
           bookmarks: [{
             id: bookmarkId,
-            title: "Versioned thumbnail",
+            title: "Current thumbnail",
             description: null,
             folder_name: "Articles",
             hostname: "example.com",

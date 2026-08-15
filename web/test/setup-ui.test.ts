@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { setupPage } from "../../src/v6/routes/pages";
+import { setupPage } from "../../src/routes/pages";
 
 describe("setup browser initialization", () => {
   beforeEach(async () => {

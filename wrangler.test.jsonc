@@ -3,24 +3,27 @@
   "name": "later-gator-test",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-29",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "vars": {
     "ENVIRONMENT": "test",
     "TIMEZONE": "UTC",
-    "BOOTSTRAP_PASSWORD": "test-pass"
+    "PASSWORD": "test-pass"
   },
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "later-gator-test",
-      "database_id": "local-test-database",
-      "migrations_dir": "migrations"
+      "database_id": "local-test-database"
     }
   ],
   "kv_namespaces": [
     {
       "binding": "THUMBNAILS",
       "id": "local-test-thumbnails"
+    },
+    {
+      "binding": "OAUTH_KV",
+      "id": "local-test-oauth"
     }
   ],
   "assets": {

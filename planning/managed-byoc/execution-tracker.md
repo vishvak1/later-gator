@@ -1777,7 +1777,12 @@ Validation:
   typecheck, and runtime/control-plane dry-run bundles;
 - the GitHub Actions YAML parsed successfully, the development unpacked folder
   was generated with the exact development control-plane origin, and
-  `git diff --check` passed.
+  `git diff --check` passed;
+- the first GitHub runner exposed that Ubuntu did not provide `rg`; the
+  documented-function gate now prefers `rg` and falls back to dependency-free
+  recursive discovery when it is absent. Both the normal and forced-no-`rg`
+  paths report 636 documented functions across 90 source files, and root lint
+  passes.
 
 External handoff before the first automatic deployment:
 

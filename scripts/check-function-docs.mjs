@@ -2,12 +2,20 @@
 // Enforces documentation for named production functions without demanding
 // comments on short anonymous callbacks such as map and event handlers.
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
 const REPOSITORY_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const SOURCE_ROOTS = [
+  "apps/runtime/src",
+  "apps/control-plane/src",
+  "packages/contracts/src",
+  "apps/runtime/web/src",
+  "apps/chrome-extension/src",
+  "scripts",
+];
 
 /** Returns the stable name of a function-like syntax node, when it has one. */
 function functionName(node, sourceFile) {
@@ -42,28 +50,45 @@ function hasDocumentation(text, anchor, sourceFile) {
   return /\/\*\*[\s\S]*?\*\//u.test(leadingText);
 }
 
-const files = execFileSync(
-  "rg",
-  [
-    "--files",
-    "apps/runtime/src",
-    "apps/control-plane/src",
-    "packages/contracts/src",
-    "apps/runtime/web/src",
-    "apps/chrome-extension/src",
-    "scripts",
-    "-g",
-    "*.ts",
-    "-g",
-    "*.js",
-    "-g",
-    "*.mjs",
-  ],
-  { cwd: REPOSITORY_ROOT, encoding: "utf8" },
-)
-  .trim()
-  .split("\n")
-  .filter(Boolean);
+/**
+ * Lists supported source files recursively when ripgrep is unavailable.
+ * @returns {string[]}
+ */
+function fallbackSourceFiles(directory) {
+  const found = [];
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const target = join(directory, entry.name);
+    if (entry.isDirectory()) found.push(...fallbackSourceFiles(target));
+    else if (entry.isFile() && /\.(?:[cm]?js|ts)$/u.test(entry.name)) {
+      found.push(relative(REPOSITORY_ROOT, target).replaceAll("\\", "/"));
+    }
+  }
+  return found;
+}
+
+/**
+ * Finds production source files with ripgrep or a dependency-free CI fallback.
+ * @returns {string[]}
+ */
+function sourceFiles() {
+  try {
+    return execFileSync(
+      "rg",
+      ["--files", ...SOURCE_ROOTS, "-g", "*.ts", "-g", "*.js", "-g", "*.mjs"],
+      { cwd: REPOSITORY_ROOT, encoding: "utf8" },
+    )
+      .trim()
+      .split("\n")
+      .filter(Boolean);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    return SOURCE_ROOTS.flatMap((directory) =>
+      fallbackSourceFiles(join(REPOSITORY_ROOT, directory))
+    ).sort();
+  }
+}
+
+const files = sourceFiles();
 
 const missing = [];
 let namedFunctionCount = 0;

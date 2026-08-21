@@ -92,12 +92,14 @@ describe("control-plane extension pairing", () => {
     )).rejects.toMatchObject({ code: "extension_request_rejected" });
   });
 
-  it("rejects an unapproved extension origin before identity login", async () => {
-    await expect(startExtensionPairing(
-      env.CONTROL_DB,
-      config,
-      connectUrl({ redirect_uri: "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chromiumapp.org/cloudflare" }),
-      100,
-    )).rejects.toMatchObject({ code: "extension_redirect_rejected" });
+  it("rejects an unapproved extension origin in every environment before identity login", async () => {
+    for (const environment of ["development", "production", "test"] as const) {
+      await expect(startExtensionPairing(
+        env.CONTROL_DB,
+        { ...config, environment },
+        connectUrl({ redirect_uri: "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.chromiumapp.org/cloudflare" }),
+        100,
+      )).rejects.toMatchObject({ code: "extension_redirect_rejected" });
+    }
   });
 });

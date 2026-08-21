@@ -27,6 +27,9 @@ const schema = compactD1Schema(readFileSync("./schema.sql", "utf8"));
 export default defineConfig({
   plugins: [
     cloudflareTest({
+      // Workers AI has no local simulator. Production code receives explicit
+      // fake Env objects in tests, so CI must never open a remote binding proxy.
+      remoteBindings: false,
       wrangler: { configPath: "./wrangler.test.jsonc" },
       miniflare: {
         // Test bindings are pinned so a developer's .dev.vars cannot leak into

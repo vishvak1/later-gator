@@ -1782,7 +1782,12 @@ Validation:
   documented-function gate now prefers `rg` and falls back to dependency-free
   recursive discovery when it is absent. Both the normal and forced-no-`rg`
   paths report 636 documented functions across 90 source files, and root lint
-  passes.
+  passes;
+- the next runner exposed that merely declaring Workers AI caused the Vitest
+  integration to request a remote proxy and CI credentials. The runtime test
+  project now disables remote bindings explicitly; production-provider tests
+  continue to pass explicit fake `Env` objects. All 89 runtime tests pass with
+  `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` removed from the process.
 
 External handoff before the first automatic deployment:
 

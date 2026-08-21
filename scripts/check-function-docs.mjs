@@ -3,7 +3,11 @@
 // comments on short anonymous callbacks such as map and event handlers.
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import ts from "typescript";
+
+const REPOSITORY_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Returns the stable name of a function-like syntax node, when it has one. */
 function functionName(node, sourceFile) {
@@ -42,9 +46,11 @@ const files = execFileSync(
   "rg",
   [
     "--files",
-    "src",
-    "web/src",
-    "extension/shared",
+    "apps/runtime/src",
+    "apps/control-plane/src",
+    "packages/contracts/src",
+    "apps/runtime/web/src",
+    "apps/chrome-extension/src",
     "scripts",
     "-g",
     "*.ts",
@@ -53,7 +59,7 @@ const files = execFileSync(
     "-g",
     "*.mjs",
   ],
-  { encoding: "utf8" },
+  { cwd: REPOSITORY_ROOT, encoding: "utf8" },
 )
   .trim()
   .split("\n")
@@ -62,7 +68,7 @@ const files = execFileSync(
 const missing = [];
 let namedFunctionCount = 0;
 for (const file of files) {
-  const text = readFileSync(file, "utf8");
+  const text = readFileSync(join(REPOSITORY_ROOT, file), "utf8");
   const sourceFile = ts.createSourceFile(
     file,
     text,

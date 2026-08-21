@@ -5,7 +5,12 @@ import esbuild from "esbuild";
 import { execFileSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const REPOSITORY_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const RUNTIME_ROOT = join(REPOSITORY_ROOT, "apps", "runtime");
+process.chdir(RUNTIME_ROOT);
 
 const PUBLIC_DIR = "web/public";
 const OUT_DIR = `${PUBLIC_DIR}/assets`;
@@ -25,6 +30,7 @@ if (existsSync(IMG_SRC)) cpSync(IMG_SRC, `${PUBLIC_DIR}/img`, { recursive: true 
 const temporaryDirectory = mkdtempSync(join(tmpdir(), "later-gator-web-"));
 const compiledCss = join(temporaryDirectory, "app.css");
 const tailwindExecutable = join(
+  REPOSITORY_ROOT,
   "node_modules",
   ".bin",
   process.platform === "win32" ? "tailwindcss.cmd" : "tailwindcss",

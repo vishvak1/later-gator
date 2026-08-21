@@ -94,11 +94,10 @@ preserves thumbnail aspect ratios in a masonry layout.
 
 ## Capture and connections
 
-Run `npm run build:extensions` to generate the browser install folders. Settings
+Run `npm run build:extensions` to generate the Chrome install folder. Settings
 can then create separately scoped credentials for:
 
 - The included Chrome extension in `extension/chrome`.
-- The included Firefox extension in `extension/firefox`.
 - An iOS Share Sheet Shortcut that accepts only a URL and reports Saved or
   Failed.
 - Read-only OAuth connections for ChatGPT, Claude, and compatible MCP clients.

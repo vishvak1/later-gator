@@ -6,7 +6,7 @@
 ## 1. Product definition
 
 Later Gator is a private, single-owner bookmark manager deployed to the owner's
-Cloudflare account. It captures links from the dashboard, Chrome, Firefox, and
+Cloudflare account. It captures links from the dashboard, Chrome, and
 the iOS Share Sheet; stores the library in D1; and uses a selected AI provider
 to organize bookmarks that are waiting in Unsorted.
 
@@ -151,6 +151,12 @@ sent to Need for Review. Temporary provider or transport failures retain work
 for retry. A spent Workers AI allocation records a safe retry time and resumes
 automatically when the waiting period has passed.
 
+Need for Review identifies the durable category: Retrieval failure,
+Insufficient evidence, Invalid AI response, or Destination already saved. Each
+item exposes an opaque diagnostic ID. Redacted structured retrieval events use
+that ID in Workers Logs and report only field lengths, counts, evidence
+presence, and whether Browser Rendering was attempted.
+
 Editing one bookmark never pauses unrelated automation. Revision mismatches
 refresh the job against the new bookmark state instead of committing stale
 output.
@@ -187,9 +193,9 @@ bookmark/thumbnail ID, and uses private immutable caching.
 
 ## 12. Capture surfaces
 
-### Browser extensions
+### Chrome extension
 
-Chrome and Firefox use the same popup and background source. The owner generates
+The owner generates
 one connection code in Settings, loads the generated browser folder, and pastes
 the code once. The extension stores only the deployment origin and scoped
 capture token. It requests access to the active page when used and does not
@@ -199,11 +205,25 @@ The popup can save the page to Unsorted for AI or directly to a fixed folder
 with owner-selected tags and relationships. It reports saved, already saved,
 temporary failure, and invalid-connection states accurately.
 
+For an X post or author reply thread, the master link checkbox remains. Its
+popover also gives every discovered link an individual checkbox. Only the
+visible selected set is submitted. If a selected destination already exists,
+the first request saves nothing and asks the owner to Save post and connect, Go
+back to the unchanged selection, or Cancel without saving.
+
 ### iOS Share Sheet
 
 The owner generates a scoped endpoint and token in Settings. The Shortcut sends
 the shared URL with an idempotency key. It reports saved, already saved, or
 failure and does not claim local queuing when the Worker is unreachable.
+
+An X post saved through the Share Sheet resolves only the focal post, not its
+replies. If a destination is already in D1, the organized post is held in Need
+for Review without creating a duplicate destination or relationship. The X
+review overlay shows the current post with a distinct border, the existing
+destination, and locally saved X posts already connected to it. Keep connects
+only checked destinations and moves the post to Social Posts; Remove moves the
+post to Trash; Cancel leaves the review unchanged.
 
 ### MCP
 
@@ -274,5 +294,5 @@ A change is complete only when:
 - changed behavior has regression coverage;
 - the three files in `docs/` agree with the implementation;
 - no bookmark content or credential appears in logs or fixtures;
-- Chrome and Firefox packages are regenerated from the shared source; and
+- the Chrome package is regenerated from the canonical extension source; and
 - named production functions remain documented.

@@ -33,9 +33,9 @@ Useful commands:
 | Command | Purpose |
 | --- | --- |
 | `npm run dev` | Build assets and start local Wrangler development |
-| `npm run build:extensions` | Generate Chrome and Firefox install folders |
-| `npm run build:web` | Generate extensions and content-hashed dashboard assets |
-| `npm run types` | Regenerate `worker-configuration.d.ts` |
+| `npm run build:extensions` | Generate the Chrome install folder |
+| `npm run build:web` | Generate content-hashed dashboard assets |
+| `npm run types` | Regenerate `apps/runtime/worker-configuration.d.ts` |
 | `npm run typecheck` | Strict Worker TypeScript check |
 | `npm run typecheck:web` | Strict dashboard TypeScript check |
 | `npm run check:function-docs` | Require JSDoc on named production functions |
@@ -54,19 +54,20 @@ live provider.
 
 ## 3. Module rules
 
-- `src/domain`: pure normalization, schemas, fixed data, and presentation
+- `apps/runtime/src/domain`: pure normalization, schemas, fixed data, and presentation
   constants. No network or database calls.
-- `src/application`: use-case orchestration across repositories and providers.
-- `src/adapters`: D1 queries, provider calls, remote fetches, rendering, and live
+- `apps/runtime/src/application`: use-case orchestration across repositories and providers.
+- `apps/runtime/src/adapters`: D1 queries, provider calls, remote fetches, rendering, and live
   event integration.
-- `src/routes`: HTTP transport, status codes, and server-rendered page output.
-- `src/security`: cryptography, sessions, and scoped credentials.
-- `src/worker.ts`: routing only; extract substantial behavior into the proper
+- `apps/runtime/src/routes`: HTTP transport, status codes, and server-rendered page output.
+- `apps/runtime/src/security`: cryptography, sessions, and scoped credentials.
+- `apps/runtime/src/worker.ts`: routing only; extract substantial behavior into the proper
   boundary.
-- `web/src`: dashboard behavior. Reuse domain constants when safe for browser
+- `apps/runtime/web/src`: dashboard behavior. Reuse domain constants when safe for browser
   bundling.
-- `extension/shared`: one browser-extension source. Never edit generated browser
-  packages as a source of truth.
+- `apps/chrome-extension`: canonical browser-extension source, Chrome manifest,
+  icons, and extension-specific DOM tests. Never edit generated browser packages
+  as a source of truth.
 
 Keep request state local. Never place a request, session, URL, bookmark, or
 credential in module-level mutable state. Use generated `Env` types. Do not
@@ -80,9 +81,9 @@ callbacks do not require comments when their enclosing call is self-explanatory.
 
 The documentation gate scans:
 
-- `src`;
-- `web/src`;
-- `extension/shared`; and
+- `apps/runtime/src`;
+- `apps/runtime/web/src`;
+- `apps/chrome-extension/src`; and
 - `scripts`.
 
 When adding a function, describe the observable job it performs, not merely its
@@ -92,12 +93,12 @@ and provider quirks; avoid narrating routine statements.
 
 ## 5. D1 workflow
 
-`schema.sql` is the single current schema. There is no numbered application
+`apps/runtime/schema.sql` is the single current schema. There is no numbered application
 migration directory. Initialize local D1 with `npm run db:init:local`.
 
 For a schema change:
 
-1. Update `schema.sql` directly.
+1. Update `apps/runtime/schema.sql` directly.
 2. Update every affected query and row type.
 3. Update tests that initialize or assert the schema.
 4. Add behavior and failure-path coverage.
@@ -108,7 +109,7 @@ Use parameterized D1 statements. Prefer a D1 batch when several statements must
 be applied as one logical write. Rely on constraints for uniqueness and valid
 states, then convert expected constraint failures into safe product outcomes.
 
-`schema.sql` is repeatable for a fresh or already-current database. Do not add
+`apps/runtime/schema.sql` is repeatable for a fresh or already-current database. Do not add
 request-time schema alteration, old-state repair, or hidden data transformation.
 If a future destructive schema change is genuinely required, stop and obtain an
 explicit backup and release decision.
@@ -256,8 +257,8 @@ refresh it.
 
 ## 13. Dashboard development
 
-Server-rendered pages live in `src/routes/pages.ts`; interactive behavior lives
-in `web/src/main.ts`; styles live in `web/src/app.css`. Shared folder icons,
+Server-rendered pages live in `apps/runtime/src/routes/pages.ts`; interactive behavior lives
+in `apps/runtime/web/src/main.ts`; styles live in `apps/runtime/web/src/app.css`. Shared folder icons,
 how-to panels, and provider-status text come from domain modules so server and
 browser do not drift.
 
@@ -278,23 +279,30 @@ constant polling loop.
 
 ## 14. Extension development
 
-Edit only:
+Edit Chrome-extension behavior only in:
 
-- `extension/shared/background.js`;
-- `extension/shared/popup.js`;
-- `extension/shared/popup.html`;
-- `extension/shared/popup.css`;
-- `extension/shared/icons`; or
-- a browser manifest in `extension/manifests`.
+- `apps/chrome-extension/src/background.js`;
+- `apps/chrome-extension/src/common.js`;
+- `apps/chrome-extension/src/popup.js`;
+- `apps/chrome-extension/src/popup.html`;
+- `apps/chrome-extension/src/popup.css`;
+- `apps/chrome-extension/assets/icons`; or
+- `apps/chrome-extension/manifest.json`.
 
-Run `npm run build:extensions` afterward. The generated `extension/chrome` and
-`extension/firefox` directories are ignored and may be safely regenerated.
+Run `npm run build:extensions` afterward. The generated `extension/chrome`
+directory is ignored and may be safely regenerated.
 
 Keep WebExtension code compatible with both browser APIs through the existing
 `browser ?? chrome` adapter. New permissions require a privacy and UX review.
 Pairing codes contain the origin and token but must never appear in links, query
 strings, logs, or analytics. Validate the deployment origin before requesting a
 host permission.
+
+The X-link popover is also the authoritative selection state. Do not re-read
+and union new page links during submission: that would save a link the owner did
+not choose. Duplicate confirmation must remain non-mutating until the explicit
+Save post and connect action; Go back preserves checkbox state and Cancel writes
+nothing.
 
 ## 15. Security checklist
 
@@ -313,10 +321,14 @@ host permission.
 - Keep thumbnail delivery authenticated and content-addressed.
 - Do not expose raw provider errors to users.
 - Do not persist bookmark content in KV.
+- Retrieval diagnostics may log only the approved structured counts and
+  booleans from `apps/runtime/src/observability/retrieval.ts`, plus opaque IDs
+  and safe codes.
 
 ## 16. Testing expectations
 
-Worker tests use the Cloudflare runtime and the complete `schema.sql`. Browser
+Worker tests use the Cloudflare runtime and the complete
+`apps/runtime/schema.sql`. Browser
 tests use a DOM environment and import the shared extension source.
 
 Every behavior change needs a regression test at the narrowest useful layer.

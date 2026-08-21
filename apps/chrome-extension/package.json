@@ -1,0 +1,19 @@
+{
+  "name": "@later-gator/chrome-extension",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Canonical Later Gator Chrome extension source and tests",
+  "scripts": {
+    "build": "node ../../scripts/build-extensions.mjs",
+    "package": "npm run build && node ../../scripts/package-chrome-extension.mjs",
+    "check": "npm run typecheck && npm run test",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "happy-dom": "^20.11.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

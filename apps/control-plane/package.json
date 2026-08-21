@@ -1,0 +1,31 @@
+{
+  "name": "@later-gator/control-plane",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prebuild": "npm run build:release --workspaces=false --prefix ../..",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "build:development": "npm run build:release --workspaces=false --prefix ../.. && wrangler deploy --config wrangler.dev.jsonc --dry-run --outdir dist/development",
+    "check": "npm run types:check && npm run typecheck && npm run test && npm run build",
+    "db:init:development": "wrangler d1 execute CONTROL_DB --config wrangler.dev.jsonc --remote --file schema.sql",
+    "db:init:local": "wrangler d1 execute CONTROL_DB --local --file schema.sql",
+    "dev": "wrangler dev",
+    "deploy:development": "wrangler deploy --config wrangler.dev.jsonc",
+    "pretest": "npm run build:release --workspaces=false --prefix ../..",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "types": "wrangler types",
+    "types:check": "wrangler types --check"
+  },
+  "dependencies": {
+    "@later-gator/contracts": "0.1.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.8",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.114.0"
+  }
+}

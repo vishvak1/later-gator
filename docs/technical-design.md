@@ -23,21 +23,19 @@ Queue consumer can notify open tabs without storing bookmark content.
 ## 2. Repository boundaries
 
 ```text
-src/
-├── index.ts                 Worker export surface
-├── worker.ts                HTTP and Queue routing
-├── application/             product orchestration
-├── domain/                  pure rules, schemas, and presentation constants
-├── adapters/                D1, providers, remote fetch, browser, live events
-├── routes/                  HTTP handlers and server-rendered pages
-├── security/                sessions, credentials, crypto, capture auth
-└── generated/               content-hashed web asset manifest
-web/src/                     dashboard browser code and styles
-extension/shared/            one browser-extension implementation
-extension/manifests/         Chrome and Firefox manifest differences
-test/                        Worker-runtime tests
-web/test/                    browser DOM tests
-schema.sql                   complete current D1 schema
+apps/
+├── runtime/
+│   ├── src/                 Worker and product modules
+│   ├── web/src/             dashboard browser code and styles
+│   ├── test/                Worker-runtime tests
+│   ├── web/test/            dashboard DOM tests
+│   └── schema.sql           complete current D1 schema
+└── chrome-extension/
+    ├── src/                 canonical popup/background implementation
+    ├── assets/icons/        canonical extension icons
+    ├── test/                extension-specific DOM tests
+    └── manifest.json        canonical Chrome manifest
+extension/chrome/            generated Chrome install folder
 docs/                        exactly three authoritative documents
 ```
 
@@ -72,7 +70,8 @@ transform Later Gator data.
 
 ## 4. Entry points and routing
 
-`src/index.ts` exports the Worker and `LibraryEvents`. `src/worker.ts` exposes an
+`apps/runtime/src/index.ts` exports the Worker and `LibraryEvents`.
+`apps/runtime/src/worker.ts` exposes an
 `ExportedHandler<Env>` with `fetch` and `queue` methods.
 
 Important page routes:
@@ -82,7 +81,6 @@ Important page routes:
 - `GET /dashboard`
 - `GET /settings`
 - `GET /extension/chrome`
-- `GET /extension/firefox`
 - `GET /shortcut/ios`
 
 Important authenticated APIs:
@@ -100,7 +98,7 @@ sessions. The stable MCP route accepts only OAuth bearer grants with the
 
 ## 5. D1 schema
 
-`schema.sql` is the complete schema for a fresh or already-current database. It
+`apps/runtime/schema.sql` is the complete schema for a fresh or already-current database. It
 uses `CREATE ... IF NOT EXISTS` and `INSERT OR IGNORE` so initialization is
 repeatable. There is no numbered application migration directory or runtime
 data-migration path.
@@ -110,7 +108,8 @@ Core tables:
 - `app_state`, `profile`, `provider_settings`, `provider_candidates`;
 - `folders`, `bookmarks`, `tags`, `bookmark_tags`,
   `bookmark_relationships`;
-- `background_jobs`, `thumbnail_jobs`, `thumbnails`;
+- `background_jobs`, `thumbnail_jobs`, `thumbnails`,
+  `organization_diagnostics`, `x_destination_reviews`;
 - `auth_config`, `sessions`, `encrypted_credentials`, `login_attempts`;
 - `capture_credentials`, `mcp_connections`, `idempotency_records`;
 - `import_sessions`, `audit_events`, and `bookmarks_fts`.
@@ -140,11 +139,11 @@ npm run db:init:remote
 ```
 
 `npm run deploy` runs remote initialization before `wrangler deploy`. Schema
-changes modify `schema.sql` directly because the project has one current schema.
+changes modify `apps/runtime/schema.sql` directly because the project has one current schema.
 Any destructive schema change requires an explicit backup and release decision;
 it must never be hidden in request handling.
 
-Tests read `schema.sql`, compact each complete statement to the one-line format
+Tests read `apps/runtime/schema.sql`, compact each complete statement to the one-line format
 expected by `D1Database.exec`, and initialize their isolated D1 binding before
 the suite.
 
@@ -317,17 +316,30 @@ vectors; D1 joins prevent orphan vectors from exposing data.
 
 ## 15. Extension build and pairing
 
-`extension/shared` is the only popup/background implementation. Browser-specific
-manifests live in `extension/manifests`. `npm run build:extensions` recreates the
-ignored `extension/chrome` and `extension/firefox` packages by copying shared
-assets and the correct manifest. Browser tests import the shared source and
-manifest templates, preventing the generated copies from becoming a second
+`apps/chrome-extension` is the only popup/background implementation and owns the
+Chrome manifest, icons, and extension-specific DOM tests.
+`npm run build:extensions` recreates the ignored `extension/chrome` package from
+those canonical inputs, preventing generated copies from becoming a second
 source of truth.
 
 The pairing code is `later-gator.` plus base64url JSON containing only the
 deployment origin and capture token. The extension validates HTTPS or localhost,
 requests the deployment host permission, stores the decoded fields, and validates
 the credential before showing capture controls.
+
+X link capture is a two-phase mutation. The Worker resolves at most four
+selected t.co links and checks normalized D1 URLs before creating the source
+bookmark. A conflict returns `x_destination_already_saved` plus bounded
+owner-facing bookmark summaries and performs no write. Confirmation resubmits
+with a fresh idempotency key and an explicit acceptance flag; the Worker then
+rechecks and commits idempotent relationships.
+
+For iOS X captures, successful organization stages all discovered destinations
+in `x_destination_reviews` when any normalized destination already exists. The
+post and job are moved to review with safe code
+`x_destination_already_saved`. Authenticated, CSRF-protected dashboard actions
+either connect the checked rows and move the post to Social Posts or reuse the
+normal Trash mutation. The staging rows cascade when the post is deleted.
 
 ## 16. Live updates
 
@@ -343,6 +355,14 @@ Logs and `audit_events` may contain event name, request ID, opaque subject ID,
 count, duration, provider name/model, and approved safe outcome code. They must
 not contain bookmark URLs, titles, notes, descriptions, CSV rows, page content,
 tokens, ciphertext, MCP secrets, or remote response bodies.
+
+Organization stores a Zod-defined content-free summary in the independently
+idempotent `organization_diagnostics` table and emits the same summary as
+`later_gator.retrieval`. It contains only field
+character counts, listing/link counts, evidence presence, Browser Rendering
+attempt state, opaque bookmark/job IDs, and an approved safe outcome code.
+Workers Logs sampling is 100% so an owner can reliably search the short-retention
+logs by a review item's diagnostic ID.
 
 Every Promise is awaited, returned, caught, or deliberately scheduled. External
 inputs and stored JSON are validated. Large or unknown remote bodies are streamed

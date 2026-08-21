@@ -8,11 +8,14 @@ export default tseslint.config(
   {
     ignores: [
       ".wrangler/**",
-      "dist/**",
+      "**/dist/**",
+      "**/release-artifacts/**",
+      "apps/chrome-extension/assets/**",
+      "apps/chrome-extension/src/**",
       "extension/**",
       "node_modules/**",
-      "web/public/**",
-      "worker-configuration.d.ts",
+      "**/web/public/**",
+      "**/worker-configuration.d.ts",
       "eslint.config.js",
     ],
   },
@@ -31,7 +34,7 @@ export default tseslint.config(
     },
   },
   {
-    files: ["web/**/*.ts"],
+    files: ["apps/runtime/web/**/*.ts", "apps/chrome-extension/test/**/*.ts"],
     rules: {
       "@typescript-eslint/array-type": "off",
       "@typescript-eslint/no-confusing-void-expression": "off",
@@ -49,7 +52,7 @@ export default tseslint.config(
   {
     files: ["scripts/**/*.mjs"],
     languageOptions: {
-      globals: { console: "readonly", process: "readonly" },
+      globals: { console: "readonly", process: "readonly", URL: "readonly" },
     },
     rules: {
       "@typescript-eslint/no-unnecessary-condition": "off",

@@ -1,0 +1,45 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "later-gator-control-plane-dev",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-19",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "assets": {
+    "directory": "./release-artifacts",
+    "binding": "RELEASE_ARTIFACTS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "vars": {
+    "ENVIRONMENT": "development",
+    "PUBLIC_ORIGIN": "https://later-gator-control-plane-dev.vishvak-v.workers.dev",
+    "CLOUDFLARE_OIDC_ISSUER": "https://dash.cloudflare.com",
+    "CONTROL_SESSION_TTL_SECONDS": "43200",
+    "CHROME_EXTENSION_IDS": "",
+    "ACTIVE_RUNTIME_RELEASE": "1.0.0",
+    "ROLLOUT_COHORT_CEILING": "100",
+    "ROLLOUT_FAILURE_THRESHOLD_PERCENT": "10"
+  },
+  "triggers": { "crons": ["17 * * * *"] },
+  "secrets": {
+    "required": [
+      "CLOUDFLARE_IDENTITY_CLIENT_ID",
+      "CLOUDFLARE_IDENTITY_CLIENT_SECRET",
+      "INSTALLER_TOKEN_ENCRYPTION_KEY",
+      "OWNER_ASSERTION_SIGNING_KEYS"
+    ]
+  },
+  "d1_databases": [
+    {
+      "binding": "CONTROL_DB",
+      "database_name": "later-gator-control-plane-dev",
+      "database_id": "a425eda6-2120-4d7a-82eb-f0b2d1b8bb61"
+    }
+  ]
+}

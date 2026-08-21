@@ -1,0 +1,251 @@
+{
+  "contractVersion": 1,
+  "release": "1.0.0",
+  "publishedAt": "2026-08-21T00:00:00.000Z",
+  "compatibilityDate": "2026-07-29",
+  "minimumSchemaVersion": 1,
+  "maximumSchemaVersion": 1,
+  "healthContractVersion": 1,
+  "requiredBindings": [
+    "ai",
+    "browser",
+    "d1",
+    "images",
+    "oauth_kv",
+    "queue_background",
+    "queue_thumbnail",
+    "vectorize"
+  ],
+  "optionalBindings": [
+    "kv",
+    "r2"
+  ],
+  "artifactDigest": "2b24823fe769d6a702ac42817287fde1abf20a93d9e74eb50933864d06c1de90",
+  "baseSchemaDigest": "f8595802db7ed2da19379d0cc35d20be1fb529345d27a101157c090adf29e89c",
+  "mainModule": {
+    "artifactPath": "/release-artifacts/runtime/1.0.0/runtime.mjs",
+    "sha256": "ff76cbc7ad7408d42becef2417cdd572c07990f5059d835333381c0a3f585014",
+    "size": 3589900
+  },
+  "assets": [
+    {
+      "path": "/_headers",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/_headers",
+      "sha256": "1bed4425347b5f42db65687e13a2a71a3f6706f26e2876fc681cc9df234a6794",
+      "assetHash": "1bed4425347b5f42db65687e13a2a71a",
+      "size": 165
+    },
+    {
+      "path": "/assets/app.A3T3SM3Z.css",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/assets/app.A3T3SM3Z.css",
+      "sha256": "e8f779fe152b4d0c3cb8c20849c656cd49ef1f25112050008c0387184b991528",
+      "assetHash": "e8f779fe152b4d0c3cb8c20849c656cd",
+      "size": 51623
+    },
+    {
+      "path": "/assets/main.DGSCMZ6T.js",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/assets/main.DGSCMZ6T.js",
+      "sha256": "1513288ca1b816dd4334cfbef64152f54168af13ba80575cd2e527a2c0845faa",
+      "assetHash": "1513288ca1b816dd4334cfbef64152f5",
+      "size": 71461
+    },
+    {
+      "path": "/img/cf-model.png",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/cf-model.png",
+      "sha256": "585dbb9094fe903ddc2c81b7516a5df3f8c4f964f1e23cbaea44d2306c1ab5ae",
+      "assetHash": "585dbb9094fe903ddc2c81b7516a5df3",
+      "size": 103318
+    },
+    {
+      "path": "/img/chrome-devmode.png",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/chrome-devmode.png",
+      "sha256": "5b79978ee43fe41d9d8ce23b092e742408dd5b5cdbaa5f792888c434fdda30e1",
+      "assetHash": "5b79978ee43fe41d9d8ce23b092e7424",
+      "size": 58718
+    },
+    {
+      "path": "/img/folders/articles.jpg",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/folders/articles.jpg",
+      "sha256": "64b2b48fa64617d08580200c115d984f85935de5e3ea14240233b954e5c6f5c5",
+      "assetHash": "64b2b48fa64617d08580200c115d984f",
+      "size": 69905
+    },
+    {
+      "path": "/img/folders/code.jpg",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/folders/code.jpg",
+      "sha256": "375e435bb7fbf57d58ff8f24c89db7d8e49e11cf1893bf7a49ae032922773693",
+      "assetHash": "375e435bb7fbf57d58ff8f24c89db7d8",
+      "size": 82161
+    },
+    {
+      "path": "/img/folders/docs-reference.jpg",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/folders/docs-reference.jpg",
+      "sha256": "3c6d877789aade9f3bd3c7e7b9d766c706df3796200e95de6803a60d50c7a46b",
+      "assetHash": "3c6d877789aade9f3bd3c7e7b9d766c7",
+      "size": 60732
+    },
+    {
+      "path": "/img/folders/papers.jpg",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/folders/papers.jpg",
+      "sha256": "8e6d39e65f6d6387a654002cbd3060d458ba468b13f1f5c4397646dc1f189b85",
+      "assetHash": "8e6d39e65f6d6387a654002cbd3060d4",
+      "size": 73273
+    },
+    {
+      "path": "/img/folders/social-posts.jpg",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/folders/social-posts.jpg",
+      "sha256": "9ec0f6ba29c666bf40fd0ac1531f1882777cf0bdf7d02756fbaa73ea17a549c0",
+      "assetHash": "9ec0f6ba29c666bf40fd0ac1531f1882",
+      "size": 57408
+    },
+    {
+      "path": "/img/folders/videos-talks.jpg",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/folders/videos-talks.jpg",
+      "sha256": "180cc6621df64e9a622f026119fc6adb4f07bd75c1b8811326b20d51e6134346",
+      "assetHash": "180cc6621df64e9a622f026119fc6adb",
+      "size": 78608
+    },
+    {
+      "path": "/img/folders/websites-apps.jpg",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/folders/websites-apps.jpg",
+      "sha256": "8d2bacf732ca7499ef13d57c038dc1056629d84e9a7f86c33f99470abbb1bbe1",
+      "assetHash": "8d2bacf732ca7499ef13d57c038dc105",
+      "size": 50290
+    },
+    {
+      "path": "/img/gator-day.png",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/gator-day.png",
+      "sha256": "049047cc270a2f812740794fa838855b733a5a632fd84da2861033bcd4adc3d2",
+      "assetHash": "049047cc270a2f812740794fa838855b",
+      "size": 1941089
+    },
+    {
+      "path": "/img/gator-night.png",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/gator-night.png",
+      "sha256": "30c7ed13f0a656249a7c9274f107e64b858c8fd31bf610d6eb17d2310654c898",
+      "assetHash": "30c7ed13f0a656249a7c9274f107e64b",
+      "size": 1881364
+    },
+    {
+      "path": "/img/icon-transparent.png",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/icon-transparent.png",
+      "sha256": "5bd2dc9036b86dbce3755815403c2fbad452c2ad16887fe6c768d720d0f4db00",
+      "assetHash": "5bd2dc9036b86dbce3755815403c2fba",
+      "size": 198456
+    },
+    {
+      "path": "/img/icon.png",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/icon.png",
+      "sha256": "e8325c050dae87ac80c922ee414d6eaf635f7f3d849bd3640788873cadab0e8d",
+      "assetHash": "e8325c050dae87ac80c922ee414d6eaf",
+      "size": 214184
+    },
+    {
+      "path": "/img/ios-add-unsorted.png",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/ios-add-unsorted.png",
+      "sha256": "44ba21df6838ba5735b870458d46fac37cfbfc208be3dc877d76ec3691d4d53b",
+      "assetHash": "44ba21df6838ba5735b870458d46fac3",
+      "size": 106978
+    },
+    {
+      "path": "/img/ios-edit-actions.png",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/ios-edit-actions.png",
+      "sha256": "57e47f9c6d995b4e615d740921d946708042686ae07a11a232572ca491ac84cd",
+      "assetHash": "57e47f9c6d995b4e615d740921d94670",
+      "size": 87115
+    },
+    {
+      "path": "/img/ios-sharesheet.jpg",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/ios-sharesheet.jpg",
+      "sha256": "21edbde75438de56c7514b821fe64eecf1fbb672ec48e15ca4b24bcb78450f83",
+      "assetHash": "21edbde75438de56c7514b821fe64eec",
+      "size": 48317
+    },
+    {
+      "path": "/img/raindrop-export.png",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/img/raindrop-export.png",
+      "sha256": "d8a2c5dc9ce1ef5ab7785c8c6186fa871be72c934b5a9556e17fa9fd7d1f80db",
+      "assetHash": "d8a2c5dc9ce1ef5ab7785c8c6186fa87",
+      "size": 60519
+    }
+  ],
+  "migrations": [
+    {
+      "id": "base-schema",
+      "fromSchemaVersion": 0,
+      "toSchemaVersion": 1,
+      "phase": "expand",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/migrations/base-schema.sql",
+      "sha256": "f8595802db7ed2da19379d0cc35d20be1fb529345d27a101157c090adf29e89c",
+      "statements": [
+        "CREATE TABLE IF NOT EXISTS app_state (\n  id INTEGER PRIMARY KEY CHECK (id = 1),\n  setup_status TEXT NOT NULL CHECK (setup_status IN ('setup_incomplete', 'ready')),\n  setup_completed_at TEXT,\n  owner_ai_paused INTEGER NOT NULL DEFAULT 0 CHECK (owner_ai_paused IN (0, 1)),\n  owner_pause_reason TEXT,\n  organization_generation INTEGER NOT NULL DEFAULT 1,\n  browser_blocked_until TEXT,\n  thumbnail_storage_mode TEXT NOT NULL DEFAULT 'kv'\n    CHECK (thumbnail_storage_mode IN ('kv', 'r2', 'disabled')),\n  thumbnail_storage_status TEXT NOT NULL DEFAULT 'ready'\n    CHECK (thumbnail_storage_status IN ('ready', 'paused', 'migrating')),\n  thumbnail_storage_safe_error_code TEXT CHECK (\n    thumbnail_storage_safe_error_code IS NULL OR thumbnail_storage_safe_error_code IN (\n      'thumbnail_storage_capacity', 'thumbnail_storage_disabled',\n      'thumbnail_storage_quota', 'thumbnail_storage_unavailable'\n    )\n  ),\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n);",
+        "INSERT OR IGNORE INTO app_state (id, setup_status, created_at, updated_at)\nVALUES (1, 'setup_incomplete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",
+        "CREATE TABLE IF NOT EXISTS runtime_release_state (\n  id INTEGER PRIMARY KEY CHECK (id = 1),\n  release TEXT NOT NULL,\n  schema_version INTEGER NOT NULL CHECK (schema_version >= 0),\n  health_contract_version INTEGER NOT NULL CHECK (health_contract_version > 0),\n  installed_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n);",
+        "INSERT OR IGNORE INTO runtime_release_state (\n  id, release, schema_version, health_contract_version, installed_at, updated_at\n) VALUES (1, '1.0.0', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);",
+        "CREATE TABLE IF NOT EXISTS runtime_schema_migrations (\n  migration_id TEXT PRIMARY KEY,\n  from_schema_version INTEGER NOT NULL CHECK (from_schema_version >= 0),\n  to_schema_version INTEGER NOT NULL CHECK (to_schema_version > from_schema_version),\n  phase TEXT NOT NULL CHECK (phase IN ('expand', 'migrate', 'contract')),\n  checksum TEXT NOT NULL,\n  state TEXT NOT NULL CHECK (state IN ('running', 'complete', 'failed')),\n  time_travel_bookmark TEXT,\n  started_at TEXT NOT NULL,\n  completed_at TEXT\n);",
+        "INSERT OR IGNORE INTO runtime_schema_migrations (\n  migration_id, from_schema_version, to_schema_version, phase, checksum,\n  state, started_at, completed_at\n) VALUES (\n  'base-schema', 0, 1, 'expand',\n  'managed-by-release-artifact', 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP\n);",
+        "CREATE TABLE IF NOT EXISTS profile (\n  id INTEGER PRIMARY KEY CHECK (id = 1),\n  personal_instructions TEXT,\n  timezone TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n);",
+        "CREATE TABLE IF NOT EXISTS folders (\n  id TEXT PRIMARY KEY,\n  slug TEXT NOT NULL UNIQUE,\n  name TEXT NOT NULL UNIQUE,\n  kind TEXT NOT NULL CHECK (kind IN ('permanent', 'system')),\n  sort_order INTEGER NOT NULL UNIQUE,\n  is_ai_destination INTEGER NOT NULL CHECK (is_ai_destination IN (0, 1))\n);",
+        "INSERT OR IGNORE INTO folders (id, slug, name, kind, sort_order, is_ai_destination) VALUES\n  ('folder_social_posts', 'social-posts', 'Social Posts', 'permanent', 10, 1),\n  ('folder_articles', 'articles', 'Articles', 'permanent', 20, 1),\n  ('folder_videos_talks', 'videos-talks', 'Videos & Talks', 'permanent', 30, 1),\n  ('folder_code', 'code', 'Code', 'permanent', 40, 1),\n  ('folder_docs_reference', 'docs-reference', 'Docs & Reference', 'permanent', 50, 1),\n  ('folder_papers', 'papers', 'Papers', 'permanent', 60, 1),\n  ('folder_websites_apps', 'websites-apps', 'Websites & Apps', 'permanent', 70, 1),\n  ('folder_need_review', 'need-review', 'Need for Review', 'permanent', 80, 1),\n  ('folder_unsorted', 'unsorted', 'Unsorted', 'system', 90, 0);",
+        "CREATE TABLE IF NOT EXISTS bookmarks (\n  id TEXT PRIMARY KEY,\n  url TEXT NOT NULL,\n  normalized_url TEXT NOT NULL,\n  hostname TEXT NOT NULL,\n  title TEXT NOT NULL,\n  description TEXT,\n  note TEXT,\n  folder_id TEXT NOT NULL REFERENCES folders(id) ON UPDATE RESTRICT ON DELETE RESTRICT,\n  favorite INTEGER NOT NULL DEFAULT 0 CHECK (favorite IN (0, 1)),\n  source_type TEXT NOT NULL CHECK (source_type IN ('dashboard', 'extension', 'ios', 'raindrop_csv', 'linked')),\n  organization_policy TEXT NOT NULL CHECK (organization_policy IN ('full', 'preserve', 'none')),\n  ai_state TEXT NOT NULL CHECK (ai_state IN (\n    'pending', 'processing', 'waiting_provider', 'paused_owner', 'complete', 'review', 'failed'\n  )),\n  ai_managed_description INTEGER NOT NULL DEFAULT 0 CHECK (ai_managed_description IN (0, 1)),\n  source_created_at TEXT NOT NULL,\n  added_at TEXT NOT NULL,\n  modified_at TEXT NOT NULL,\n  deleted_at TEXT,\n  revision INTEGER NOT NULL DEFAULT 1 CHECK (revision > 0),\n  embedded_revision INTEGER NOT NULL DEFAULT 0,\n  thumbnail_id TEXT\n);",
+        "CREATE UNIQUE INDEX IF NOT EXISTS bookmarks_active_normalized_url_unique\n  ON bookmarks(normalized_url) WHERE deleted_at IS NULL;",
+        "CREATE INDEX IF NOT EXISTS bookmarks_folder_modified ON bookmarks(folder_id, modified_at DESC, id);",
+        "CREATE INDEX IF NOT EXISTS bookmarks_added ON bookmarks(added_at DESC, id);",
+        "CREATE INDEX IF NOT EXISTS bookmarks_source_created ON bookmarks(source_created_at DESC, id);",
+        "CREATE INDEX IF NOT EXISTS bookmarks_hostname ON bookmarks(hostname, id);",
+        "CREATE INDEX IF NOT EXISTS bookmarks_favorite ON bookmarks(favorite, id);",
+        "CREATE INDEX IF NOT EXISTS bookmarks_ai_state ON bookmarks(ai_state, id);",
+        "CREATE INDEX IF NOT EXISTS bookmarks_deleted ON bookmarks(deleted_at, id);",
+        "CREATE INDEX IF NOT EXISTS bookmarks_embed_backlog\n  ON bookmarks(modified_at DESC) WHERE deleted_at IS NULL AND embedded_revision != revision;",
+        "CREATE TABLE IF NOT EXISTS tags (\n  id TEXT PRIMARY KEY,\n  normalized_name TEXT NOT NULL UNIQUE,\n  display_name TEXT NOT NULL,\n  status TEXT NOT NULL CHECK (status IN ('active', 'retired')),\n  created_by TEXT NOT NULL CHECK (created_by IN ('seed', 'user', 'ai', 'import')),\n  usage_count INTEGER NOT NULL DEFAULT 0 CHECK (usage_count >= 0),\n  created_at TEXT NOT NULL,\n  retired_at TEXT\n);",
+        "CREATE TABLE IF NOT EXISTS bookmark_tags (\n  bookmark_id TEXT NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,\n  tag_id TEXT NOT NULL REFERENCES tags(id) ON DELETE RESTRICT,\n  source TEXT NOT NULL CHECK (source IN ('user', 'ai', 'import')),\n  created_at TEXT NOT NULL,\n  PRIMARY KEY (bookmark_id, tag_id)\n);",
+        "CREATE INDEX IF NOT EXISTS bookmark_tags_by_tag ON bookmark_tags(tag_id, bookmark_id);",
+        "CREATE TABLE IF NOT EXISTS bookmark_relationships (\n  id TEXT PRIMARY KEY,\n  left_bookmark_id TEXT NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,\n  right_bookmark_id TEXT NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,\n  relationship_type TEXT NOT NULL DEFAULT 'related' CHECK (relationship_type = 'related'),\n  created_at TEXT NOT NULL,\n  CHECK (left_bookmark_id < right_bookmark_id),\n  UNIQUE (left_bookmark_id, right_bookmark_id, relationship_type)\n);",
+        "CREATE INDEX IF NOT EXISTS bookmark_relationships_left\n  ON bookmark_relationships(left_bookmark_id, right_bookmark_id);",
+        "CREATE INDEX IF NOT EXISTS bookmark_relationships_right\n  ON bookmark_relationships(right_bookmark_id, left_bookmark_id);",
+        "CREATE TABLE IF NOT EXISTS thumbnails (\n  id TEXT PRIMARY KEY,\n  bookmark_id TEXT NOT NULL UNIQUE REFERENCES bookmarks(id) ON DELETE CASCADE,\n  object_key TEXT NOT NULL UNIQUE,\n  media_type TEXT NOT NULL,\n  width INTEGER NOT NULL CHECK (width > 0),\n  height INTEGER NOT NULL CHECK (height > 0),\n  byte_size INTEGER NOT NULL CHECK (byte_size > 0),\n  storage_backend TEXT NOT NULL DEFAULT 'kv' CHECK (storage_backend IN ('kv', 'r2')),\n  source_type TEXT NOT NULL CHECK (source_type IN ('import_cover', 'page_metadata', 'screenshot', 'favicon', 'user')),\n  source_url_hash TEXT,\n  etag TEXT,\n  state TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'failed')),\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n);",
+        "CREATE TABLE IF NOT EXISTS background_jobs (\n  id TEXT PRIMARY KEY,\n  bookmark_id TEXT NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,\n  job_type TEXT NOT NULL DEFAULT 'process_bookmark' CHECK (job_type = 'process_bookmark'),\n  state TEXT NOT NULL CHECK (state IN (\n    'pending_dispatch', 'queued', 'running', 'waiting_provider', 'paused_owner',\n    'completed', 'review', 'cancelled', 'failed'\n  )),\n  expected_revision INTEGER NOT NULL CHECK (expected_revision > 0),\n  organization_generation INTEGER NOT NULL CHECK (organization_generation > 0),\n  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),\n  quality_attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (quality_attempt_count >= 0),\n  provider TEXT NOT NULL,\n  model TEXT NOT NULL,\n  next_attempt_at TEXT,\n  last_safe_error_code TEXT,\n  idempotency_key TEXT NOT NULL UNIQUE,\n  browser_rendered_at TEXT,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  completed_at TEXT\n);",
+        "CREATE UNIQUE INDEX IF NOT EXISTS background_jobs_one_active_per_bookmark\n  ON background_jobs(bookmark_id)\n  WHERE state IN ('pending_dispatch', 'queued', 'running', 'waiting_provider', 'paused_owner');",
+        "CREATE INDEX IF NOT EXISTS background_jobs_ready\n  ON background_jobs(state, next_attempt_at, created_at);",
+        "CREATE TABLE IF NOT EXISTS organization_diagnostics (\n  job_id TEXT PRIMARY KEY REFERENCES background_jobs(id) ON DELETE CASCADE,\n  summary_json TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n);",
+        "CREATE TABLE IF NOT EXISTS x_destination_reviews (\n  id TEXT PRIMARY KEY,\n  post_bookmark_id TEXT NOT NULL REFERENCES bookmarks(id) ON DELETE CASCADE,\n  destination_url TEXT NOT NULL,\n  normalized_url TEXT NOT NULL,\n  existing_bookmark_id TEXT REFERENCES bookmarks(id) ON DELETE SET NULL,\n  created_at TEXT NOT NULL,\n  UNIQUE (post_bookmark_id, normalized_url)\n);",
+        "CREATE INDEX IF NOT EXISTS x_destination_reviews_post\n  ON x_destination_reviews(post_bookmark_id, created_at);",
+        "CREATE TABLE IF NOT EXISTS thumbnail_jobs (\n  id TEXT PRIMARY KEY,\n  bookmark_id TEXT NOT NULL UNIQUE REFERENCES bookmarks(id) ON DELETE CASCADE,\n  state TEXT NOT NULL CHECK (state IN (\n    'pending_dispatch', 'queued', 'running', 'paused_storage', 'completed', 'cancelled', 'failed'\n  )),\n  attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),\n  next_attempt_at TEXT,\n  last_safe_error_code TEXT,\n  candidate_url TEXT,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  completed_at TEXT\n);",
+        "CREATE INDEX IF NOT EXISTS thumbnail_jobs_ready\n  ON thumbnail_jobs(state, next_attempt_at, created_at);",
+        "CREATE TABLE IF NOT EXISTS thumbnail_migrations (\n  id TEXT PRIMARY KEY,\n  source_backend TEXT NOT NULL CHECK (source_backend = 'kv'),\n  target_backend TEXT NOT NULL CHECK (target_backend = 'r2'),\n  state TEXT NOT NULL CHECK (state IN (\n    'copying', 'awaiting_cleanup', 'cleaning', 'complete', 'failed', 'cancelled'\n  )),\n  copied_count INTEGER NOT NULL DEFAULT 0 CHECK (copied_count >= 0),\n  verified_count INTEGER NOT NULL DEFAULT 0 CHECK (verified_count >= 0),\n  deleted_count INTEGER NOT NULL DEFAULT 0 CHECK (deleted_count >= 0),\n  safe_error_code TEXT,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL,\n  completed_at TEXT\n);",
+        "CREATE UNIQUE INDEX IF NOT EXISTS thumbnail_migrations_one_active\n  ON thumbnail_migrations(source_backend, target_backend)\n  WHERE state IN ('copying', 'awaiting_cleanup', 'cleaning', 'failed');",
+        "CREATE TABLE IF NOT EXISTS thumbnail_migration_objects (\n  migration_id TEXT NOT NULL REFERENCES thumbnail_migrations(id) ON DELETE CASCADE,\n  thumbnail_id TEXT NOT NULL REFERENCES thumbnails(id) ON DELETE CASCADE,\n  object_key TEXT NOT NULL,\n  byte_size INTEGER NOT NULL CHECK (byte_size > 0),\n  content_hash TEXT NOT NULL,\n  state TEXT NOT NULL CHECK (state IN ('pending', 'verified', 'deleted', 'failed')),\n  safe_error_code TEXT,\n  updated_at TEXT NOT NULL,\n  PRIMARY KEY (migration_id, thumbnail_id)\n);",
+        "CREATE INDEX IF NOT EXISTS thumbnail_migration_objects_work\n  ON thumbnail_migration_objects(migration_id, state, thumbnail_id);",
+        "CREATE TABLE IF NOT EXISTS owner_identity (\n  id INTEGER PRIMARY KEY CHECK (id = 1),\n  subject TEXT NOT NULL UNIQUE,\n  bound_at TEXT NOT NULL\n);",
+        "CREATE TABLE IF NOT EXISTS owner_login_requests (\n  state_hash TEXT PRIMARY KEY,\n  nonce_hash TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  expires_at TEXT NOT NULL,\n  consumed_at TEXT\n);",
+        "CREATE INDEX IF NOT EXISTS owner_login_requests_expiry\n  ON owner_login_requests(expires_at, consumed_at);",
+        "CREATE TABLE IF NOT EXISTS owner_assertion_jtis (\n  jti_hash TEXT PRIMARY KEY,\n  consumed_at TEXT NOT NULL\n);",
+        "CREATE TABLE IF NOT EXISTS sessions (\n  id_hash TEXT PRIMARY KEY,\n  csrf_token_hash TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  last_seen_at TEXT NOT NULL,\n  idle_expires_at TEXT NOT NULL,\n  absolute_expires_at TEXT NOT NULL,\n  revoked_at TEXT\n);",
+        "CREATE INDEX IF NOT EXISTS sessions_expiry ON sessions(idle_expires_at, absolute_expires_at);",
+        "CREATE TABLE IF NOT EXISTS encrypted_credentials (\n  id TEXT PRIMARY KEY,\n  credential_type TEXT NOT NULL UNIQUE,\n  ciphertext TEXT NOT NULL,\n  nonce TEXT NOT NULL,\n  schema_version INTEGER NOT NULL,\n  created_at TEXT NOT NULL,\n  updated_at TEXT NOT NULL\n);",
+        "CREATE TABLE IF NOT EXISTS provider_settings (\n  id INTEGER PRIMARY KEY CHECK (id = 1),\n  provider TEXT NOT NULL CHECK (provider IN ('workers-ai', 'openai', 'anthropic')),\n  model TEXT NOT NULL,\n  operational_status TEXT NOT NULL DEFAULT 'ready' CHECK (operational_status IN ('ready', 'waiting')),\n  last_safe_error_code TEXT,\n  ai_gateway_id TEXT,\n  retry_after TEXT,\n  updated_at TEXT NOT NULL\n);",
+        "INSERT OR IGNORE INTO provider_settings (id, provider, model, updated_at)\nVALUES (1, 'workers-ai', '@cf/meta/llama-3.3-70b-instruct-fp8-fast', CURRENT_TIMESTAMP);",
+        "CREATE TABLE IF NOT EXISTS public_catalog_cache (\n  kind TEXT PRIMARY KEY CHECK (kind IN ('models', 'storage-plans')),\n  revision INTEGER NOT NULL CHECK (revision > 0),\n  payload_json TEXT NOT NULL,\n  source_timestamp TEXT NOT NULL,\n  accepted_at TEXT NOT NULL\n);",
+        "CREATE TABLE IF NOT EXISTS public_catalog_status (\n  kind TEXT PRIMARY KEY CHECK (kind IN ('models', 'storage-plans')),\n  last_checked_at TEXT,\n  last_safe_error_code TEXT,\n  updated_at TEXT NOT NULL\n);",
+        "INSERT OR IGNORE INTO public_catalog_status (kind, updated_at)\nVALUES ('models', CURRENT_TIMESTAMP), ('storage-plans', CURRENT_TIMESTAMP);",
+        "CREATE TABLE IF NOT EXISTS provider_candidates (\n  id INTEGER PRIMARY KEY CHECK (id = 1),\n  provider TEXT NOT NULL CHECK (provider IN ('workers-ai', 'openai', 'anthropic')),\n  model TEXT NOT NULL,\n  tested_at TEXT NOT NULL,\n  safe_status TEXT NOT NULL CHECK (safe_status IN ('passed', 'failed')),\n  safe_error_code TEXT\n);",
+        "CREATE TABLE IF NOT EXISTS capture_credentials (\n  id TEXT PRIMARY KEY,\n  name TEXT NOT NULL,\n  token_hash TEXT NOT NULL UNIQUE,\n  scopes TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  last_used_at TEXT,\n  revoked_at TEXT\n);",
+        "CREATE INDEX IF NOT EXISTS capture_credentials_active\n  ON capture_credentials(token_hash, revoked_at);",
+        "CREATE TABLE IF NOT EXISTS extension_devices (\n  id TEXT PRIMARY KEY,\n  credential_id TEXT NOT NULL UNIQUE REFERENCES capture_credentials(id) ON DELETE CASCADE,\n  name TEXT NOT NULL,\n  connected_at TEXT NOT NULL,\n  last_used_at TEXT,\n  revoked_at TEXT\n);",
+        "CREATE INDEX IF NOT EXISTS extension_devices_active\n  ON extension_devices(revoked_at, connected_at DESC);",
+        "CREATE TABLE IF NOT EXISTS extension_pairing_jtis (\n  jti_hash TEXT PRIMARY KEY,\n  consumed_at TEXT NOT NULL\n);",
+        "CREATE TABLE IF NOT EXISTS mcp_connections (\n  id TEXT PRIMARY KEY,\n  oauth_grant_id TEXT NOT NULL UNIQUE,\n  client_id_hash TEXT NOT NULL,\n  client_type TEXT NOT NULL CHECK (client_type IN ('chatgpt', 'claude', 'other')),\n  display_name TEXT NOT NULL,\n  scope TEXT NOT NULL CHECK (scope = 'library:read'),\n  connected_at TEXT NOT NULL,\n  last_used_at TEXT,\n  revoked_at TEXT\n);",
+        "CREATE INDEX IF NOT EXISTS mcp_connections_active\n  ON mcp_connections(revoked_at, connected_at DESC);",
+        "CREATE TABLE IF NOT EXISTS idempotency_records (\n  scope TEXT NOT NULL,\n  idempotency_key TEXT NOT NULL,\n  request_hash TEXT NOT NULL,\n  response_status INTEGER NOT NULL,\n  response_body TEXT NOT NULL,\n  created_at TEXT NOT NULL,\n  expires_at TEXT NOT NULL,\n  PRIMARY KEY (scope, idempotency_key)\n);",
+        "CREATE TABLE IF NOT EXISTS import_sessions (\n  id TEXT PRIMARY KEY,\n  status TEXT NOT NULL CHECK (status IN ('committing', 'committed', 'cancelled', 'expired')),\n  option TEXT NOT NULL CHECK (option IN ('reorganize', 'preserve')),\n  file_name TEXT NOT NULL,\n  file_size INTEGER NOT NULL CHECK (file_size >= 0),\n  file_sha256 TEXT NOT NULL,\n  total_rows INTEGER NOT NULL DEFAULT 0,\n  valid_rows INTEGER NOT NULL DEFAULT 0,\n  invalid_rows INTEGER NOT NULL DEFAULT 0,\n  duplicate_rows INTEGER NOT NULL DEFAULT 0,\n  committed_rows INTEGER NOT NULL DEFAULT 0,\n  failed_rows INTEGER NOT NULL DEFAULT 0,\n  created_at TEXT NOT NULL,\n  expires_at TEXT NOT NULL,\n  committed_at TEXT\n);",
+        "CREATE INDEX IF NOT EXISTS import_sessions_status ON import_sessions(status, expires_at);",
+        "CREATE TABLE IF NOT EXISTS audit_events (\n  id TEXT PRIMARY KEY,\n  event_name TEXT NOT NULL,\n  subject_id TEXT,\n  safe_outcome TEXT NOT NULL,\n  request_id TEXT NOT NULL,\n  created_at TEXT NOT NULL\n);",
+        "CREATE INDEX IF NOT EXISTS audit_events_created ON audit_events(created_at DESC);",
+        "CREATE VIRTUAL TABLE IF NOT EXISTS bookmarks_fts USING fts5(\n  bookmark_id UNINDEXED,\n  title,\n  description,\n  note,\n  hostname,\n  url\n);",
+        "CREATE TRIGGER IF NOT EXISTS bookmarks_fts_insert AFTER INSERT ON bookmarks BEGIN\n  INSERT INTO bookmarks_fts (bookmark_id, title, description, note, hostname, url)\n  VALUES (new.id, new.title, COALESCE(new.description, ''), COALESCE(new.note, ''), new.hostname, new.url);\nEND;",
+        "CREATE TRIGGER IF NOT EXISTS bookmarks_fts_update\nAFTER UPDATE OF title, description, note, hostname, url ON bookmarks BEGIN\n  DELETE FROM bookmarks_fts WHERE bookmark_id = old.id;\n  INSERT INTO bookmarks_fts (bookmark_id, title, description, note, hostname, url)\n  VALUES (new.id, new.title, COALESCE(new.description, ''), COALESCE(new.note, ''), new.hostname, new.url);\nEND;",
+        "CREATE TRIGGER IF NOT EXISTS bookmarks_fts_delete AFTER DELETE ON bookmarks BEGIN\n  DELETE FROM bookmarks_fts WHERE bookmark_id = old.id;\nEND;"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,4 @@
+# Filenames are content-hashed, so a changed file is a changed URL.
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
+  X-Content-Type-Options: nosniff

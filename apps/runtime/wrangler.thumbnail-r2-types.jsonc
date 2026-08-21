@@ -1,0 +1,12 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "later-gator-thumbnail-r2-types",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "r2_buckets": [
+    {
+      "binding": "THUMBNAILS_R2",
+      "bucket_name": "replace-during-provisioning"
+    }
+  ]
+}

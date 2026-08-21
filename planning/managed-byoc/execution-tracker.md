@@ -1742,8 +1742,10 @@ installation. Phase 9 remains untouched.
 
 ### `S028` — 2026-08-22 — Main-branch deployment and extension test handoff
 
-**Status:** VALIDATED LOCALLY; PR, CI credentials, and owner extension ID remain
-external handoff items
+**Status:** PR `#1` OPEN; CI credentials and owner extension ID remain external
+handoff items
+
+**PR:** `https://github.com/vishvak1/later-gator/pull/1`
 
 **Scope:** make accepted changes deploy the development control plane from
 `main`, activate conditional managed updates in development, and document the

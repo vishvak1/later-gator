@@ -2,11 +2,36 @@
 
 ## Project structure
 
-`src/index.ts` owns the Worker entry points. Keep product orchestration in `src/application`, pure rules and schemas in `src/domain`, external APIs and storage in `src/adapters`, HTTP handlers in `src/routes`, and redacted telemetry in `src/observability`. Tests mirror those boundaries under `test/unit`, `test/contract`, and `test/integration`. The approved product and technical specifications live in `docs/` and are authoritative.
+`apps/runtime/src/index.ts` owns the personal Worker entry points. Keep runtime
+product orchestration in `apps/runtime/src/application`, pure rules and schemas
+in `apps/runtime/src/domain`, external APIs and storage in
+`apps/runtime/src/adapters`, HTTP handlers in `apps/runtime/src/routes`, and
+redacted telemetry in `apps/runtime/src/observability`. Runtime tests live under
+`apps/runtime/test`; control-plane and shared-contract code keep their own
+package-local tests. Canonical Chrome-extension source and extension-specific
+DOM tests live in `apps/chrome-extension`; `extension/chrome` is a generated
+install folder. The approved product and
+technical specifications live in `docs/` and are authoritative.
+
+## Managed-BYOC execution
+
+For managed-BYOC work, read
+`planning/managed-byoc/execution-tracker.md` completely before changing code.
+That tracker is the source of truth for implementation progress, the active
+stage, validation evidence, and the next-session queue. The proposed product
+requirements, structural plan, and implementation plan in the same directory
+define the target and sequencing; the specifications in `docs/` remain the
+compatibility baseline for current behavior until the transition is accepted.
+
+Update the execution tracker at the start and end of every managed-BYOC coding
+session. Do not mark work complete without recording the validation command and
+result. Preserve unrelated or pre-existing working-tree changes, and never
+discard, stash, commit, or deploy them unless the user explicitly requests it.
 
 ## Commands
 
-- `npm run types`: regenerate `worker-configuration.d.ts` from `wrangler.jsonc`.
+- `npm run types`: regenerate `apps/runtime/worker-configuration.d.ts` from the
+  runtime Wrangler configuration.
 - `npm run typecheck`: run strict TypeScript checks.
 - `npm test`: run tests inside the Cloudflare Workers runtime.
 - `npm run lint`: enforce typed ESLint rules, including no floating promises.

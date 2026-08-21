@@ -1,0 +1,94 @@
+:root{width:344px;max-width:344px;overflow-x:hidden;font:14px/1.4 system-ui;color:#eef3e9;background:#20251f}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{width:100%;margin:0;padding:16px}
+header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.gator{width:32px;height:32px;border-radius:8px}
+.brand{display:grid}
+.brand small{color:#9ca795}
+.icon-button{width:34px;height:34px;margin-left:auto;padding:0;font-size:16px}
+h1{font-size:18px;margin:0}
+form{display:grid;gap:12px}
+.helper{margin:0;color:#aab3a5}
+label{display:grid;gap:4px;color:#b9c2b4}
+input,textarea,select{width:100%;padding:9px;border:1px solid #4f594c;border-radius:7px;background:#151914;color:#fff;font:inherit}
+textarea{min-height:70px;resize:vertical}
+#connectionCode{min-height:88px;resize:none;overflow-wrap:anywhere}
+.check{display:flex;align-items:center}
+.check input{width:auto}
+button{padding:10px 16px;border:0;border-radius:8px;background:#91bd5e;color:#16200f;font-weight:800;cursor:pointer}
+button:disabled{cursor:wait;opacity:.65}
+.secondary{background:#343c31;color:#e9eee5}
+.actions{display:flex;justify-content:flex-end;gap:8px}
+footer button{width:100%}
+#loadingPanel{min-height:140px;display:grid;place-content:center;text-align:center;gap:12px;color:#b9c2b4}
+#loadingPanel button{justify-self:center}
+/* The page cover now rides in the header where the mark used to be: one
+   picture instead of a logo above a large duplicate of it. It keeps the
+   mark's footprint exactly, so the header does not move when a page has
+   no cover to show. */
+#preview{object-fit:cover;background:#1d241c}
+#preview.placeholder{object-fit:contain;padding:3px;background:#e2f1e7}
+#pageDescription{margin:0;color:#aab3a5;max-height:42px;overflow:hidden}
+/* Only occupies the grid when it has something to say: the Save button now
+   reports progress itself, so an empty line here was pure gap. */
+.status{margin:0;color:#d4e8bc}
+/* ---- Thread links ------------------------------------------------------
+   The checkbox is the veto; the popover is how the owner sees what they are
+   vetoing, since the addresses themselves are t.co shorteners that say
+   nothing about where they go. */
+.thread-links{position:relative;margin:0}
+.thread-links-row{display:flex;align-items:flex-start;gap:6px;margin:0;color:#91bd5e;font-size:12px;font-weight:600;cursor:pointer}
+.thread-links-row input{width:auto;flex:0 0 auto;margin:1px 0 0;accent-color:#91bd5e}
+.thread-links-row span{text-decoration:underline dotted;text-underline-offset:2px}
+.thread-links-popover{
+  position:absolute;z-index:20;top:calc(100% + 6px);left:0;right:0;
+  margin:0;padding:8px 10px;list-style:none;
+  border:1px solid #566250;border-radius:7px;background:#171c16;
+  box-shadow:0 8px 20px #0008;
+  color:#eef3e9;font-size:12px;font-weight:500;line-height:1.5;
+  opacity:0;visibility:hidden;transition:opacity .12s ease,visibility .12s ease}
+.thread-links-popover li{display:flex;align-items:flex-start;gap:6px;min-width:0}
+.thread-links-popover li input{width:auto;flex:0 0 auto;margin:2px 0 0;accent-color:#91bd5e}
+.thread-links-popover li span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.thread-links-popover li + li{margin-top:4px}
+.thread-links:hover .thread-links-popover,
+.thread-links:focus-within .thread-links-popover{opacity:1;visibility:visible}
+.duplicate-panel{display:grid;gap:14px}
+.duplicate-links{display:grid;gap:8px;margin:0;padding:0;list-style:none}
+.duplicate-links li{padding:9px;border:1px solid #566250;border-radius:7px;background:#171c16;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.duplicate-actions{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.duplicate-actions #confirmDuplicate{grid-column:1/-1;grid-row:1}
+.status:empty{display:none}
+fieldset{min-width:0;margin:0;padding:0;border:0;color:#b9c2b4}
+fieldset:disabled{opacity:.58}
+legend{margin-bottom:4px;padding:0}
+.autocomplete{position:relative}
+.suggestions{position:absolute;z-index:10;top:calc(100% + 4px);right:0;left:0;max-height:156px;overflow-y:auto;border:1px solid #566250;border-radius:7px;background:#171c16;box-shadow:0 8px 20px #0008}
+.suggestion{display:flex;width:100%;padding:8px 10px;border:0;border-radius:0;background:transparent;color:#eef3e9;text-align:left;font-weight:500}
+.suggestion:hover,.suggestion:focus{background:#30392d;outline:none}
+.suggestion-copy{display:grid;min-width:0}
+.suggestion-copy strong,.suggestion-copy small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.suggestion-copy small{color:#aab3a5;font-weight:400}
+.tag-chips{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px}
+.tag-chips:empty{display:none}
+.tag-chip,.selected-link{align-items:center;gap:5px;border:1px solid #526048;border-radius:999px;background:#30392d;color:#e7f1df}
+.tag-chip{display:inline-flex;padding:4px 6px 4px 9px}
+.selected-link{display:flex;margin-bottom:6px;padding:6px 7px 6px 10px}
+.selected-link span{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chip-remove{flex:0 0 auto;padding:0;width:22px;height:22px;border-radius:50%;background:#465340;color:#eef3e9;line-height:1}
+.field-help{display:block;margin-top:5px;color:#9ca795}
+.success-panel{min-height:430px;display:grid;align-content:center;justify-items:center;gap:18px;padding:18px 6px;text-align:center}
+.success-panel h1{margin:0;font-size:24px}
+.success-panel p{max-width:270px;margin:8px 0 0;color:#aab3a5}
+.success-art{position:relative;display:grid;place-items:center;width:150px;height:130px}
+.success-check{display:grid;place-items:center;width:72px;height:72px;border-radius:50%;background:#4fc35d;color:#fff;font-size:46px;font-weight:900;box-shadow:0 0 0 10px #4fc35d22;animation:success-pop .35s ease-out}
+.confetti{position:absolute;width:8px;height:24px;border-radius:3px;background:#63c76c;transform:rotate(20deg)}
+.confetti.one{top:4px;left:28px;transform:rotate(-32deg)}
+.confetti.two{top:14px;right:26px;height:16px;background:#9acb63;transform:rotate(42deg)}
+.confetti.three{bottom:8px;left:13px;height:14px;background:#d4e8bc;transform:rotate(65deg)}
+.confetti.four{right:10px;bottom:19px;background:#4b9858;transform:rotate(-54deg)}
+.success-action{display:block;width:100%;padding:11px 16px;border-radius:8px;background:#91bd5e;color:#16200f;text-decoration:none;font-weight:800}
+.success-panel>button{width:100%}
+@keyframes success-pop{from{opacity:0;transform:scale(.65)}to{opacity:1;transform:scale(1)}}
+@media (prefers-reduced-motion:reduce){.success-check{animation:none}}

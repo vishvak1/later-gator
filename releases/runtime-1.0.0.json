@@ -1,0 +1,20 @@
+{
+  "contractVersion": 1,
+  "release": "1.0.0",
+  "publishedAt": "2026-08-21T00:00:00.000Z",
+  "compatibilityDate": "2026-07-29",
+  "minimumSchemaVersion": 1,
+  "maximumSchemaVersion": 1,
+  "healthContractVersion": 1,
+  "requiredBindings": [
+    "ai",
+    "browser",
+    "d1",
+    "images",
+    "oauth_kv",
+    "queue_background",
+    "queue_thumbnail",
+    "vectorize"
+  ],
+  "optionalBindings": ["kv", "r2"]
+}

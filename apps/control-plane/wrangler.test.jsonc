@@ -1,0 +1,36 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "later-gator-control-plane-test",
+  "main": "src/index.ts",
+  // The installed Workers test runtime currently supports dates through this day.
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": {
+    "directory": "./release-artifacts",
+    "binding": "RELEASE_ARTIFACTS",
+    "run_worker_first": true,
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "vars": {
+    "ENVIRONMENT": "test",
+    "PUBLIC_ORIGIN": "https://latergator.test",
+    "CLOUDFLARE_OIDC_ISSUER": "https://dash.cloudflare.com",
+    "CONTROL_SESSION_TTL_SECONDS": "43200",
+    "CLOUDFLARE_IDENTITY_CLIENT_ID": "test-identity-client",
+    "CLOUDFLARE_IDENTITY_CLIENT_SECRET": "test-identity-secret",
+    "INSTALLER_TOKEN_ENCRYPTION_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+    "CHROME_EXTENSION_IDS": "abcdefghijklmnopabcdefghijklmnop",
+    "ACTIVE_RUNTIME_RELEASE": "1.0.0",
+    "ROLLOUT_COHORT_CEILING": "100",
+    "ROLLOUT_FAILURE_THRESHOLD_PERCENT": "10",
+    "OWNER_ASSERTION_SIGNING_KEYS": "{\"activeKid\":\"test-owner-key-active\",\"keys\":[{\"kid\":\"test-owner-key-previous\",\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"ZDdrPMLu7m8fzbeH7KR14WJQdK__l9ZkotmOZwbPwVY\",\"y\":\"WV0AxshCvGTrEsGxu-cRevv-khe57wFobYpjwJtNxCw\"},{\"kid\":\"test-owner-key-active\",\"kty\":\"EC\",\"crv\":\"P-256\",\"x\":\"jlKum5JgUOU5d9_8FOJkitQ63tWyEOQhMsrv0Uk89Kk\",\"y\":\"NJmcRC_ES3R3-1oNXaPTLEiQF4s64L5PYSDmLOnRaEY\",\"d\":\"T56jPZAPjEseWExsVZtZAkJ8bB7Gj2i0GX_cRGICjls\"}]}"
+  },
+  "d1_databases": [
+    {
+      "binding": "CONTROL_DB",
+      "database_name": "later-gator-control-plane-test",
+      "database_id": "local-control-plane-test"
+    }
+  ]
+}

@@ -1,54 +1,78 @@
 {
   "name": "later-gator",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
   "engines": {
     "node": "^22.18.0 || >=24.11.0"
   },
-  "description": "Single-tenant Raindrop organization and retrieval Worker",
+  "description": "Private, single-user AI bookmark manager on Cloudflare",
   "scripts": {
     "audit:production": "npm audit --omit=dev --audit-level=high",
-    "build": "wrangler deploy --dry-run --outdir dist",
-    "check": "npm run types:check && npm run lint && npm run test",
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev --test-scheduled",
+    "build": "npm run build --workspace @later-gator/runtime",
+    "build:release": "npm run build --workspace @later-gator/runtime && node scripts/build-runtime-release.mjs",
+    "check": "npm run build:extensions && npm run build:web && npm run types:check && npm run typecheck:web && npm run check:function-docs && npm run lint && npm run test && npm run test:web",
+    "deploy": "npm run deploy --workspace @later-gator/runtime",
+    "dev": "npm run dev --workspace @later-gator/runtime",
+    "db:init:local": "npm run db:init:local --workspace @later-gator/runtime",
+    "db:init:remote": "npm run db:init:remote --workspace @later-gator/runtime",
     "lint": "eslint .",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit",
-    "types": "wrangler types",
-    "types:check": "wrangler types --check && npm run typecheck"
+    "test": "npm run test --workspace @later-gator/runtime",
+    "test:web": "npm run test:web --workspace @later-gator/runtime && npm run test --workspace @later-gator/chrome-extension",
+    "test:watch": "npm run test:watch --workspace @later-gator/runtime",
+    "typecheck": "npm run typecheck --workspace @later-gator/runtime",
+    "types": "npm run types --workspace @later-gator/runtime",
+    "types:check": "npm run types:check --workspace @later-gator/runtime",
+    "build:extensions": "npm run build --workspace @later-gator/chrome-extension",
+    "build:web": "npm run build:web --workspace @later-gator/runtime",
+    "check:function-docs": "node scripts/check-function-docs.mjs",
+    "typecheck:web": "npm run typecheck:web --workspace @later-gator/runtime && npm run typecheck --workspace @later-gator/chrome-extension",
+    "check:managed-byoc": "npm run check --workspace @later-gator/contracts && npm run check --workspace @later-gator/control-plane"
   },
   "cloudflare": {
     "bindings": {
-      "STATE": {
-        "description": "Stores small, versioned lifecycle and operational documents. It never stores bookmark content."
+      "DB": {
+        "description": "Stores the authoritative Later Gator bookmark library and application state."
+      },
+      "THUMBNAILS": {
+        "description": "Stores private optimized bookmark preview bytes outside the D1 database."
+      },
+      "OAUTH_KV": {
+        "description": "Stores hashed and encrypted AI-connection grants. Cloudflare creates or binds this private namespace during deployment; the owner enters no value."
+      },
+      "IMAGES": {
+        "description": "Creates uncropped, aspect-preserving WebP bookmark previews before private Workers KV storage."
       },
       "AI": {
         "description": "Runs organization inference when Cloudflare Workers AI is selected."
       },
-      "ORGANIZE_QUEUE": {
-        "description": "Carries bookmark IDs only and invokes one sequential organization job at a time."
+      "VECTORS": {
+        "description": "Stores bookmark embeddings so search matches meaning, not just words. Cloudflare cannot pre-fill these two fields, so enter them exactly: **Dimensions** `1024` and **Metric** `cosine`. They must match the `@cf/baai/bge-large-en-v1.5` embedding model and cannot be changed after the index is created."
       },
-      "EMAIL": {
-        "description": "Sends intervention-required alerts after the owner configures a Cloudflare Email Sending domain and verifies the chosen destination."
+      "BACKGROUND_QUEUE": {
+        "description": "Carries opaque AI, embedding, and maintenance job IDs with sequential AI processing."
       },
-      "INSTALLATION_SECRET": {
-        "description": "Choose one private password containing at least 10 characters. You will use it to open Later Gator setup; Later Gator generates the machine connection secret automatically."
+      "THUMBNAIL_QUEUE": {
+        "description": "Carries opaque thumbnail job IDs independently of AI processing, with bounded concurrency."
+      },
+      "PASSWORD": {
+        "description": "Your Later Gator password — you will type this to sign in. Use 16 or more characters when possible; this field is intentionally blank by default so every installation chooses its own."
       }
     }
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.29.0",
-    "agents": "^0.19.0",
-    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@eslint/js": "^10.0.1",
+    "@tailwindcss/cli": "^4.3.3",
+    "@types/node": "^26.1.2",
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^10.7.0",
+    "happy-dom": "^20.11.1",
+    "tailwindcss": "^4.3.3",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.65.0",
     "vitest": "^4.1.10",

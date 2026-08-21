@@ -1,0 +1,45 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "later-gator-test",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "vars": {
+    "ENVIRONMENT": "test",
+    "TIMEZONE": "UTC",
+    "PUBLIC_ORIGIN": "https://later-gator.test",
+    "CONTROL_PLANE_ORIGIN": "https://control-plane.test",
+    "INSTALLATION_ID": "test-installation-0001",
+    "INSTANCE_MASTER_KEY": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "later-gator-test",
+      "database_id": "local-test-database"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "THUMBNAILS",
+      "id": "local-test-thumbnails"
+    },
+    {
+      "binding": "OAUTH_KV",
+      "id": "local-test-oauth"
+    }
+  ],
+  "assets": {
+    "directory": "./web/public",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  "ai": { "binding": "AI" },
+  "queues": {
+    "producers": [
+      { "binding": "BACKGROUND_QUEUE", "queue": "later-gator-test-background" },
+      { "binding": "THUMBNAIL_QUEUE", "queue": "later-gator-test-thumbnails" }
+    ]
+  }
+}

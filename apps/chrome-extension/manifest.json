@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Later Gator",
+  "version": "1.0.0",
+  "description": "Save the current page to your private Later Gator library.",
+  "permissions": ["activeTab", "identity", "storage", "scripting", "tabs"],
+  "optional_host_permissions": ["https://*.workers.dev/*", "http://localhost/*"],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "action": {
+    "default_title": "Save to Later Gator",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    },
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  }
+}

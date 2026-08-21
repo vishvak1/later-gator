@@ -1,0 +1,85 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "later-gator",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    // Review diagnostics must be present when an owner searches by diagnostic ID.
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "TIMEZONE": "UTC",
+    "PUBLIC_ORIGIN": "https://replace-during-provisioning.invalid",
+    "CONTROL_PLANE_ORIGIN": "https://latergator.app",
+    "INSTALLATION_ID": "replace-during-provisioning"
+  },
+  "secrets": {
+    "required": ["INSTANCE_MASTER_KEY"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "later-gator"
+    }
+  ],
+  "kv_namespaces": [
+    {
+      "binding": "THUMBNAILS"
+    },
+    {
+      // Deploy to Cloudflare provisions this private namespace automatically,
+      // so the owner does not need to create or identify another resource.
+      "binding": "OAUTH_KV"
+    }
+  ],
+  "assets": {
+    "directory": "./web/public",
+    "binding": "ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none"
+  },
+  // Holds the dashboard's live connections. A Durable Object is the only thing
+  // a queue consumer in another isolate can address that is also able to keep a
+  // socket open, which is what lets an organized bookmark reach an open tab.
+  "durable_objects": {
+    "bindings": [
+      { "name": "LIBRARY_EVENTS", "class_name": "LibraryEvents" }
+    ]
+  },
+  "exports": {
+    "LibraryEvents": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "build": { "command": "npm run build:web" },
+  "images": { "binding": "IMAGES" },
+  "browser": { "binding": "BROWSER" },
+  "ai": { "binding": "AI" },
+  "vectorize": [
+    { "binding": "VECTORS", "index_name": "later-gator-vectors", "remote": true }
+  ],
+  "queues": {
+    "producers": [
+      { "binding": "BACKGROUND_QUEUE", "queue": "later-gator-background" },
+      { "binding": "THUMBNAIL_QUEUE", "queue": "later-gator-thumbnails" }
+    ],
+    "consumers": [
+      {
+        "queue": "later-gator-background",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 1
+      },
+      {
+        "queue": "later-gator-thumbnails",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 5,
+        "max_concurrency": 3
+      }
+    ]
+  }
+}

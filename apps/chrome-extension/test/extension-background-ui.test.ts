@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createContext, Script } from "node:vm";
 import chromeManifestRaw from "../manifest.json?raw";
+import commonScript from "../src/common.js?raw";
 
 const deployment = "https://later-gator.example.workers.dev";
 const token = "abcdefghijklmnopqrstuvwxyz1234567890ABCDEFG";
@@ -66,6 +68,19 @@ describe("extension saved-page background indicator", () => {
     expect(JSON.parse(requestBody)).toEqual({
       url: "https://example.com/already-saved",
     });
+  });
+
+  it("keeps shared helpers outside each classic-script global lexical scope", () => {
+    for (const consumerDeclaration of [
+      "const { setSavedBadge, storedConnection } = globalThis.laterGatorExtension;",
+      "const { connectionOrigin, setSavedBadge, storedConnection } = globalThis.laterGatorExtension;",
+    ]) {
+      const context = createContext({ URL });
+      new Script(commonScript).runInContext(context);
+      expect(() => {
+        new Script(consumerDeclaration).runInContext(context);
+      }).not.toThrow();
+    }
   });
 
   it("declares identity and only the bounded managed-runtime host ceiling", () => {

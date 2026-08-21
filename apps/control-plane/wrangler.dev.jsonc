@@ -21,7 +21,7 @@
     "PUBLIC_ORIGIN": "https://later-gator-control-plane-dev.vishvak-v.workers.dev",
     "CLOUDFLARE_OIDC_ISSUER": "https://dash.cloudflare.com",
     "CONTROL_SESSION_TTL_SECONDS": "43200",
-    "CHROME_EXTENSION_IDS": "",
+    "CHROME_EXTENSION_IDS": "dlkkfhejhknnkmofiingkppggflmbnml",
     "ACTIVE_RUNTIME_RELEASE": "1.0.0",
     "ROLLOUT_COHORT_CEILING": "100",
     "ROLLOUT_FAILURE_THRESHOLD_PERCENT": "10"

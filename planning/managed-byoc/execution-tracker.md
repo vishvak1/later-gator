@@ -2,20 +2,19 @@
 
 **Status:** authoritative implementation ledger and cross-session handoff  
 **Last updated:** 2026-08-22, Asia/Kolkata  
-**Current branch:** `prd-change`  
-**Active stage:** `ACTIVE` owner acceptance of personal-runtime Cloudflare login
+**Current branch:** `codex/fix-extension-common`
+**Active stage:** `ACTIVE` owner acceptance of the unpacked Chrome pairing and
+capture flow
 
-**Next task:** owner opens the current personal Worker and clicks **Continue
-with Cloudflare**. The control plane now validates the exact ready installation,
-reuses or obtains the owner's Cloudflare identity session, and returns a
-single-use installation-bound assertion to that Worker's exact callback.
+**Next task:** owner reloads the already-loaded unpacked extension, completes
+**Continue with Cloudflare**, approves the exact personal Worker origin, and
+tests ordinary plus X-link capture behavior from the documented checklist.
 
 **Deployment state:** development control-plane Worker version
-`18cde349-a577-4ee3-b60c-48f894460521` is healthy and live with the missing
-runtime-login route and deleted-Worker reconciliation. The current KV
-installation `b89a58a2-fff3-4566-af96-537f682292a0` is ready, its personal
-Worker exists, and the public runtime health contract is ready. No personal
-resource was changed manually during this repair.
+`b766cf4a-b74c-4599-9682-304871c50877` is healthy and live with exact Chrome ID
+`dlkkfhejhknnkmofiingkppggflmbnml` enforced. The generated unpacked Chrome
+folder targets the development control plane and no personal resource changed
+during this repair.
 
 ## 1. Purpose and authority
 
@@ -1797,3 +1796,63 @@ External handoff before the first automatic deployment:
    and add it to `CHROME_EXTENSION_IDS` before pairing acceptance; and
 3. keep Phase 9 untouched until the remaining owner acceptance and launch gates
    are complete.
+
+### `S029` — 2026-08-22 — Unpacked Chrome parser repair and ID acceptance
+
+**Status:** COMPLETE; owner popup acceptance remains
+**Scope:** fix the unpacked Chrome classic-script declaration collision, add the
+owner-provided development extension ID, validate canonical and generated
+extension behavior, and deploy only the development control plane
+
+Authorized work:
+
+- change only canonical extension source and regenerate the ignored Chrome
+  install folder;
+- add `dlkkfhejhknnkmofiingkppggflmbnml` to the exact development allowlist;
+- add a regression that executes the shipped scripts with classic-script global
+  declaration semantics; and
+- validate before any development control-plane deployment.
+
+No personal Worker, bookmark data, personal Cloudflare resource, production
+control plane, store package, or Phase 9 launch behavior is authorized to
+change.
+
+Diagnosis:
+
+- `common.js` and its consumers are classic Chrome scripts sharing one global
+  lexical environment;
+- the shared file declared `storedConnection`, `connectionOrigin`, and
+  `setSavedBadge` globally, while `popup.js` and `background.js` declared `const`
+  bindings with the same identifiers, causing parsing to stop before the popup
+  could start; and
+- the DOM tests imported each file as an ES module, which isolated their lexical
+  scopes and therefore could not reproduce the shipped-script failure.
+
+Completed:
+
+- wrapped the canonical shared helpers in a private scope while retaining the
+  frozen `globalThis.laterGatorExtension` API;
+- added a Node VM regression that evaluates the shared file and both consumer
+  declaration shapes with classic-script global semantics;
+- added the exact owner-provided unpacked ID to `wrangler.dev.jsonc`;
+- removed the public-development allowlist bypass so development, test, and
+  production all require an explicitly configured Chrome ID;
+- regenerated `extension/chrome` with the development control-plane origin; and
+- deployed only `later-gator-control-plane-dev` as version
+  `b766cf4a-b74c-4599-9682-304871c50877`.
+
+Validation:
+
+- `npm run check` passed with 89 runtime, 15 dashboard, and 13 Chrome-extension
+  tests plus strict types, generated bindings, documentation, and lint gates;
+- `npm run check:managed-byoc` passed outside the filesystem sandbox with 5
+  contract and 53 control-plane tests plus both Worker dry-run bundles;
+- the focused pairing regression passed for development, production, and test
+  allowlist enforcement;
+- the development dry run displayed only the exact unpacked extension ID; and
+- live bounded checks returned health `200`, approved extension `302`, and an
+  unapproved extension `403`.
+
+Handoff: in `chrome://extensions`, select **Reload** on Later Gator, open it on
+a normal HTTPS page, and continue with the Chrome acceptance checklist. Do not
+remove and re-add the folder unless Chrome reports that it cannot reload it.

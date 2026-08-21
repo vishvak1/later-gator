@@ -38,8 +38,7 @@ function extensionRedirectUri(config: ControlConfig, value: string): string {
   const extensionId = match[1];
   if (
     extensionId === undefined ||
-    (config.environment === "production" && !config.chromeExtensionIds.includes(extensionId)) ||
-    (config.environment === "test" && !config.chromeExtensionIds.includes(extensionId))
+    !config.chromeExtensionIds.includes(extensionId)
   ) {
     throw new ControlPlaneError("extension_redirect_rejected", 403);
   }

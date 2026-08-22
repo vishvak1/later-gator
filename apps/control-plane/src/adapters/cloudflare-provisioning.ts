@@ -2,6 +2,7 @@ import { systemHealthSchema, type SystemHealth } from "@later-gator/contracts";
 import { z } from "zod";
 import type { RuntimeReleaseArtifact } from "../application/releases";
 import { fetchVerifiedReleaseFile } from "../application/releases";
+import { InstallerAuthorizationRevokedError } from "../domain/errors";
 import { readBoundedJson } from "./bounded-json";
 
 const API_ORIGIN = "https://api.cloudflare.com";
@@ -28,6 +29,18 @@ export class CloudflareProvisioningError extends Error {
     super(safeCode);
     this.name = "CloudflareProvisioningError";
   }
+}
+
+/** Maps an authenticated Cloudflare API failure without confusing revocation with downtime. */
+function cloudflareApiError(response: Response, r2Request = false): Error {
+  if (response.status === 401) return new InstallerAuthorizationRevokedError();
+  if (r2Request && [400, 402, 403].includes(response.status)) {
+    return new CloudflareProvisioningError("r2_subscription_required", 409);
+  }
+  return new CloudflareProvisioningError(
+    response.status >= 500 ? "cloudflare_unavailable" : "cloudflare_rejected",
+    response.status >= 500 ? 503 : 409,
+  );
 }
 
 export interface ProvisionedResources {
@@ -170,13 +183,7 @@ async function cloudflareJson<T>(
     throw new CloudflareProvisioningError("cloudflare_unavailable", 503);
   }
   if (!response.ok) {
-    if (path.includes("/r2/") && [400, 402, 403].includes(response.status)) {
-      throw new CloudflareProvisioningError("r2_subscription_required", 409);
-    }
-    throw new CloudflareProvisioningError(
-      response.status >= 500 ? "cloudflare_unavailable" : "cloudflare_rejected",
-      response.status >= 500 ? 503 : 409,
-    );
+    throw cloudflareApiError(response, path.includes("/r2/"));
   }
   let value: unknown;
   try {
@@ -209,10 +216,7 @@ export class CloudflareProvisioner {
       throw new CloudflareProvisioningError("cloudflare_unavailable", 503);
     }
     if (response.ok || response.status === 404) return;
-    throw new CloudflareProvisioningError(
-      response.status >= 500 ? "cloudflare_unavailable" : "cloudflare_rejected",
-      response.status >= 500 ? 503 : 409,
-    );
+    throw cloudflareApiError(response, path.includes("/r2/"));
   }
 
   /** Deletes one recorded Later Gator resource by its provider-specific identifier. */
@@ -634,10 +638,7 @@ export class CloudflareProvisioner {
     }
     if (response.status === 404) return false;
     if (!response.ok) {
-      throw new CloudflareProvisioningError(
-        response.status >= 500 ? "cloudflare_unavailable" : "cloudflare_rejected",
-        response.status >= 500 ? 503 : 409,
-      );
+      throw cloudflareApiError(response);
     }
     let payload: unknown;
     try {

@@ -1,6 +1,9 @@
 import { z } from "zod";
 import type { ControlConfig } from "../domain/config";
-import { ControlPlaneError } from "../domain/errors";
+import {
+  ControlPlaneError,
+  InstallerAuthorizationRevokedError,
+} from "../domain/errors";
 import { readBoundedJson } from "./bounded-json";
 import type { CloudflareDiscovery, Fetcher } from "./cloudflare-identity";
 
@@ -14,6 +17,10 @@ const installerTokenResponseSchema = z.object({
   expires_in: z.coerce.number().int().min(60).max(31_536_000),
   scope: z.string().min(1).max(4096),
 });
+
+const revokedTokenResponseSchema = z.object({
+  error: z.enum(["invalid_grant", "invalid_token"]),
+}).loose();
 
 const accountsResponseSchema = z.object({
   success: z.literal(true),
@@ -122,7 +129,23 @@ export async function refreshCloudflareInstallerToken(
   } catch {
     throw new ControlPlaneError("installer_provider_unavailable", 503);
   }
-  if (!response.ok) throw new ControlPlaneError("installer_callback_rejected", 401);
+  if (!response.ok) {
+    if (response.status === 400 || response.status === 401) {
+      let payload: unknown;
+      try {
+        payload = await readBoundedJson(response, 65_536);
+      } catch {
+        payload = null;
+      }
+      if (revokedTokenResponseSchema.safeParse(payload).success) {
+        throw new InstallerAuthorizationRevokedError();
+      }
+    }
+    throw new ControlPlaneError(
+      response.status >= 500 ? "installer_provider_unavailable" : "installer_callback_rejected",
+      response.status >= 500 ? 503 : 401,
+    );
+  }
   const parsed = installerTokenResponseSchema.safeParse(
     await readBoundedJson(response, 131_072),
   );

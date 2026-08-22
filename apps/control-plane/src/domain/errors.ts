@@ -45,3 +45,11 @@ export class ControlPlaneError extends Error {
     this.name = "ControlPlaneError";
   }
 }
+
+/** Signals that Cloudflare definitively rejected the renewable installer credentials. */
+export class InstallerAuthorizationRevokedError extends Error {
+  public constructor() {
+    super("installer_authorization_revoked");
+    this.name = "InstallerAuthorizationRevokedError";
+  }
+}

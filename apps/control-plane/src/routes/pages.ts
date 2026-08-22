@@ -209,6 +209,11 @@ export function renderDashboard(
       }</span></li>`
     ).join("")}</ul>`;
   const isReady = installation?.status === "ready" && installation.workerOrigin !== null;
+  const managedUpdateNotice = installation === null
+    ? `<div class="notice"><strong>Managed updates start after setup</strong><br>Connect Cloudflare and create your personal runtime to enable managed releases.</div>`
+    : installation.authorizationActive
+      ? `<div class="notice"><strong>Automatic updates active</strong><br>No action is required.</div>`
+      : `<div class="notice"><strong>Re-authorization needed</strong><br>Reconnect Cloudflare permissions to restore managed service.</div>`;
   const installationContent = installation === null
     ? `<section class="card">
          <div class="card-header"><div><p class="eyebrow">Step 1 of 2</p><h2>Create your personal runtime</h2><p>Choose thumbnail storage before Cloudflare shows the exact installation permissions.</p></div><span class="status status--pending">Not installed</span></div>
@@ -281,7 +286,7 @@ export function renderDashboard(
            <p class="eyebrow">Managed updates</p>
            <h2>Always compatible</h2>
            <p>Runtime, UI, provider compatibility, and safe schema releases are installed automatically after health checks.</p>
-           <div class="notice"><strong>${installation?.authorizationActive === false ? "Re-authorization needed" : "Automatic updates active"}</strong><br>${installation?.authorizationActive === false ? "Reconnect Cloudflare permissions to restore managed service." : "No action is required."}</div>
+           ${managedUpdateNotice}
          </section>
          <section class="card">
            <p class="eyebrow">Privacy boundary</p>

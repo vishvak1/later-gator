@@ -57,6 +57,29 @@ describe("control-plane foundation", () => {
     expect(removedRoute.status).toBe(404);
   });
 
+  it("does not report managed updates as active before installation", () => {
+    const html = renderDashboard("csrf-token", null);
+    expect(html).toContain("Managed updates start after setup");
+    expect(html).toContain("Connect Cloudflare and create your personal runtime");
+    expect(html).not.toContain("Automatic updates active");
+  });
+
+  it("offers re-authorization after installer authorization becomes inactive", () => {
+    const html = renderDashboard("csrf-token", {
+      status: "ready",
+      storageMode: "kv",
+      safeErrorCode: null,
+      installedRelease: "1.0.0",
+      desiredRelease: "1.0.0",
+      updateStatus: "failed",
+      workerOrigin: "https://later-gator-personal.example.workers.dev",
+      authorizationActive: false,
+    });
+    expect(html).toContain("Re-authorization needed");
+    expect(html).toContain("Restore managed updates");
+    expect(html).not.toContain("Automatic updates active");
+  });
+
   it("exposes only safe service health metadata", async () => {
     const response = await exports.default.fetch("https://latergator.test/health");
     expect(await response.json()).toEqual({

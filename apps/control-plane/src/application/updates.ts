@@ -1,5 +1,8 @@
 import { CloudflareProvisioner, type ProvisionedResources } from "../adapters/cloudflare-provisioning";
-import { findInstallationResource } from "../adapters/installation-repository";
+import {
+  findInstallationResource,
+  revokeInstallerAuthorization,
+} from "../adapters/installation-repository";
 import {
   completeControlMigration,
   completeReleasePromotion,
@@ -11,6 +14,7 @@ import {
   startReleaseUpdate,
 } from "../adapters/release-repository";
 import type { ControlConfig } from "../domain/config";
+import { InstallerAuthorizationRevokedError } from "../domain/errors";
 import { currentInstallerAccessToken } from "./provisioning";
 import { automaticRuntimeMigrations, loadRuntimeRelease } from "./releases";
 
@@ -205,9 +209,15 @@ export async function updateOwnerRuntime(
     failed = false;
     await recordRolloutOutcome(database, targetRelease, false, nowSeconds);
     return { status: "updated", release: targetRelease };
-  } catch {
+  } catch (error: unknown) {
+    const authorizationRevoked = error instanceof InstallerAuthorizationRevokedError;
+    if (authorizationRevoked) {
+      await revokeInstallerAuthorization(database, ownerId, nowSeconds);
+    }
     await setReleaseUpdateState(database, installation.id, targetRelease, "failed", {
-      safeErrorCode: "runtime_update_failed",
+      safeErrorCode: authorizationRevoked
+        ? "installer_authorization_revoked"
+        : "runtime_update_failed",
       nowSeconds,
     });
     return { status: "failed", release: targetRelease };

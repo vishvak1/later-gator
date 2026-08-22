@@ -18,8 +18,8 @@ assertion lifetime and deployment propagation window. Never place production
 private JWK material in source, Wrangler vars, logs, or the browser.
 
 The current private and public OAuth client definitions, scopes, and callbacks
-are recorded in
-`../../planning/managed-byoc/cloudflare-oauth-inventory.md`.
+are recorded in the control-plane section of
+[`docs/developer-guide.md`](../../docs/developer-guide.md).
 
 This package implements the managed-BYOC control plane. It is not deployed by
 the repository's root `deploy` command; development deployment uses the
@@ -53,8 +53,8 @@ https://later-gator-control-plane-dev.vishvak-v.workers.dev/auth/cloudflare/call
 
 The public callback is
 `https://latergator.app/auth/cloudflare/callback`. The authoritative identity,
-installer, and Chrome client/redirect inventory is
-[`cloudflare-oauth-inventory.md`](../../planning/managed-byoc/cloudflare-oauth-inventory.md).
+installer, and Chrome client/redirect inventory is in
+[`docs/developer-guide.md`](../../docs/developer-guide.md).
 
 The private development OAuth client is used for two purpose-separated flows:
 identity requests only `user-details.read`, while installation and managed
@@ -106,7 +106,11 @@ Workers. Personal Workers are candidates only when all of these are true:
 
 - `ACTIVE_RUNTIME_RELEASE` names a newer immutable runtime release;
 - the installation is ready and belongs to the active rollout cohort; and
-- the owner has not revoked the renewable managed-update authorization.
+- the renewable managed-update authorization remains active.
+
+The managed product exposes no update opt-out or release pin. If authorization
+is revoked directly in Cloudflare, the dashboard requires re-authorization
+before the installation is considered managed again.
 
 Never replace the bytes of a published release version. Runtime changes must be
 published under a new release identifier, validated, and then selected through

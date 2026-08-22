@@ -11,6 +11,7 @@ import { startIdentityLogin } from "../src/application/identity";
 import type { ControlConfig } from "../src/domain/config";
 import { constantTimeEqual, randomToken, sha256Base64Url } from "../src/security/encoding";
 import { modelCatalogSchema, storagePlanCatalogSchema } from "@later-gator/contracts";
+import { renderDashboard } from "../src/routes/pages";
 
 describe("control-plane foundation", () => {
   beforeEach(async () => {
@@ -28,10 +29,32 @@ describe("control-plane foundation", () => {
     const html = await response.text();
     expect(html).toContain("Continue with Cloudflare");
     expect(html).toContain("bookmark content, thumbnails, AI settings, and provider keys");
-    expect(html).toContain("your personal Worker");
+    expect(html).toContain("personal Worker");
     expect(response.headers.get("content-security-policy")).toContain(
       "form-action 'self' https://dash.cloudflare.com",
     );
+  });
+
+  it("presents managed updates without an application-level opt-out", async () => {
+    const html = renderDashboard("csrf-token", {
+      status: "ready",
+      storageMode: "kv",
+      safeErrorCode: null,
+      installedRelease: "1.0.0",
+      desiredRelease: "1.0.0",
+      updateStatus: "complete",
+      workerOrigin: "https://later-gator-personal.example.workers.dev",
+      authorizationActive: true,
+    });
+    expect(html).toContain("Automatic updates active");
+    expect(html).not.toContain("Revoke update authorization");
+    expect(html).not.toContain("/install/revoke");
+
+    const removedRoute = await exports.default.fetch(new Request(
+      "https://latergator.test/install/revoke",
+      { method: "POST" },
+    ));
+    expect(removedRoute.status).toBe(404);
   });
 
   it("exposes only safe service health metadata", async () => {

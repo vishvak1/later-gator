@@ -5,9 +5,11 @@
 
 ## 1. Start here
 
-Later Gator is a strict TypeScript Cloudflare Worker. D1 owns the bookmark
-library and application state; Workers KV contains only thumbnail bytes; Queues
-carry small validated job messages; Vectorize contains derived embeddings.
+Later Gator is a strict TypeScript monorepo containing a management control
+plane, a personal data-plane runtime, a Chrome extension, and strict shared
+contracts. Personal D1 owns the bookmark library and application state; KV/R2
+contains only thumbnail bytes; Queues carry small validated job messages;
+Vectorize contains derived embeddings.
 
 Read these files before changing behavior:
 
@@ -25,6 +27,7 @@ Use a supported Node release from `package.json`, then:
 npm install
 npm run db:init:local
 npm run check
+npm run check:managed-byoc
 npm run build
 ```
 
@@ -43,6 +46,8 @@ Useful commands:
 | `npm test` | Worker-runtime tests |
 | `npm run test:web` | Browser DOM tests |
 | `npm run check` | All local gates |
+| `npm run check:managed-byoc` | Shared-contract and control-plane gates plus dry-run bundle |
+| `npm run build:release` | Build the runtime and immutable release artifact |
 | `npm run build` | Wrangler production dry run |
 | `npm run db:init:remote` | Initialize an empty/current remote D1 database |
 | `npm run deploy` | Initialize schema, then deploy |
@@ -68,6 +73,12 @@ live provider.
 - `apps/chrome-extension`: canonical browser-extension source, Chrome manifest,
   icons, and extension-specific DOM tests. Never edit generated browser packages
   as a source of truth.
+- `apps/control-plane/src`: identity, installer, release, pairing, and
+  content-free management modules. It must not import runtime repositories or
+  accept private application payloads.
+- `packages/contracts`: strict, bounded payloads shared across trust boundaries.
+- `releases` and `apps/control-plane/release-artifacts`: immutable release
+  descriptors and generated artifacts; never edit published bytes in place.
 
 Keep request state local. Never place a request, session, URL, bookmark, or
 credential in module-level mutable state. Use generated `Env` types. Do not
@@ -93,8 +104,8 @@ and provider quirks; avoid narrating routine statements.
 
 ## 5. D1 workflow
 
-`apps/runtime/schema.sql` is the single current schema. There is no numbered application
-migration directory. Initialize local D1 with `npm run db:init:local`.
+`apps/runtime/schema.sql` is the single current source schema. There is no
+numbered application source tree. Initialize local D1 with `npm run db:init:local`.
 
 For a schema change:
 
@@ -103,7 +114,9 @@ For a schema change:
 3. Update tests that initialize or assert the schema.
 4. Add behavior and failure-path coverage.
 5. Run `npm run check` and `npm run build`.
-6. Update all three documents if the data or behavior contract changed.
+6. Add an ordered, checksum-stable managed release migration when an existing
+   installation must move to the new schema.
+7. Update all three documents if the data or behavior contract changed.
 
 Use parameterized D1 statements. Prefer a D1 batch when several statements must
 be applied as one logical write. Rely on constraints for uniqueness and valid
@@ -111,8 +124,9 @@ states, then convert expected constraint failures into safe product outcomes.
 
 `apps/runtime/schema.sql` is repeatable for a fresh or already-current database. Do not add
 request-time schema alteration, old-state repair, or hidden data transformation.
-If a future destructive schema change is genuinely required, stop and obtain an
-explicit backup and release decision.
+Destructive or contract-phase changes are never automatic: stop, obtain an
+explicit backup/release decision, define maintenance and rollback behavior, and
+test from a supported prior release.
 
 ## 6. Bookmark write lifecycle
 
@@ -304,7 +318,36 @@ not choose. Duplicate confirmation must remain non-mutating until the explicit
 Save post and connect action; Go back preserves checkbox state and Cancel writes
 nothing.
 
-## 15. Security checklist
+## 15. Control-plane and release development
+
+The same confidential Cloudflare client serves two authorization purposes, but
+the requests remain separate. Identity requests only `user-details.read` and
+retain no Cloudflare token. Installer requests add `offline_access`, `d1.write`,
+`workers-kv-storage.write`, `vectorize.write`, and `workers-scripts.write`; R2
+install/migration additionally requests `workers-r2.write`.
+
+The registered development callbacks are the control-plane development origin
+plus `/auth/cloudflare/callback` and `/install/cloudflare/callback`. Production
+uses the corresponding paths on `https://latergator.app`. Chrome uses a separate
+public client, `token_endpoint_auth_method=none`, S256 PKCE, and the exact
+`https://<extension-id>.chromiumapp.org/cloudflare` callback.
+
+Release workflow:
+
+1. change the one current runtime source and `apps/runtime/schema.sql`;
+2. add regression/fault tests and any compatible upgrade statements;
+3. run `npm run check`, `npm run build`, and `npm run check:managed-byoc`;
+4. create a new immutable release with `npm run build:release`;
+5. verify descriptors, digests, schema ranges, bindings, and health contract;
+6. deploy the control plane without changing `ACTIVE_RUNTIME_RELEASE`;
+7. select the new release and expand cohorts only after live canary health;
+8. never replace an already-published release directory.
+
+Control-plane commits deploy the management Worker only. Personal runtimes
+change only when a newer active runtime release is selected and the scheduler
+finds an authorized installation in the active cohort.
+
+## 16. Security checklist
 
 - Validate every external input and stored JSON boundary with Zod or an equally
   strict parser.
@@ -319,13 +362,18 @@ nothing.
   tools/list against `/mcp`. The scan must expose exactly the intended read-only
   tools; a missing or revoked bearer token returns 401.
 - Keep thumbnail delivery authenticated and content-addressed.
+- Never let the control plane accept, proxy, store, or log bookmark content,
+  thumbnails, provider credentials, prompts, responses, capture tokens, or MCP
+  traffic.
+- Encrypt renewable installer authorization, bind it to owner/account, validate
+  granted scopes, and stop using it immediately after revocation.
 - Do not expose raw provider errors to users.
 - Do not persist bookmark content in KV.
 - Retrieval diagnostics may log only the approved structured counts and
   booleans from `apps/runtime/src/observability/retrieval.ts`, plus opaque IDs
   and safe codes.
 
-## 16. Testing expectations
+## 17. Testing expectations
 
 Worker tests use the Cloudflare runtime and the complete
 `apps/runtime/schema.sql`. Browser
@@ -343,11 +391,16 @@ High-risk changes also need fault injection for:
 - reset continuation and storage failure; and
 - destructive selection and confirmation UI.
 
+Managed installation/release changes also require mocked Cloudflare API
+contracts and fault coverage for refresh/revocation, idempotent resume,
+propagation delay, artifact/checksum failure, schema interruption, candidate
+health, promotion, rollback, cohort pause, and control-plane outage boundaries.
+
 Do not weaken or delete a test merely to make a refactor pass. If a deliberately
 removed historical state is the subject of the test, replace it with coverage of
 the current invariant.
 
-## 17. Definition of done
+## 18. Definition of done
 
 A change is done when:
 
@@ -357,7 +410,7 @@ A change is done when:
 4. current schema and queries agree;
 5. regression and fault tests cover the change;
 6. `npm run check` passes;
-7. `npm run build` passes without deploying;
-8. generated extension packages match shared source;
+7. `npm run build` and `npm run check:managed-byoc` pass without deploying;
+8. generated extension and release artifacts match canonical source;
 9. `git diff --check` is clean; and
 10. all three documents remain authoritative and mutually consistent.

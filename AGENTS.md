@@ -11,22 +11,20 @@ redacted telemetry in `apps/runtime/src/observability`. Runtime tests live under
 package-local tests. Canonical Chrome-extension source and extension-specific
 DOM tests live in `apps/chrome-extension`; `extension/chrome` is a generated
 install folder. The approved product and
-technical specifications live in `docs/` and are authoritative.
+technical specifications live in `docs/` and are authoritative. Historical
+plans live only in Git history.
 
-## Managed-BYOC execution
+## Managed architecture
 
-For managed-BYOC work, read
-`planning/managed-byoc/execution-tracker.md` completely before changing code.
-That tracker is the source of truth for implementation progress, the active
-stage, validation evidence, and the next-session queue. The proposed product
-requirements, structural plan, and implementation plan in the same directory
-define the target and sequencing; the specifications in `docs/` remain the
-compatibility baseline for current behavior until the transition is accepted.
+The control plane owns Cloudflare identity, provisioning, pairing, catalogs,
+and release orchestration; it never owns or proxies private runtime data. The
+personal runtime owns bookmarks, thumbnails, provider configuration, capture,
+MCP, and logs inside the owner's account. Shared payloads belong in
+`packages/contracts` and must stay strict, bounded, and content-free where they
+cross into the control plane.
 
-Update the execution tracker at the start and end of every managed-BYOC coding
-session. Do not mark work complete without recording the validation command and
-result. Preserve unrelated or pre-existing working-tree changes, and never
-discard, stash, commit, or deploy them unless the user explicitly requests it.
+Preserve unrelated or pre-existing working-tree changes, and never discard,
+stash, commit, or deploy them unless the user explicitly requests it.
 
 ## Commands
 
@@ -44,4 +42,11 @@ Use strict TypeScript and explicit module boundaries. Validate all external inpu
 
 ## Safety and tests
 
-Raindrop is the source of truth. Never persist bookmark content in KV or logs. Never log full URLs, titles, notes, excerpts, tokens, or MCP paths. Credentials entered in setup must be encrypted before KV storage and never returned to the browser. Onboarding and mutation paths require authenticated setup sessions, CSRF protection, explicit user action, idempotency, and fault-injection coverage. Add a regression test with every behavior change. Production-library testing is prohibited until the design's deployment gates pass.
+D1 in the personal runtime is the bookmark source of truth; Raindrop is CSV
+import-only. Never persist bookmark content in KV or logs. Never log full URLs,
+titles, notes, excerpts, tokens, or MCP paths. Provider credentials must be
+encrypted before personal D1 storage and must never enter the control plane.
+Mutation paths require authenticated runtime sessions, CSRF protection,
+explicit user action, idempotency, and fault-injection coverage. Add a regression
+test with every behavior change. Production-library testing is prohibited until
+the documented release gates pass.

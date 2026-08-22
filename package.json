@@ -33,37 +33,6 @@
     "typecheck:web": "npm run typecheck:web --workspace @later-gator/runtime && npm run typecheck --workspace @later-gator/chrome-extension",
     "check:managed-byoc": "npm run check --workspace @later-gator/contracts && npm run check --workspace @later-gator/control-plane"
   },
-  "cloudflare": {
-    "bindings": {
-      "DB": {
-        "description": "Stores the authoritative Later Gator bookmark library and application state."
-      },
-      "THUMBNAILS": {
-        "description": "Stores private optimized bookmark preview bytes outside the D1 database."
-      },
-      "OAUTH_KV": {
-        "description": "Stores hashed and encrypted AI-connection grants. Cloudflare creates or binds this private namespace during deployment; the owner enters no value."
-      },
-      "IMAGES": {
-        "description": "Creates uncropped, aspect-preserving WebP bookmark previews before private Workers KV storage."
-      },
-      "AI": {
-        "description": "Runs organization inference when Cloudflare Workers AI is selected."
-      },
-      "VECTORS": {
-        "description": "Stores bookmark embeddings so search matches meaning, not just words. Cloudflare cannot pre-fill these two fields, so enter them exactly: **Dimensions** `1024` and **Metric** `cosine`. They must match the `@cf/baai/bge-large-en-v1.5` embedding model and cannot be changed after the index is created."
-      },
-      "BACKGROUND_QUEUE": {
-        "description": "Carries opaque AI, embedding, and maintenance job IDs with sequential AI processing."
-      },
-      "THUMBNAIL_QUEUE": {
-        "description": "Carries opaque thumbnail job IDs independently of AI processing, with bounded concurrency."
-      },
-      "PASSWORD": {
-        "description": "Your Later Gator password — you will type this to sign in. Use 16 or more characters when possible; this field is intentionally blank by default so every installation chooses its own."
-      }
-    }
-  },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.8",
     "@eslint/js": "^10.0.1",

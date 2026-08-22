@@ -31,7 +31,7 @@
       "binding": "THUMBNAILS"
     },
     {
-      // Deploy to Cloudflare provisions this private namespace automatically,
+      // The managed installer provisions this private namespace automatically,
       // so the owner does not need to create or identify another resource.
       "binding": "OAUTH_KV"
     }

@@ -4,7 +4,6 @@ export type ControlEventCode =
   | "identity_logout_succeeded"
   | "installer_authorization_started"
   | "installer_authorization_succeeded"
-  | "installer_authorization_revoked"
   | "installer_provisioning_advanced"
   | "installer_cleanup_completed"
   | "extension_pairing_started"

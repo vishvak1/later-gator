@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { upsertOwner } from "../src/adapters/control-repository";
 import {
   createAuthorizedInstallation,
+  findOwnerInstallationSummary,
   markInstallationReady,
   recordInstallationResource,
   revokeInstallerAuthorization,
@@ -32,7 +33,9 @@ const config: ControlConfig = {
 };
 
 /** Seeds one supported prior release with every resource needed to reconstruct bindings. */
-async function priorInstallation(): Promise<{ installationId: string; ownerId: string }> {
+async function priorInstallation(
+  tokenExpiresIn = 3600,
+): Promise<{ installationId: string; ownerId: string }> {
   const ownerId = await upsertOwner(env.CONTROL_DB, `update-${crypto.randomUUID()}`, 100);
   const installationId = crypto.randomUUID();
   await createAuthorizedInstallation(env.CONTROL_DB, {
@@ -72,7 +75,7 @@ async function priorInstallation(): Promise<{ installationId: string; ownerId: s
     {
       accessToken: "update-access-token",
       refreshToken: "update-refresh-token",
-      expiresIn: 3600,
+      expiresIn: tokenExpiresIn,
       grantedScopes: ["d1.write", "workers-scripts.write"],
     },
     100,
@@ -96,6 +99,8 @@ function updateFetcher(options: {
   failCandidateHealth?: boolean;
   failDeploymentOnce?: boolean;
   failMigrationOnce?: boolean;
+  rejectAuthorization?: boolean;
+  revokeRefreshToken?: boolean;
 } = {}) {
   let deployment = 0;
   let deploymentFailed = false;
@@ -105,6 +110,24 @@ function updateFetcher(options: {
     const request = new Request(input, init);
     const url = new URL(request.url);
     const ok = (result: unknown, status = 200) => Response.json({ success: true, result }, { status });
+    if (url.pathname === "/.well-known/openid-configuration") {
+      return Response.json({
+        issuer: "https://dash.cloudflare.com",
+        authorization_endpoint: "https://dash.cloudflare.com/oauth2/auth",
+        token_endpoint: "https://dash.cloudflare.com/oauth2/token",
+        code_challenge_methods_supported: ["S256"],
+        token_endpoint_auth_methods_supported: ["client_secret_post"],
+      });
+    }
+    if (url.pathname === "/oauth2/token" && options.revokeRefreshToken === true) {
+      return Response.json({ error: "invalid_grant" }, { status: 400 });
+    }
+    if (url.hostname === "api.cloudflare.com" && options.rejectAuthorization === true) {
+      return Response.json(
+        { success: false, errors: [{ code: 10000, message: "Authentication error" }] },
+        { status: 401 },
+      );
+    }
     if (url.hostname.endsWith("workers.dev") && url.pathname === "/health") {
       const staged = request.headers.has("Cloudflare-Workers-Version-Overrides");
       const failed = (options.failAfterPromotion === true && !staged) ||
@@ -226,10 +249,58 @@ describe("managed runtime updates", () => {
       fetcher,
       200,
     )).resolves.toEqual({ status: "failed", release: "1.0.0" });
+    expect((await findOwnerInstallationSummary(
+      env.CONTROL_DB,
+      ownerId,
+    ))?.authorizationActive).toBe(true);
     const deployments = fetcher.mock.calls.filter(([input, init]) =>
       new URL(new Request(input, init).url).pathname.endsWith("/deployments")
     );
     expect(deployments).toHaveLength(1);
+  });
+
+  it("marks installer authorization inactive after a definitive Cloudflare API rejection", async () => {
+    const { ownerId } = await priorInstallation();
+    await expect(updateOwnerRuntime(
+      env.CONTROL_DB,
+      env.RELEASE_ARTIFACTS,
+      config,
+      ownerId,
+      "1.0.0",
+      updateFetcher({ rejectAuthorization: true }),
+      200,
+    )).resolves.toEqual({ status: "failed", release: "1.0.0" });
+    expect(await findOwnerInstallationSummary(env.CONTROL_DB, ownerId)).toMatchObject({
+      authorizationActive: false,
+      safeErrorCode: null,
+      updateStatus: "failed",
+    });
+    expect(await env.CONTROL_DB.prepare(
+      `SELECT safe_error_code FROM runtime_release_history
+        WHERE installation_id = (SELECT id FROM installations WHERE owner_id = ?)
+          AND release = '1.0.0'`,
+    ).bind(ownerId).first()).toEqual({ safe_error_code: "installer_authorization_revoked" });
+  });
+
+  it("marks installer authorization inactive when Cloudflare revokes the refresh token", async () => {
+    const { ownerId } = await priorInstallation(60);
+    const fetcher = updateFetcher({ revokeRefreshToken: true });
+    await expect(updateOwnerRuntime(
+      env.CONTROL_DB,
+      env.RELEASE_ARTIFACTS,
+      config,
+      ownerId,
+      "1.0.0",
+      fetcher,
+      200,
+    )).resolves.toEqual({ status: "failed", release: "1.0.0" });
+    expect((await findOwnerInstallationSummary(
+      env.CONTROL_DB,
+      ownerId,
+    ))?.authorizationActive).toBe(false);
+    expect(fetcher.mock.calls.some(([input, init]) =>
+      new URL(new Request(input, init).url).hostname === "api.cloudflare.com"
+    )).toBe(false);
   });
 
   it("retries interrupted schema and deployment operations idempotently", async () => {
@@ -244,6 +315,10 @@ describe("managed runtime updates", () => {
       migrationFetcher,
       200,
     )).resolves.toEqual({ status: "failed", release: "1.0.0" });
+    expect((await findOwnerInstallationSummary(
+      env.CONTROL_DB,
+      migration.ownerId,
+    ))?.authorizationActive).toBe(true);
     await expect(updateOwnerRuntime(
       env.CONTROL_DB,
       env.RELEASE_ARTIFACTS,

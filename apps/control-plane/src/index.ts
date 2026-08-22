@@ -53,7 +53,6 @@ import {
 import {
   findOwnerInstallationSummary,
   findOwnerReleaseHistory,
-  revokeInstallerAuthorization,
 } from "./adapters/installation-repository";
 
 /** Adds browser security headers to every HTML response. */
@@ -520,23 +519,6 @@ async function handleProvisioning(
   return redirect("/");
 }
 
-/** Revokes renewable deployment authority without changing the personal runtime. */
-async function handleInstallerRevocation(
-  request: Request,
-  env: Env,
-  config: ControlConfig,
-  requestId: string,
-): Promise<Response> {
-  const ownerId = await authenticatedFormOwner(request, env, config);
-  const form = await request.formData();
-  if (form.get("confirmation") !== "revoke-installer-authorization") {
-    throw new ControlPlaneError("bad_request", 400);
-  }
-  await revokeInstallerAuthorization(env.CONTROL_DB, ownerId, Math.floor(Date.now() / 1000));
-  logControlEvent("installer_authorization_revoked", requestId, "revoked");
-  return redirect("/");
-}
-
 /** Executes explicit compensating cleanup for an incomplete personal installation. */
 async function handleInstallationCleanup(
   request: Request,
@@ -658,9 +640,6 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/install/provision" && request.method === "POST") {
       return await handleProvisioning(request, env, config, requestId);
     }
-    if (url.pathname === "/install/revoke" && request.method === "POST") {
-      return await handleInstallerRevocation(request, env, config, requestId);
-    }
     if (url.pathname === "/install/cleanup" && request.method === "POST") {
       return await handleInstallationCleanup(request, env, config, requestId);
     }
@@ -684,7 +663,6 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         "/install/authorize",
         "/install/cloudflare/callback",
         "/install/provision",
-        "/install/revoke",
         "/install/cleanup",
       ].includes(url.pathname)
     ) {

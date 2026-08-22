@@ -1,45 +1,42 @@
 # Later Gator
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/vishvak1/later-gator)
-
 Later Gator is a private, single-user bookmark manager that runs in your own
 Cloudflare account. It stores the library in D1, stores normalized thumbnails
-privately in Workers KV, and can organize new bookmarks with Cloudflare Workers AI,
-OpenAI, or Anthropic.
+privately in Workers KV or R2, and can organize new bookmarks with Cloudflare
+Workers AI, OpenAI, or Anthropic.
 
 Raindrop is optional and is used only as a CSV import source. Later Gator never
 connects to, changes, or deletes data in your Raindrop account.
 
-## Install
+## Architecture and availability
 
-1. Press **Deploy to Cloudflare**.
-2. Sign in to GitHub and Cloudflare and approve the requested resources.
-3. In the blank **PASSWORD** field, choose a non-empty password. Sixteen or more
-   characters is strongly recommended, and it should be saved somewhere safe:
-   this is the password you will type to sign in, and there is no email-based
-   reset. Login does not impose a minimum length, so an existing deployment
-   password remains usable. The sign-in form has a **Show** button so the
-   password can be checked before it becomes the only way in.
-4. In the **Vectorize** section, enter these two values exactly:
+The managed product has two deliberately separate Workers:
 
-   | Field | Value |
-   |---|---|
-   | Dimensions | `1024` |
-   | Metric | `cosine` |
+- `latergator.app` is the control plane. It signs owners in with Cloudflare,
+  provisions installations, records content-free resource/release metadata,
+  pairs the official Chrome extension, and manages runtime releases.
+- Each owner has a personal runtime Worker in their own Cloudflare account. It
+  serves the dashboard, capture APIs, MCP, and all bookmark processing. Private
+  library data, thumbnails, provider credentials, prompts, responses, and
+  application logs stay there.
 
-   Cloudflare's deploy form cannot read these from this repository
-   ([workers-sdk#14075](https://github.com/cloudflare/workers-sdk/issues/14075)),
-   so they are the only technical values you have to type. They match the
-   `@cf/baai/bge-large-en-v1.5` embedding model used for search and **cannot be
-   changed after the index is created** — a wrong value here means semantic
-   search never returns results, and the index has to be deleted and recreated.
-5. Finish the deployment and open the Worker URL.
-6. Sign in. Later Gator automatically sends an unfinished installation to
-   `/setup`; after setup it sends you to `/dashboard`.
+The development control plane and the first disposable KV installation have
+passed their initial connected-account test. The public OAuth clients, clean R2
+installation, prior-version update/rollback drill, and Chrome Web Store release
+are still release gates. The managed installer is therefore not yet presented
+here as a public production service.
 
-Cloudflare provisions the Worker, D1 database, private Workers KV thumbnail namespace,
-Workers AI binding, image transformation binding, Vectorize search index, and
-sequential background Queue. There is no scheduled Cron trigger.
+When public installation opens, the owner will sign in at `latergator.app`,
+choose thumbnail storage, and approve the exact Cloudflare permissions shown in
+the consent screen. Later Gator then provisions the personal Worker, D1, private
+OAuth KV, optional thumbnail KV or R2, Vectorize index, and two Queues. No GitHub
+fork, Wrangler command, resource ID, Later Gator password, or manual Vectorize
+configuration is part of the managed owner journey.
+
+The control plane redirects the owner to the personal runtime using a short-lived,
+installation-bound assertion. Ordinary dashboard, extension, MCP, AI-provider,
+and storage traffic goes directly to that runtime rather than through the
+control plane.
 
 ## Setup
 
@@ -102,14 +99,14 @@ can then create separately scoped credentials for:
   Failed.
 - Read-only OAuth connections for ChatGPT, Claude, and compatible MCP clients.
 
-Capture credentials are shown once and can be revoked without changing the
-Later Gator password. AI assistants use OAuth instead of a copied secret.
+Capture credentials can be revoked independently. AI assistants use OAuth
+instead of a copied secret.
 
 In Settings, select **Connect ChatGPT** or **Connect Claude**. Claude opens with
 the connector name and stable `/mcp` address prefilled; ChatGPT opens its
 connector settings and Later Gator copies the address for the remaining paste.
-The provider then redirects to Later Gator, where the owner signs in and approves
-read-only access. Settings lists each grant independently, including last-used
+The provider then redirects to the personal runtime, where the owner signs in
+through Cloudflare and approves read-only access. Settings lists each grant independently, including last-used
 activity and a Disconnect action. A successful install is confirmed by a Later
 Gator tool call—not by asking the model whether a connector is installed. Enable
 Later Gator's tools in each chat before using them.
@@ -132,11 +129,13 @@ Use Node.js 22.18+ (or 24.11+) and install dependencies with `npm install`.
 npm run db:init:local
 npm run dev
 npm run check
+npm run check:managed-byoc
 npm run build
 ```
 
-`npm run build` is a dry-run production bundle and does not deploy. Production
-schema initialization and deployment are deliberate release actions.
+`npm run build` and `npm run check:managed-byoc` perform dry-run bundles and do
+not deploy. Runtime and control-plane deployment commands mutate Cloudflare and
+are deliberate release/acceptance actions.
 
 ## Documentation
 
@@ -151,6 +150,8 @@ competing documents in `docs/`.
 
 ## Uninstall
 
-Export the library first if you want to keep it. Then delete the Worker, D1
-database, thumbnail Workers KV namespace, and Queue from the Cloudflare dashboard. Removing
-Later Gator does not change the original Raindrop account or CSV export.
+Export the library first if you want to keep it. Managed uninstall requires a
+separate confirmation before deleting personal Cloudflare resources. Managed
+updates cannot be disabled independently because runtime, UI, AI-provider, and
+schema compatibility must move together. Removing Later Gator does not change
+the original Raindrop account or CSV export.

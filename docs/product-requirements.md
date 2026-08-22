@@ -1,12 +1,12 @@
 # Later Gator — Product Requirements
 
 **Product version:** 1.0.0
-**Status:** implemented and authoritative
+**Status:** current implementation contract; public-release gates are listed in section 17
 
 ## 1. Product definition
 
-Later Gator is a private, single-owner bookmark manager deployed to the owner's
-Cloudflare account. It captures links from the dashboard, Chrome, and
+Later Gator is a private, single-owner bookmark manager whose personal runtime
+is deployed to the owner's Cloudflare account. It captures links from the dashboard, Chrome, and
 the iOS Share Sheet; stores the library in D1; and uses a selected AI provider
 to organize bookmarks that are waiting in Unsorted.
 
@@ -27,20 +27,30 @@ second source of truth.
 - Honest status: the UI distinguishes waiting, processing, provider delay,
   owner pause, review, failure, and completion.
 - Portable ownership: the owner can export the library as JSON or CSV.
+- Separated trust: the management service may provision and update declared
+  resources but never becomes the bookmark data plane.
 
 ## 3. Deployment and authentication
 
-The owner deploys one Cloudflare Worker with the bindings described in the
-technical design. A `PASSWORD` secret is required.
+The owner signs in to the Later Gator control plane with Cloudflare identity.
+Identity authorization and installer authorization are purpose-separated:
+sign-in identifies the owner, while a later explicit consent grants the limited
+Cloudflare API scopes needed to create and manage the personal installation.
 
-On the first successful login, Later Gator derives a password wrapping key,
-creates a random data-encryption key, and stores only encrypted key material and
-KDF parameters. Later logins unlock the same data key. Passwords and provider
-credentials are never returned to the browser after submission.
+The control plane provisions one personal runtime Worker and its declared D1,
+KV or R2, Vectorize, Queue, and private OAuth resources. It generates a random
+per-installation `INSTANCE_MASTER_KEY` as a Worker secret. There is no Later
+Gator password, recovery phrase, GitHub fork, manual binding ID, or provider key
+in the control-plane flow.
 
-Dashboard sessions have a 24-hour idle lifetime and a 14-day absolute lifetime.
-State-changing dashboard requests require a valid session, a same-origin
-request, and the session's CSRF token. Repeated failed logins are rate limited.
+Opening the personal runtime redirects the owner to the control plane. After
+Cloudflare sign-in, the control plane returns a short-lived signed assertion
+bound to the owner, installation, runtime origin, nonce, and one-time token ID.
+The runtime verifies it and creates its own local session. The control plane is
+not consulted for ordinary authenticated application requests.
+
+State-changing dashboard requests require a valid runtime session, a same-origin
+request, and the session's CSRF token.
 
 ## 4. Setup
 
@@ -187,18 +197,24 @@ YouTube, page icons, and other safe sources. Fetches reject private-network and
 unsafe targets, enforce redirects and size limits, validate image signatures,
 and transform accepted images to bounded WebP previews.
 
-Only optimized bytes are stored in Workers KV. D1 stores metadata and the
-current thumbnail ID. Delivery requires an authenticated session and a matching
-bookmark/thumbnail ID, and uses private immutable caching.
+Only optimized bytes are stored in the selected private Workers KV namespace or
+R2 bucket. D1 stores the backend, metadata, and current thumbnail ID. Delivery
+requires an authenticated session and a matching bookmark/thumbnail ID, and
+uses private immutable caching. Thumbnails may be disabled, and thumbnail
+failure must never fail bookmark capture or AI organization. A KV-to-R2 move
+copies bytes inside the owner's account and requires verification plus explicit
+approval before deleting source objects.
 
 ## 12. Capture surfaces
 
 ### Chrome extension
 
-The owner generates
-one connection code in Settings, loads the generated browser folder, and pastes
-the code once. The extension stores only the deployment origin and scoped
-capture token. It requests access to the active page when used and does not
+The official extension selects **Continue with Cloudflare**, completes a public
+PKCE identity flow, and receives a one-time installation-bound pairing grant.
+It asks for host access to the exact personal runtime origin and exchanges the
+grant there for a narrow capture credential. It stores only that origin, the
+capture credential, a safe device identifier, and non-sensitive preferences.
+It never receives installer authorization or provider credentials and does not
 request browsing history.
 
 The popup can save the page to Unsorted for AI or directly to a fixed folder
@@ -231,7 +247,7 @@ MCP is read-only. Later Gator exposes one stable Streamable HTTP endpoint and
 OAuth 2.1 discovery, registration, PKCE authorization, token, refresh, and
 revocation flows. Tools may search bookmarks and read bookmark details; they
 cannot mutate the library, credentials, setup, or automation state. The owner
-approves each AI assistant using the existing Later Gator password. Settings
+approves each AI assistant using an authenticated runtime session. Settings
 must show each active grant's assistant name, read-only scope, coarse last-used
 activity, and an independent Disconnect action.
 
@@ -284,7 +300,38 @@ state to their defaults without exposing deleted content in logs.
 - Setup topic selection, bookmark and tag deletion checkboxes, and confirmation
   dialogs are release-blocking interactions.
 
-## 16. Acceptance gate
+## 16. Managed installation and updates
+
+The control plane stores only hashed Cloudflare identity, encrypted renewable
+installer authorization, opaque resource identifiers, installation state,
+release state, and content-free audit outcomes. It must not contain bookmark,
+thumbnail, provider-key, prompt, response, capture, or MCP content.
+
+Runtime releases are immutable and checksum-verified. Each declares its
+application release, schema compatibility, required bindings, health contract,
+assets, and ordered schema changes. Automatic updates:
+
+1. select only ready installations in the active rollout cohort;
+2. use the owner's still-valid installer authorization;
+3. accept unattended schema changes only when they are additive/expand-only;
+4. record a D1 Time Travel bookmark before applying a schema change;
+5. upload a new Worker version while inheriting the existing runtime secret;
+6. stage it at zero traffic and health-check that exact version;
+7. promote it atomically to all traffic; and
+8. health-check again, record success, or roll back when schema compatibility
+   permits.
+
+Managed updates are a condition of the managed Later Gator service because UI,
+runtime APIs, AI-provider contracts, model catalogs, and schemas must remain
+compatible. The product exposes no pause, release pin, or update-authorization
+revocation control. If the owner revokes access directly in Cloudflare, the
+control plane marks the installation as requiring re-authorization and does not
+claim that an increasingly stale runtime remains supported. A control-plane
+outage may delay sign-in, new installation, pairing, and updates; an existing
+runtime and its existing capture credentials continue operating during the
+outage.
+
+## 17. Acceptance gate
 
 A change is complete only when:
 
@@ -296,3 +343,10 @@ A change is complete only when:
 - no bookmark content or credential appears in logs or fixtures;
 - the Chrome package is regenerated from the canonical extension source; and
 - named production functions remain documented.
+
+Public release additionally requires connected-account acceptance for clean KV
+and R2 installs, a supported prior-version update and rollback, installer
+revocation, control-plane outage behavior, public OAuth client promotion after
+domain verification, privacy/incident/secret-rotation operations, and Chrome Web
+Store publication. These are release checks, not competing future product
+specifications.

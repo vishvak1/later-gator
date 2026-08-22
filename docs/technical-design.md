@@ -5,7 +5,15 @@
 
 ## 1. Architecture
 
-Later Gator is one Cloudflare Worker with five entry surfaces:
+Later Gator is a managed bring-your-own-Cloudflare system with two Worker roles:
+
+1. the Later Gator control plane, which owns Cloudflare identity sessions,
+   installation/release metadata, signed catalogs, extension pairing, and
+   managed deployment orchestration; and
+2. one personal runtime Worker per owner, deployed into that owner's Cloudflare
+   account.
+
+The personal runtime has five entry surfaces:
 
 1. authenticated dashboard pages and JSON APIs;
 2. scoped browser-extension and iOS capture APIs;
@@ -13,17 +21,22 @@ Later Gator is one Cloudflare Worker with five entry surfaces:
 4. a sequential background Queue for organization, embedding, and reset work;
 5. an independent Queue for thumbnail work.
 
-D1 is authoritative for application state and the bookmark library. Workers KV
-stores only optimized thumbnail bytes. Vectorize stores derived embeddings.
+The personal runtime D1 is authoritative for application state and the bookmark
+library. Workers KV or R2 stores only optimized thumbnail bytes. Vectorize
+stores derived embeddings.
 Workers AI, OpenAI, or Anthropic supplies organization inference. Cloudflare
 Images performs bounded preview transformation. Browser Rendering is a fallback
 for script-rendered pages. A Durable Object holds live dashboard WebSockets so a
-Queue consumer can notify open tabs without storing bookmark content.
+Queue consumer can notify open tabs without storing bookmark content. The
+control plane stores no bookmark, thumbnail, provider credential, prompt,
+response, capture, or MCP content and does not proxy normal personal-runtime
+traffic.
 
 ## 2. Repository boundaries
 
 ```text
 apps/
+├── control-plane/           identity, installation, release and pairing Worker
 ├── runtime/
 │   ├── src/                 Worker and product modules
 │   ├── web/src/             dashboard browser code and styles
@@ -36,6 +49,10 @@ apps/
     ├── test/                extension-specific DOM tests
     └── manifest.json        canonical Chrome manifest
 extension/chrome/            generated Chrome install folder
+packages/contracts/          strict cross-Worker payload contracts
+releases/                    public immutable release descriptors
+scripts/                     deterministic build and release tooling
+shortcuts/                   iOS request template
 docs/                        exactly three authoritative documents
 ```
 
@@ -46,10 +63,13 @@ state is permitted.
 
 ## 3. Cloudflare bindings
 
+### Personal runtime
+
 | Binding | Type | Responsibility |
 | --- | --- | --- |
 | `DB` | D1 | Bookmark library, jobs, sessions, settings, metadata |
-| `THUMBNAILS` | Workers KV | Private optimized thumbnail bytes |
+| `THUMBNAILS` | Workers KV or R2 | Private optimized thumbnail bytes |
+| `OAUTH_KV` | Workers KV | Private MCP OAuth records |
 | `BACKGROUND_QUEUE` | Queue | Organization, embedding, dispatch, reset |
 | `THUMBNAIL_QUEUE` | Queue | Independent thumbnail discovery and ingest |
 | `AI` | Workers AI | Organization and embedding inference |
@@ -58,7 +78,7 @@ state is permitted.
 | `BROWSER` | Browser Rendering | Bounded dynamic-page fallback |
 | `LIBRARY_EVENTS` | Durable Object | Live WebSocket fan-out to dashboards |
 | `ASSETS` | Static Assets | Content-hashed dashboard assets |
-| `PASSWORD` | Secret | Initial and service credential wrapping input |
+| `INSTANCE_MASTER_KEY` | Secret | Per-installation provider-credential encryption key |
 
 `ENVIRONMENT` and `TIMEZONE` are non-secret configuration values. Observability
 is enabled with sampling. There is no Cron trigger; authenticated bootstrap and
@@ -67,6 +87,17 @@ Queue continuation messages repair bounded backlogs.
 The Durable Object is declared in Wrangler's current `exports` map with SQLite
 storage. This declarative class lifecycle has no tagged history and does not
 transform Later Gator data.
+
+### Control plane
+
+| Binding | Type | Responsibility |
+| --- | --- | --- |
+| `CONTROL_DB` | D1 | Hashed owner identity, encrypted installer authorization, resources, jobs, rollout and audit metadata |
+| `RELEASE_ARTIFACTS` | Static Assets | Immutable runtime bundles, assets, schema statements and descriptors |
+| identity/installer/signing secrets | Secrets | Cloudflare confidential OAuth, encrypted token storage and ES256 assertion signing |
+
+The control plane runs an hourly Cron at minute 17. The personal runtime has no
+Cron; its Queues and authenticated bootstrap repair bounded backlogs.
 
 ## 4. Entry points and routing
 
@@ -98,20 +129,24 @@ sessions. The stable MCP route accepts only OAuth bearer grants with the
 
 ## 5. D1 schema
 
-`apps/runtime/schema.sql` is the complete schema for a fresh or already-current database. It
-uses `CREATE ... IF NOT EXISTS` and `INSERT OR IGNORE` so initialization is
-repeatable. There is no numbered application migration directory or runtime
-data-migration path.
+`apps/runtime/schema.sql` is the complete current schema and the base schema for
+fresh installations. It uses `CREATE ... IF NOT EXISTS` and `INSERT OR IGNORE`
+so initialization is repeatable. Published release artifacts may include
+immutable, checksum-verified upgrade statements for existing installations.
+Migration history never creates parallel numbered application source trees.
 
 Core tables:
 
-- `app_state`, `profile`, `provider_settings`, `provider_candidates`;
+- `app_state`, `runtime_release_state`, `runtime_schema_migrations`, `profile`,
+  `provider_settings`, `provider_candidates`;
 - `folders`, `bookmarks`, `tags`, `bookmark_tags`,
   `bookmark_relationships`;
 - `background_jobs`, `thumbnail_jobs`, `thumbnails`,
   `organization_diagnostics`, `x_destination_reviews`;
-- `auth_config`, `sessions`, `encrypted_credentials`, `login_attempts`;
-- `capture_credentials`, `mcp_connections`, `idempotency_records`;
+- `owner_identity`, `owner_login_requests`, `owner_assertion_jtis`, `sessions`,
+  and `encrypted_credentials`;
+- `capture_credentials`, `extension_devices`, `extension_pairing_jtis`,
+  `mcp_connections`, and `idempotency_records`;
 - `import_sessions`, `audit_events`, and `bookmarks_fts`.
 
 The FTS virtual table is maintained by insert, update, and delete triggers.
@@ -132,14 +167,16 @@ Local initialization:
 npm run db:init:local
 ```
 
-Remote initialization is an explicit deployment step:
+Direct developer initialization is an explicit deployment step:
 
 ```bash
 npm run db:init:remote
 ```
 
-`npm run deploy` runs remote initialization before `wrangler deploy`. Schema
-changes modify `apps/runtime/schema.sql` directly because the project has one current schema.
+`npm run deploy` runs remote initialization before `wrangler deploy`; it is not
+the managed owner-install path. Schema changes modify `apps/runtime/schema.sql`
+directly because the project has one current source schema, then the release
+builder publishes the necessary immutable upgrade chain.
 Any destructive schema change requires an explicit backup and release decision;
 it must never be hidden in request handling.
 
@@ -149,26 +186,31 @@ the suite.
 
 ## 7. Authentication and credentials
 
-### Dashboard password
+### Owner identity
 
-PBKDF2-SHA256 derives an AES-GCM wrapping key from `PASSWORD`, a random salt,
-and the stored iteration count. The wrapping key decrypts a random data key.
-An encrypted verifier distinguishes a valid password from corrupt or unsupported
-state. Comparisons use constant-time helpers where appropriate.
+The control plane uses Cloudflare Authorization Code flow with state, nonce and
+S256 PKCE. Identity requests only `user-details.read`, immediately discard the
+provider token, and store a one-way subject hash. Installer consent is a
+separate authorization request whose renewable token is encrypted at rest.
+
+The runtime redirects login to `/runtime/login` on the control plane. The return
+assertion is ES256-signed, short-lived, installation/audience/subject-bound, and
+contains one-time nonce/JTI values. The runtime verifies the published key ring,
+consumes replay state once, and creates its own session. There is no Later Gator
+password or recovery fallback.
 
 ### Sessions
 
-A login creates a random token. D1 stores only its hash plus the encrypted data
-key, CSRF hash, and expiry timestamps. Cookies are `HttpOnly`, `Secure`,
+A login creates a random token. D1 stores only its hash, CSRF hash, and expiry
+timestamps. Cookies are `HttpOnly`, `Secure`,
 `SameSite=Strict`, and scoped to `/`. Mutations require matching origin and CSRF
 token. Logout and expiry revoke or expire the session.
 
 ### Provider credentials
 
-OpenAI and Anthropic credentials have two encrypted representations: one under
-the unlocked dashboard data key and one under a service key derived from the
-deployment secret so Queue consumers can call the provider without a browser
-session. Plaintext credentials are never stored or logged.
+OpenAI and Anthropic credentials have one versioned AES-GCM representation
+under the per-installation `INSTANCE_MASTER_KEY`. Plaintext credentials are
+never stored, logged, or sent to the control plane.
 
 ### Capture and MCP
 
@@ -322,10 +364,11 @@ Chrome manifest, icons, and extension-specific DOM tests.
 those canonical inputs, preventing generated copies from becoming a second
 source of truth.
 
-The pairing code is `later-gator.` plus base64url JSON containing only the
-deployment origin and capture token. The extension validates HTTPS or localhost,
-requests the deployment host permission, stores the decoded fields, and validates
-the credential before showing capture controls.
+The official extension uses a separate public Cloudflare OAuth client with S256
+PKCE and no client secret. The control plane discovers the signed-in owner's
+installation and issues a one-time, signed, installation-bound pairing grant.
+The extension requests optional permission for the exact personal runtime host,
+then exchanges the grant directly with that runtime for a narrow capture token.
 
 X link capture is a two-phase mutation. The Worker resolves at most four
 selected t.co links and checks normalized D1 URLs before creating the source
@@ -341,7 +384,40 @@ post and job are moved to review with safe code
 either connect the checked rows and move the post to Social Posts or reuse the
 normal Trash mutation. The staging rows cascade when the post is deleted.
 
-## 16. Live updates
+## 16. Managed runtime releases
+
+The control plane embeds immutable release artifacts under
+`apps/control-plane/release-artifacts/runtime/<release>`. A signed public
+manifest exposes compatibility facts; deployment reads the private descriptor
+and verifies every bundle, asset, and migration checksum.
+
+`ACTIVE_RUNTIME_RELEASE` selects the desired release. The hourly scheduler
+configures a bounded cohort, selects at most ten ready installations below the
+cohort ceiling, and skips already-current installations or campaigns paused by
+the release safety circuit breaker.
+For each candidate it:
+
+1. refreshes the owner's encrypted installer authorization when necessary;
+2. reconstructs binding IDs from content-free control-plane inventory;
+3. rejects unattended migrations unless every pending phase is `expand`;
+4. records a D1 Time Travel bookmark and applies each migration once;
+5. uploads the new module/assets as a Worker version with strict binding
+   inheritance so `INSTANCE_MASTER_KEY` is not exposed or replaced;
+6. creates a 100%-old/0%-candidate deployment and calls the candidate `/health`
+   with a Cloudflare version override;
+7. promotes the candidate to 100% only after release/schema/health checks pass;
+8. repeats the health check and records promotion; or
+9. promotes the previous version again when post-promotion health fails and the
+   applied schema remains rollback-compatible.
+
+Release failures contribute to a cohort failure threshold. Managed installations
+have no user-facing update opt-out. Loss of Cloudflare authorization is treated
+as an unsupported state that requires re-authorization; it is not presented as
+a stable release-pinning feature. The control plane reads only the runtime's
+bounded public health contract and never downloads personal Worker code or
+application data.
+
+## 17. Dashboard live updates
 
 `LibraryEvents` accepts authenticated dashboard WebSockets and stores only live
 socket attachments. Queue and capture handlers call `notifyLibraryChanged`
@@ -349,7 +425,7 @@ after visible writes. The browser coalesces notifications, refreshes only when
 the library fingerprint changes, reconnects with backoff, and refreshes on
 visibility/focus as a fallback.
 
-## 17. Observability and privacy
+## 18. Observability and privacy
 
 Logs and `audit_events` may contain event name, request ID, opaque subject ID,
 count, duration, provider name/model, and approved safe outcome code. They must
@@ -368,7 +444,7 @@ Every Promise is awaited, returned, caught, or deliberately scheduled. External
 inputs and stored JSON are validated. Large or unknown remote bodies are streamed
 and bounded rather than read unconditionally.
 
-## 18. Verification
+## 19. Verification
 
 `npm run check` runs:
 
@@ -384,3 +460,9 @@ and bounded rather than read unconditionally.
 Behavior changes require regression tests. Schema, Queue, security, import,
 revision, and destructive-action changes require fault-path coverage in addition
 to happy-path coverage.
+
+`npm run check:managed-byoc` separately validates shared contracts, generated
+control-plane bindings, strict types, control-plane tests, and its dry-run
+bundle. Public release still requires live clean KV/R2 installation, a supported
+upgrade/rollback, revocation and outage drills, public OAuth promotion, and
+Chrome Web Store publication.

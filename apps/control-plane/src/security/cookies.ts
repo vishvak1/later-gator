@@ -1,6 +1,5 @@
 export const SESSION_COOKIE = "lg_cp_session";
 export const CSRF_COOKIE = "lg_cp_csrf";
-export const OAUTH_STATE_COOKIE = "lg_cp_oauth_state";
 export const INSTALLER_STATE_COOKIE = "lg_cp_installer_state";
 export const EXTENSION_REQUEST_COOKIE = "lg_cp_extension_request";
 export const RUNTIME_LOGIN_COOKIE = "lg_cp_runtime_login";

@@ -163,6 +163,32 @@ describe("extension popup connection lifecycle", () => {
     expect(visiblePanels()).toEqual(["connectionPanel"]);
   });
 
+  it("directs an authenticated owner without a library to the control plane", async () => {
+    const browser = browserMock(null);
+    browser.identity.launchWebAuthFlow.mockImplementationOnce(({ url }: { url: string }) => {
+      const request = new URL(url);
+      const callback = new URL(request.searchParams.get("redirect_uri") ?? "");
+      callback.searchParams.set("error", "installation_required");
+      callback.searchParams.set("device_id", request.searchParams.get("device_id") ?? "");
+      callback.searchParams.set("state", request.searchParams.get("state") ?? "");
+      return Promise.resolve(callback.toString());
+    });
+    vi.stubGlobal("browser", undefined);
+    vi.stubGlobal("chrome", browser);
+    vi.stubGlobal("fetch", vi.fn());
+
+    await renderPopup();
+    await vi.waitFor(() => expect(visiblePanels()).toEqual(["connectionPanel"]));
+    document.querySelector<HTMLButtonElement>("#connectButton")?.click();
+
+    await vi.waitFor(() => {
+      expect(document.querySelector("#connectionStatus")?.textContent).toContain(
+        "Open Later Gator control plane and create your first Later Gator library.",
+      );
+    });
+    expect(browser.storage.local.set).not.toHaveBeenCalled();
+  });
+
   it("uses Cloudflare identity, exact-origin permission, and one-time runtime exchange", async () => {
     const browser = browserMock(null);
     vi.stubGlobal("browser", undefined);

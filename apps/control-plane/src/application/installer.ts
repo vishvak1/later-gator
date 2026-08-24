@@ -4,11 +4,12 @@ import {
   exchangeCloudflareInstallerCode,
   fetchSingleAuthorizedAccountId,
 } from "../adapters/cloudflare-installer";
-import { discoverCloudflareIdentity, fetchCloudflareUserId, type Fetcher } from "../adapters/cloudflare-identity";
+import { discoverCloudflareIdentity, fetchCloudflareUserDetails, type Fetcher } from "../adapters/cloudflare-identity";
 import {
   consumeInstallerRequest,
   createAuthorizedInstallation,
   findOwnerSubjectHash,
+  adoptLegacyCloudflareInstallation,
   storeInstallerAuthorization,
   storeInstallerRequest,
   type ThumbnailStorageMode,
@@ -132,16 +133,24 @@ export async function completeInstallerAuthorization(
   if (!requestedScopes.data.every((scope) => token.grantedScopes.includes(scope))) {
     throw new ControlPlaneError("installer_scope_rejected", 403);
   }
-  const [cloudflareUserId, accountId, expectedSubjectHash] = await Promise.all([
-    fetchCloudflareUserId(token.accessToken, fetcher),
+  const [cloudflareUser, accountId, expectedSubjectHash] = await Promise.all([
+    fetchCloudflareUserDetails(token.accessToken, fetcher),
     fetchSingleAuthorizedAccountId(token.accessToken, fetcher),
     findOwnerSubjectHash(database, input.ownerId),
   ]);
   if (expectedSubjectHash === null) throw new ControlPlaneError("session_invalid", 403);
-  const actualSubjectHash = await sha256Base64Url(`cloudflare-user\u0000${cloudflareUserId}`);
+  const actualSubjectHash = await sha256Base64Url(
+    `cloudflare-account-email\u0000${cloudflareUser.email}`,
+  );
   if (!constantTimeEqual(actualSubjectHash, expectedSubjectHash)) {
     throw new ControlPlaneError("installer_callback_rejected", 403);
   }
+  await adoptLegacyCloudflareInstallation(
+    database,
+    input.ownerId,
+    await sha256Base64Url(`cloudflare-user\u0000${cloudflareUser.id}`),
+    accountId,
+  );
   const plan = {
     contractVersion: 1,
     storageMode: stored.storageMode,

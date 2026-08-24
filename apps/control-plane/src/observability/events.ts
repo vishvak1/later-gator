@@ -1,5 +1,4 @@
 export type ControlEventCode =
-  | "identity_login_started"
   | "identity_login_succeeded"
   | "identity_logout_succeeded"
   | "installer_authorization_started"
@@ -10,6 +9,7 @@ export type ControlEventCode =
   | "extension_pairing_issued"
   | "runtime_login_started"
   | "runtime_login_issued"
+  | "runtime_missing_repaired"
   | "owner_metadata_deleted"
   | "request_failed";
 

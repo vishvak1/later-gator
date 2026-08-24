@@ -7,18 +7,6 @@ CREATE TABLE IF NOT EXISTS owners (
   last_login_at INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS oauth_login_requests (
-  state_hash TEXT PRIMARY KEY,
-  code_verifier TEXT NOT NULL,
-  return_path TEXT NOT NULL CHECK (return_path = '/'),
-  created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  consumed_at INTEGER
-);
-
-CREATE INDEX IF NOT EXISTS oauth_login_requests_expiry
-  ON oauth_login_requests (expires_at);
-
 CREATE TABLE IF NOT EXISTS control_sessions (
   session_hash TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL REFERENCES owners(id) ON DELETE CASCADE,
@@ -63,7 +51,7 @@ CREATE INDEX IF NOT EXISTS oauth_installer_requests_owner
 
 CREATE TABLE IF NOT EXISTS installer_authorizations (
   owner_id TEXT PRIMARY KEY REFERENCES owners(id) ON DELETE CASCADE,
-  account_id TEXT NOT NULL,
+  account_id TEXT NOT NULL UNIQUE,
   token_ciphertext TEXT NOT NULL,
   token_nonce TEXT NOT NULL,
   schema_version INTEGER NOT NULL CHECK (schema_version = 1),
@@ -73,10 +61,13 @@ CREATE TABLE IF NOT EXISTS installer_authorizations (
   revoked_at INTEGER
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS installer_authorizations_account
+  ON installer_authorizations (account_id);
+
 CREATE TABLE IF NOT EXISTS installations (
   id TEXT PRIMARY KEY,
   owner_id TEXT NOT NULL UNIQUE REFERENCES owners(id) ON DELETE CASCADE,
-  account_id TEXT NOT NULL,
+  account_id TEXT NOT NULL UNIQUE,
   storage_mode TEXT NOT NULL CHECK (storage_mode IN ('kv', 'r2')),
   requested_plan_json TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN (
@@ -95,6 +86,9 @@ CREATE TABLE IF NOT EXISTS installations (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS installations_account
+  ON installations (account_id);
 
 CREATE TABLE IF NOT EXISTS provisioning_steps (
   installation_id TEXT NOT NULL REFERENCES installations(id) ON DELETE CASCADE,

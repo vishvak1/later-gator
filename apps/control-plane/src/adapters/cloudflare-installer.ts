@@ -46,7 +46,7 @@ export function buildCloudflareInstallerAuthorizationUrl(
 ): URL {
   const url = new URL(discovery.authorization_endpoint);
   url.search = new URLSearchParams({
-    client_id: config.identityClientId,
+    client_id: config.installerClientId,
     redirect_uri: `${config.publicOrigin}/install/cloudflare/callback`,
     response_type: "code",
     scope: requestedScopes.join(" "),
@@ -77,8 +77,8 @@ export async function exchangeCloudflareInstallerCode(
         grant_type: "authorization_code",
         code,
         redirect_uri: `${config.publicOrigin}/install/cloudflare/callback`,
-        client_id: config.identityClientId,
-        client_secret: config.identityClientSecret,
+        client_id: config.installerClientId,
+        client_secret: config.installerClientSecret,
         code_verifier: codeVerifier,
       }),
       redirect: NO_FOLLOW_REDIRECTS,
@@ -121,8 +121,8 @@ export async function refreshCloudflareInstallerToken(
       body: new URLSearchParams({
         grant_type: "refresh_token",
         refresh_token: refreshToken,
-        client_id: config.identityClientId,
-        client_secret: config.identityClientSecret,
+        client_id: config.installerClientId,
+        client_secret: config.installerClientSecret,
       }),
       redirect: NO_FOLLOW_REDIRECTS,
     });

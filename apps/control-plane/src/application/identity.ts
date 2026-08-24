@@ -1,35 +1,19 @@
+import { authenticateCloudflareAccess } from "../adapters/cloudflare-access";
+import type { Fetcher } from "../adapters/cloudflare-identity";
 import {
-  buildCloudflareAuthorizationUrl,
-  discoverCloudflareIdentity,
-  exchangeCloudflareAuthorizationCode,
-  fetchCloudflareUserId,
-  type Fetcher,
-} from "../adapters/cloudflare-identity";
-import {
-  consumeLoginRequest,
   deleteOwnerMetadata,
   findControlSession,
   revokeControlSession,
   storeAuditEvent,
   storeControlSession,
-  storeLoginRequest,
   upsertOwner,
   type ControlSessionRecord,
 } from "../adapters/control-repository";
 import type { ControlConfig } from "../domain/config";
 import { ControlPlaneError } from "../domain/errors";
 import {
-  constantTimeEqual,
-  randomToken,
-  sha256Base64Url,
+  constantTimeEqual, randomToken, sha256Base64Url,
 } from "../security/encoding";
-
-const OAUTH_REQUEST_TTL_SECONDS = 600;
-
-export interface LoginRedirect {
-  location: string;
-  state: string;
-}
 
 export interface CompletedLogin {
   csrfToken: string;
@@ -37,98 +21,16 @@ export interface CompletedLogin {
   sessionToken: string;
 }
 
-/** Creates a single-use identity request and returns its Cloudflare redirect. */
-export async function startIdentityLogin(
+/** Converts one validated Cloudflare Access identity into an opaque local session. */
+export async function completeAccessLogin(
   database: D1Database,
   config: ControlConfig,
-  fetcher: Fetcher = fetch,
-  nowSeconds = Math.floor(Date.now() / 1000),
-): Promise<LoginRedirect> {
-  let discovery: Awaited<ReturnType<typeof discoverCloudflareIdentity>>;
-  try {
-    discovery = await discoverCloudflareIdentity(config, fetcher);
-  } catch {
-    throw new ControlPlaneError(
-      "identity_provider_unavailable",
-      503,
-      "identity_discovery_failed",
-    );
-  }
-  let state: string;
-  let codeVerifier: string;
-  let codeChallenge: string;
-  let stateHash: string;
-  try {
-    state = randomToken();
-    codeVerifier = randomToken(64);
-    codeChallenge = await sha256Base64Url(codeVerifier);
-    stateHash = await sha256Base64Url(state);
-  } catch {
-    throw new ControlPlaneError(
-      "identity_provider_unavailable",
-      503,
-      "identity_state_generation_failed",
-    );
-  }
-  try {
-    await storeLoginRequest(database, {
-      stateHash,
-      codeVerifier,
-      returnPath: "/",
-      createdAt: nowSeconds,
-      expiresAt: nowSeconds + OAUTH_REQUEST_TTL_SECONDS,
-    });
-  } catch {
-    throw new ControlPlaneError(
-      "identity_provider_unavailable",
-      503,
-      "identity_state_storage_failed",
-    );
-  }
-  return {
-    location: buildCloudflareAuthorizationUrl(
-      discovery,
-      config,
-      state,
-      codeChallenge,
-    ).toString(),
-    state,
-  };
-}
-
-/** Completes Cloudflare identity login and issues opaque local session credentials. */
-export async function completeIdentityLogin(
-  database: D1Database,
-  config: ControlConfig,
-  input: { code: string; state: string; cookieState: string },
+  request: Request,
   fetcher: Fetcher = fetch,
   nowSeconds = Math.floor(Date.now() / 1000),
 ): Promise<CompletedLogin> {
-  if (
-    !/^[A-Za-z0-9_-]{32,256}$/u.test(input.state) ||
-    !/^[A-Za-z0-9_-]{32,256}$/u.test(input.cookieState)
-  ) {
-    throw new ControlPlaneError("identity_callback_rejected", 401);
-  }
-  if (!constantTimeEqual(input.state, input.cookieState)) {
-    throw new ControlPlaneError("identity_callback_rejected", 401);
-  }
-  const request = await consumeLoginRequest(
-    database,
-    await sha256Base64Url(input.state),
-    nowSeconds,
-  );
-  if (request === null) throw new ControlPlaneError("identity_callback_rejected", 401);
-  const discovery = await discoverCloudflareIdentity(config, fetcher);
-  const accessToken = await exchangeCloudflareAuthorizationCode(
-    discovery,
-    config,
-    input.code,
-    request.codeVerifier,
-    fetcher,
-  );
-  const cloudflareUserId = await fetchCloudflareUserId(accessToken, fetcher);
-  const subjectHash = await sha256Base64Url(`cloudflare-user\u0000${cloudflareUserId}`);
+  const identity = await authenticateCloudflareAccess(request, config, fetcher);
+  const subjectHash = await sha256Base64Url(`cloudflare-account-email\u0000${identity.email}`);
   const ownerId = await upsertOwner(database, subjectHash, nowSeconds);
   const sessionToken = randomToken();
   const csrfToken = randomToken();

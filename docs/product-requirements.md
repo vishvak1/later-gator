@@ -32,13 +32,16 @@ second source of truth.
 
 ## 3. Deployment and authentication
 
-The owner signs in to the Later Gator control plane with Cloudflare identity.
-Identity authorization and installer authorization are purpose-separated:
-sign-in identifies the owner, while a later explicit consent grants the limited
-Cloudflare API scopes needed to create and manage the personal installation.
+The owner signs in through Cloudflare Access using an ordinary Cloudflare
+account login, without a user-details consent screen. Access identity and
+installer authorization are purpose-separated: Access identifies the owner,
+while a later explicit consent grants the limited Cloudflare API scopes needed
+to create and manage the personal installation.
 
 The control plane provisions one personal runtime Worker and its declared D1,
-KV or R2, Vectorize, Queue, and private OAuth resources. It generates a random
+KV or R2, Vectorize, Queue, and private OAuth resources. Each Cloudflare account
+has one reserved `later-gator` Worker and one reserved supporting resource set,
+so retries cannot create suffixed duplicate libraries. It generates a random
 per-installation `INSTANCE_MASTER_KEY` as a Worker secret. There is no Later
 Gator password, recovery phrase, GitHub fork, manual binding ID, or provider key
 in the control-plane flow.

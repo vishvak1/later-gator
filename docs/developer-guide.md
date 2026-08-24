@@ -320,16 +320,20 @@ nothing.
 
 ## 15. Control-plane and release development
 
-The same confidential Cloudflare client serves two authorization purposes, but
-the requests remain separate. Identity requests only `user-details.read` and
-retain no Cloudflare token. Installer requests add `offline_access`, `d1.write`,
+Cloudflare Access protects the control plane's `/auth/access` path and uses
+Cloudflare as its identity provider with **Restrict to account members** off.
+The Worker validates `Cf-Access-Jwt-Assertion` against the team issuer,
+application audience, and rotating JWKS, then creates its own opaque session.
+The confidential Cloudflare OAuth client is installer-only. Installer requests
+include `user-details.read` to bind consent to the Access email, then add
+`offline_access`, `d1.write`,
 `workers-kv-storage.write`, `vectorize.write`, and `workers-scripts.write`; R2
 install/migration additionally requests `workers-r2.write`.
 
-The registered development callbacks are the control-plane development origin
-plus `/auth/cloudflare/callback` and `/install/cloudflare/callback`. Production
-uses the corresponding paths on `https://latergator.app`. Chrome uses a separate
-public client, `token_endpoint_auth_method=none`, S256 PKCE, and the exact
+The registered development OAuth callback is the control-plane development
+origin plus `/install/cloudflare/callback`; production uses the corresponding
+path on `https://latergator.app`. Chrome opens the same Access-protected login
+handoff and returns to the exact
 `https://<extension-id>.chromiumapp.org/cloudflare` callback.
 
 Release workflow:

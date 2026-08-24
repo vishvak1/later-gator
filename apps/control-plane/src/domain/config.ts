@@ -7,6 +7,8 @@ const controlConfigSchema = z
     ENVIRONMENT: z.enum(["development", "production", "test"]),
     PUBLIC_ORIGIN: z.url(),
     CLOUDFLARE_OIDC_ISSUER: z.url(),
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: z.url(),
+    CLOUDFLARE_ACCESS_AUD: z.string().min(16).max(256),
     CONTROL_SESSION_TTL_SECONDS: z.coerce.number().int().min(900).max(604_800),
     CLOUDFLARE_IDENTITY_CLIENT_ID: z.string().min(1).max(512),
     CLOUDFLARE_IDENTITY_CLIENT_SECRET: z.string().min(1).max(4096),
@@ -19,9 +21,11 @@ export interface ControlConfig {
   environment: "development" | "production" | "test";
   publicOrigin: string;
   oidcIssuer: string;
+  accessTeamDomain: string;
+  accessAudience: string;
   sessionTtlSeconds: number;
-  identityClientId: string;
-  identityClientSecret: string;
+  installerClientId: string;
+  installerClientSecret: string;
   installerTokenEncryptionKey: string;
   chromeExtensionIds: string[];
 }
@@ -32,6 +36,8 @@ function configurationFailureStage(path: PropertyKey | undefined): ControlFailur
     ENVIRONMENT: "control_environment_invalid",
     PUBLIC_ORIGIN: "control_public_origin_invalid",
     CLOUDFLARE_OIDC_ISSUER: "control_oidc_issuer_invalid",
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "control_access_team_domain_invalid",
+    CLOUDFLARE_ACCESS_AUD: "control_access_audience_invalid",
     CONTROL_SESSION_TTL_SECONDS: "control_session_ttl_invalid",
     CLOUDFLARE_IDENTITY_CLIENT_ID: "control_identity_client_id_invalid",
     CLOUDFLARE_IDENTITY_CLIENT_SECRET: "control_identity_client_secret_invalid",
@@ -45,6 +51,8 @@ export function readControlConfig(env: Env): ControlConfig {
     ENVIRONMENT: env.ENVIRONMENT,
     PUBLIC_ORIGIN: env.PUBLIC_ORIGIN,
     CLOUDFLARE_OIDC_ISSUER: env.CLOUDFLARE_OIDC_ISSUER,
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: env.CLOUDFLARE_ACCESS_TEAM_DOMAIN,
+    CLOUDFLARE_ACCESS_AUD: env.CLOUDFLARE_ACCESS_AUD,
     CONTROL_SESSION_TTL_SECONDS: env.CONTROL_SESSION_TTL_SECONDS,
     CLOUDFLARE_IDENTITY_CLIENT_ID: env.CLOUDFLARE_IDENTITY_CLIENT_ID,
     CLOUDFLARE_IDENTITY_CLIENT_SECRET: env.CLOUDFLARE_IDENTITY_CLIENT_SECRET,
@@ -60,19 +68,33 @@ export function readControlConfig(env: Env): ControlConfig {
   }
   const publicOrigin = new URL(parsed.data.PUBLIC_ORIGIN);
   const oidcIssuer = new URL(parsed.data.CLOUDFLARE_OIDC_ISSUER);
+  const accessTeamDomain = new URL(parsed.data.CLOUDFLARE_ACCESS_TEAM_DOMAIN);
   if (publicOrigin.pathname !== "/" || publicOrigin.search !== "" || publicOrigin.hash !== "") {
     throw new ControlPlaneError("identity_provider_unavailable", 503, "control_public_origin_invalid");
   }
   if (oidcIssuer.protocol !== "https:" || oidcIssuer.pathname !== "/") {
     throw new ControlPlaneError("identity_provider_unavailable", 503, "control_oidc_issuer_invalid");
   }
+  if (
+    accessTeamDomain.protocol !== "https:" ||
+    accessTeamDomain.pathname !== "/" ||
+    !accessTeamDomain.hostname.endsWith(".cloudflareaccess.com")
+  ) {
+    throw new ControlPlaneError(
+      "identity_provider_unavailable",
+      503,
+      "control_access_team_domain_invalid",
+    );
+  }
   return {
     environment: parsed.data.ENVIRONMENT,
     publicOrigin: publicOrigin.origin,
     oidcIssuer: oidcIssuer.origin,
+    accessTeamDomain: accessTeamDomain.origin,
+    accessAudience: parsed.data.CLOUDFLARE_ACCESS_AUD,
     sessionTtlSeconds: parsed.data.CONTROL_SESSION_TTL_SECONDS,
-    identityClientId: parsed.data.CLOUDFLARE_IDENTITY_CLIENT_ID,
-    identityClientSecret: parsed.data.CLOUDFLARE_IDENTITY_CLIENT_SECRET,
+    installerClientId: parsed.data.CLOUDFLARE_IDENTITY_CLIENT_ID,
+    installerClientSecret: parsed.data.CLOUDFLARE_IDENTITY_CLIENT_SECRET,
     installerTokenEncryptionKey: parsed.data.INSTALLER_TOKEN_ENCRYPTION_KEY,
     chromeExtensionIds: (parsed.data.CHROME_EXTENSION_IDS ?? "")
       .split(",")

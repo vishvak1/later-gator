@@ -171,7 +171,7 @@ export function renderSignedOutPage(): string {
          <p class="eyebrow">Welcome</p>
          <h2>Manage your installation</h2>
          <p>Sign in to create, open, or review the health of your personal Later Gator.</p>
-         <a class="button button--wide" href="/auth/cloudflare">Continue with Cloudflare <span aria-hidden="true">→</span></a>
+         <a class="button button--wide" href="/auth/access">Continue with Cloudflare <span aria-hidden="true">→</span></a>
          <p class="fine-print">Identity access is separate from the Cloudflare permissions used to install your runtime.</p>
          <p class="fine-print">Your bookmark content, thumbnails, AI settings, and provider keys stay in your personal Worker.</p>
        </section>
@@ -191,6 +191,7 @@ export function renderDashboard(
     desiredRelease: string;
     updateStatus: string;
     workerOrigin: string | null;
+    runtimeHealthStatus: "unknown" | "ready" | "unavailable";
     authorizationActive: boolean;
   } | null,
   releases: {
@@ -208,11 +209,17 @@ export function renderDashboard(
         release.safeErrorCode === null ? "" : ` · ${escapeHtml(release.safeErrorCode)}`
       }</span></li>`
     ).join("")}</ul>`;
-  const isReady = installation?.status === "ready" && installation.workerOrigin !== null;
+  const runtimeMissing = installation?.status === "ready" &&
+    installation.runtimeHealthStatus === "unavailable";
+  const isReady = installation?.status === "ready" &&
+    installation.runtimeHealthStatus === "ready" &&
+    installation.workerOrigin !== null;
   const managedUpdateNotice = installation === null
     ? `<div class="notice"><strong>Managed updates start after setup</strong><br>Connect Cloudflare and create your personal runtime to enable managed releases.</div>`
     : installation.authorizationActive
-      ? `<div class="notice"><strong>Automatic updates active</strong><br>No action is required.</div>`
+      ? runtimeMissing
+        ? `<div class="notice notice--warning"><strong>Runtime Worker missing</strong><br>Automatic updates are paused until the Worker is repaired.</div>`
+        : `<div class="notice"><strong>Automatic updates active</strong><br>No action is required.</div>`
       : `<div class="notice"><strong>Re-authorization needed</strong><br>Reconnect Cloudflare permissions to restore managed service.</div>`;
   const installationContent = installation === null
     ? `<section class="card">
@@ -226,15 +233,17 @@ export function renderDashboard(
        </section>`
     : `<section class="card">
          <div class="card-header">
-           <div><p class="eyebrow">Personal runtime</p><h2>${isReady ? "Your library is ready" : "Installation in progress"}</h2><p>${isReady ? "Open your private Later Gator or review its managed release status." : "Setup is resumable and reuses every resource already created."}</p></div>
-           <span class="status ${installation.status === "ready" ? "" : "status--pending"}">${escapeHtml(statusLabel(installation.status))}</span>
+           <div><p class="eyebrow">Personal runtime</p><h2>${isReady ? "Your library is ready" : runtimeMissing ? "Your runtime Worker was deleted" : "Installation in progress"}</h2><p>${isReady ? "Open your private Later Gator or review its managed release status." : runtimeMissing ? "Cloudflare no longer has the Worker recorded for this library. Your personal data stores were not opened or changed." : "Setup is resumable and reuses every resource already created."}</p></div>
+           <span class="status ${isReady ? "" : "status--pending"}">${escapeHtml(runtimeMissing ? "Worker missing" : statusLabel(installation.status))}</span>
          </div>
          <div class="metrics">
            <div class="metric"><span class="metric-label">Storage</span><span class="metric-value">${escapeHtml(installation.storageMode.toUpperCase())}</span></div>
            <div class="metric"><span class="metric-label">Runtime</span><span class="metric-value">${escapeHtml(installation.installedRelease ?? "Pending")}</span></div>
            <div class="metric"><span class="metric-label">Updates</span><span class="metric-value">${escapeHtml(statusLabel(installation.updateStatus))}</span></div>
          </div>
-         ${installation.safeErrorCode === "r2_subscription_required"
+         ${runtimeMissing
+           ? `<div class="notice notice--warning"><strong>Runtime unavailable.</strong> The Worker was deleted outside Later Gator. The stale website link has been disabled.</div>`
+           : installation.safeErrorCode === "r2_subscription_required"
            ? `<div class="notice notice--warning">R2 is not active for this Cloudflare account. Complete Cloudflare's R2 checkout, then return here to continue.</div>`
            : installation.safeErrorCode === null
              ? ""
@@ -248,8 +257,13 @@ export function renderDashboard(
                 <div class="actions"><button class="button" type="submit">Restore managed updates</button></div>
               </form>`}
          ${isReady
-           ? `<div class="actions"><a class="button" href="${escapeHtml(installation.workerOrigin ?? "")}">Open Later Gator <span aria-hidden="true">↗</span></a></div>`
-           : `<form method="post" action="/install/provision">
+           ? `<div class="actions"><a class="button" href="/runtime/open">Open Later Gator <span aria-hidden="true">↗</span></a></div>`
+           : runtimeMissing
+             ? `<form method="post" action="/install/repair">
+                  <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}">
+                  <div class="actions"><button class="button" type="submit">Recreate missing Worker</button></div>
+                </form>`
+             : `<form method="post" action="/install/provision">
                 <input type="hidden" name="csrf" value="${escapeHtml(csrfToken)}">
                 <div class="actions"><button class="button" type="submit">${installation.status === "authorized" ? "Create my Later Gator" : "Continue setup"}</button></div>
               </form>`}
@@ -273,7 +287,7 @@ export function renderDashboard(
      </header>
      <section class="hero">
        <div><p class="eyebrow">Installation control</p><h1>Your Later Gator</h1></div>
-       ${isReady ? `<div class="actions"><a class="button" href="${escapeHtml(installation.workerOrigin ?? "")}">Open your library <span aria-hidden="true">↗</span></a></div>` : ""}
+       ${isReady ? `<div class="actions"><a class="button" href="/runtime/open">Open your library <span aria-hidden="true">↗</span></a></div>` : ""}
      </section>
      <div class="dashboard-grid">
        <div class="stack">
@@ -310,6 +324,9 @@ export function renderDashboard(
 
 /** Renders a safe error page using only an approved outcome code. */
 export function renderErrorPage(outcomeCode: string): string {
+  const explanation = outcomeCode === "installer_account_already_linked"
+    ? "This Cloudflare account is already linked to an existing Later Gator account. Sign in with that account instead."
+    : "Return to your installation dashboard and retry in a moment.";
   return page(
     "Unable to continue",
     `<div class="auth-grid">
@@ -322,7 +339,7 @@ export function renderErrorPage(outcomeCode: string): string {
        <section class="auth-card">
          <p class="eyebrow">Try again</p>
          <h2>We could not continue</h2>
-         <p>Return to your installation dashboard and retry in a moment.</p>
+         <p>${escapeHtml(explanation)}</p>
          <div class="notice">Reference: ${escapeHtml(outcomeCode)}</div>
          <a class="button button--wide" href="/">Return to Later Gator</a>
        </section>

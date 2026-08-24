@@ -19,9 +19,11 @@ const config: ControlConfig = {
   environment: "test",
   publicOrigin: "https://latergator.test",
   oidcIssuer: "https://dash.cloudflare.com",
+  accessTeamDomain: "https://later-gator-test.cloudflareaccess.com",
+  accessAudience: "a".repeat(64),
   sessionTtlSeconds: 43_200,
-  identityClientId: "test-identity-client",
-  identityClientSecret: "test-identity-secret",
+  installerClientId: "test-identity-client",
+  installerClientSecret: "test-identity-secret",
   installerTokenEncryptionKey: ENCRYPTION_KEY,
 };
 
@@ -214,8 +216,8 @@ describe("resumable OAuth provisioning", () => {
       200,
     );
     expect(outcome.status).toBe("ready");
-    expect(outcome.workerOrigin).toMatch(
-      /^https:\/\/later-gator-[a-f0-9]+\.owner-subdomain\.workers\.dev$/u,
+    expect(outcome.workerOrigin).toBe(
+      "https://later-gator.owner-subdomain.workers.dev",
     );
     expect(await findOwnerInstallationSummary(env.CONTROL_DB, ownerId)).toMatchObject({
       status: "ready",
@@ -235,6 +237,18 @@ describe("resumable OAuth provisioning", () => {
     expect(await env.CONTROL_DB.prepare(
       "SELECT COUNT(*) AS count FROM installation_resources WHERE installation_id = ?",
     ).bind(installationId).first()).toEqual({ count: 7 });
+    expect((await env.CONTROL_DB.prepare(
+      "SELECT resource_name FROM installation_resources WHERE installation_id = ? ORDER BY resource_name",
+    ).bind(installationId).all<{ resource_name: string }>()).results.map((row) => row.resource_name))
+      .toEqual([
+        "later-gator",
+        "later-gator-background",
+        "later-gator-db",
+        "later-gator-oauth",
+        "later-gator-thumbnail-jobs",
+        "later-gator-thumbnails",
+        "later-gator-vectors",
+      ]);
     expect(await env.CONTROL_DB.prepare(
       "SELECT state, schema_version, version_id FROM runtime_release_history WHERE installation_id = ?",
     ).bind(installationId).first()).toEqual({
@@ -390,11 +404,16 @@ describe("resumable OAuth provisioning", () => {
     expect(fetcher.mock.calls.filter(([input]) =>
       new URL(new Request(input).url).pathname === "/health"
     )).toHaveLength(5);
+    expect(fetcher.mock.calls.some(([input, init]) => {
+      const request = new Request(input, init);
+      return request.method === "DELETE" &&
+        new URL(request.url).pathname.endsWith("/workers/scripts/later-gator");
+    })).toBe(true);
     expect(await env.CONTROL_DB.prepare(
       "SELECT status, current_step, safe_error_code FROM installations WHERE owner_id = ?",
     ).bind(ownerId).first()).toEqual({
       status: "failed",
-      current_step: "health_check",
+      current_step: "worker_upload",
       safe_error_code: "cloudflare_unavailable",
     });
   });

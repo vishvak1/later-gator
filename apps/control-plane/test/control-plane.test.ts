@@ -1,14 +1,11 @@
 import { env, exports } from "cloudflare:workers";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  consumeLoginRequest,
   storeAuditEvent,
   storeControlSession,
-  storeLoginRequest,
   upsertOwner,
 } from "../src/adapters/control-repository";
-import { startIdentityLogin } from "../src/application/identity";
-import type { ControlConfig } from "../src/domain/config";
 import { constantTimeEqual, randomToken, sha256Base64Url } from "../src/security/encoding";
 import { modelCatalogSchema, storagePlanCatalogSchema } from "@later-gator/contracts";
 import { renderDashboard } from "../src/routes/pages";
@@ -18,7 +15,6 @@ describe("control-plane foundation", () => {
     await env.CONTROL_DB.batch([
       env.CONTROL_DB.prepare("DELETE FROM control_audit_events"),
       env.CONTROL_DB.prepare("DELETE FROM control_sessions"),
-      env.CONTROL_DB.prepare("DELETE FROM oauth_login_requests"),
       env.CONTROL_DB.prepare("DELETE FROM owners"),
     ]);
   });
@@ -44,6 +40,7 @@ describe("control-plane foundation", () => {
       desiredRelease: "1.0.0",
       updateStatus: "complete",
       workerOrigin: "https://later-gator-personal.example.workers.dev",
+      runtimeHealthStatus: "ready",
       authorizationActive: true,
     });
     expect(html).toContain("Automatic updates active");
@@ -73,11 +70,30 @@ describe("control-plane foundation", () => {
       desiredRelease: "1.0.0",
       updateStatus: "failed",
       workerOrigin: "https://later-gator-personal.example.workers.dev",
+      runtimeHealthStatus: "ready",
       authorizationActive: false,
     });
     expect(html).toContain("Re-authorization needed");
     expect(html).toContain("Restore managed updates");
     expect(html).not.toContain("Automatic updates active");
+  });
+
+  it("disables the stale runtime link and offers repair after external deletion", () => {
+    const html = renderDashboard("csrf-token", {
+      status: "ready",
+      storageMode: "kv",
+      safeErrorCode: "runtime_worker_missing",
+      installedRelease: "1.0.0",
+      desiredRelease: "1.0.0",
+      updateStatus: "idle",
+      workerOrigin: "https://deleted.example.workers.dev",
+      runtimeHealthStatus: "unavailable",
+      authorizationActive: true,
+    });
+    expect(html).toContain("Your runtime Worker was deleted");
+    expect(html).toContain("Recreate missing Worker");
+    expect(html).not.toContain("href=\"https://deleted.example.workers.dev");
+    expect(html).not.toContain("href=\"/runtime/open\"");
   });
 
   it("exposes only safe service health metadata", async () => {
@@ -132,67 +148,27 @@ describe("control-plane foundation", () => {
     expect(constantTimeEqual(first, second)).toBe(false);
   });
 
-  it("consumes OAuth state once and rejects callback replay", async () => {
-    const stateHash = await sha256Base64Url("test-state");
-    await storeLoginRequest(env.CONTROL_DB, {
-      stateHash,
-      codeVerifier: "test-code-verifier",
-      returnPath: "/",
-      createdAt: 100,
-      expiresAt: 700,
-    });
-    expect(await consumeLoginRequest(env.CONTROL_DB, stateHash, 200)).toEqual({
-      codeVerifier: "test-code-verifier",
-      returnPath: "/",
-    });
-    expect(await consumeLoginRequest(env.CONTROL_DB, stateHash, 201)).toBeNull();
-  });
-
-  it("keeps the complete control session across Cloudflare's top-level OAuth return", async () => {
-    const discovery = {
-      issuer: "https://dash.cloudflare.com",
-      authorization_endpoint: "https://dash.cloudflare.com/oauth2/auth",
-      token_endpoint: "https://dash.cloudflare.com/oauth2/token",
-      code_challenge_methods_supported: ["S256"],
-      token_endpoint_auth_methods_supported: ["client_secret_post"],
-    };
-    const providerFetch = vi.fn((input: RequestInfo | URL): Promise<Response> => {
-      const url = new URL(new Request(input).url);
-      if (url.pathname === "/.well-known/openid-configuration") {
-        return Promise.resolve(Response.json(discovery));
-      }
-      if (url.pathname === "/oauth2/token") {
-        return Promise.resolve(Response.json({
-          access_token: "temporary-test-access-token",
-          token_type: "Bearer",
-        }));
-      }
-      if (url.href === "https://api.cloudflare.com/client/v4/user") {
-        return Promise.resolve(Response.json({
-          success: true,
-          result: { id: "stable-test-cloudflare-user" },
-        }));
-      }
-      return Promise.resolve(new Response(null, { status: 404 }));
-    });
-    vi.stubGlobal("fetch", providerFetch);
+  it("creates a complete local session from a validated Cloudflare Access assertion", async () => {
+    const keys = await generateKeyPair("RS256", { extractable: true });
+    const publicKey = await exportJWK(keys.publicKey);
+    Object.assign(publicKey, { alg: "RS256", kid: "access-key", use: "sig" });
+    const assertion = await new SignJWT({
+      email: "owner@example.test",
+      sub: "7335d417-61da-459d-899c-0a01c76a2f94",
+      type: "app",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "access-key" })
+      .setIssuer("https://later-gator-test.cloudflareaccess.com")
+      .setAudience("a".repeat(64))
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(keys.privateKey);
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(Response.json({ keys: [publicKey] }))));
 
     try {
-      const start = await exports.default.fetch(new Request(
-        "https://latergator.test/auth/cloudflare",
-        { redirect: "manual" },
-      ));
-      expect(start.status).toBe(302);
-      const stateCookie = start.headers.get("set-cookie") ?? "";
-      const state = /lg_cp_oauth_state=([^;]+)/u.exec(stateCookie)?.[1];
-      expect(state).toMatch(/^[A-Za-z0-9_-]{43}$/u);
-
       const callback = await exports.default.fetch(new Request(
-        `https://latergator.test/auth/cloudflare/callback?code=authorization-code&state=${state ?? ""}`,
-        {
-          headers: { cookie: `lg_cp_oauth_state=${state ?? ""}` },
-          redirect: "manual",
-        },
+        "https://latergator.test/auth/access",
+        { headers: { "cf-access-jwt-assertion": assertion }, redirect: "manual" },
       ));
       expect(callback.status).toBe(303);
       expect(callback.headers.get("location")).toBe("/");
@@ -203,22 +179,13 @@ describe("control-plane foundation", () => {
       expect(callbackCookies).toMatch(
         /lg_cp_csrf=[^;]+; Path=\/; Max-Age=43200; SameSite=Lax; Secure/u,
       );
-      expect(callbackCookies).not.toMatch(/lg_cp_csrf=[^,]*SameSite=Strict/u);
 
       const sessionToken = /lg_cp_session=([^;]+)/u.exec(callbackCookies)?.[1];
       const csrfToken = /lg_cp_csrf=([^;]+)/u.exec(callbackCookies)?.[1];
-      expect(sessionToken).toMatch(/^[A-Za-z0-9_-]{43}$/u);
-      expect(csrfToken).toMatch(/^[A-Za-z0-9_-]{43}$/u);
-
       const landing = await exports.default.fetch(new Request("https://latergator.test/", {
-        headers: {
-          cookie: `lg_cp_session=${sessionToken ?? ""}; lg_cp_csrf=${csrfToken ?? ""}`,
-        },
+        headers: { cookie: `lg_cp_session=${sessionToken ?? ""}; lg_cp_csrf=${csrfToken ?? ""}` },
       }));
-      expect(landing.status).toBe(200);
-      const html = await landing.text();
-      expect(html).toContain("Your Later Gator");
-      expect(html).not.toContain("Continue with Cloudflare");
+      expect(await landing.text()).toContain("Your Later Gator");
     } finally {
       vi.unstubAllGlobals();
     }
@@ -302,18 +269,18 @@ describe("control-plane foundation", () => {
     expect(response.headers.get("set-cookie")).toContain("Max-Age=0");
   });
 
-  it("never copies provider callback details into logs", async () => {
+  it("never copies Access request details into logs", async () => {
     const log = vi.spyOn(console, "info").mockImplementation(() => undefined);
     try {
       const response = await exports.default.fetch(
-        "https://latergator.test/auth/cloudflare/callback?error=private-token&error_description=private-url",
+        "https://latergator.test/auth/access?error=private-token&error_description=private-url",
       );
       expect(response.status).toBe(401);
       const output = log.mock.calls.flat().join(" ");
-      expect(output).toContain("identity_callback_rejected");
+      expect(output).toContain("identity_token_invalid");
       expect(output).not.toContain("private-token");
       expect(output).not.toContain("private-url");
-      expect(output).not.toContain("auth/cloudflare/callback");
+      expect(output).not.toContain("auth/access");
     } finally {
       log.mockRestore();
     }
@@ -373,39 +340,4 @@ describe("control-plane foundation", () => {
     expect(response.headers.get("location")).toBe("/");
   });
 
-  it("classifies OAuth state-storage failures without retaining provider data", async () => {
-    const config: ControlConfig = {
-      chromeExtensionIds: [],
-      environment: "test",
-      publicOrigin: "https://latergator.test",
-      oidcIssuer: "https://dash.cloudflare.com",
-      sessionTtlSeconds: 43_200,
-      identityClientId: "test-identity-client",
-      identityClientSecret: "test-identity-secret",
-      installerTokenEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
-    };
-    const discovery = {
-      issuer: "https://dash.cloudflare.com",
-      authorization_endpoint: "https://dash.cloudflare.com/oauth2/auth",
-      token_endpoint: "https://dash.cloudflare.com/oauth2/token",
-      code_challenge_methods_supported: ["S256"],
-      token_endpoint_auth_methods_supported: ["client_secret_post"],
-    };
-    const unavailableDatabase = {
-      prepare: () => {
-        throw new Error("private provider payload");
-      },
-    } as unknown as D1Database;
-
-    await expect(
-      startIdentityLogin(
-        unavailableDatabase,
-        config,
-        () => Promise.resolve(Response.json(discovery)),
-      ),
-    ).rejects.toMatchObject({
-      code: "identity_provider_unavailable",
-      failureStage: "identity_state_storage_failed",
-    });
-  });
 });

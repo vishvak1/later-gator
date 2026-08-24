@@ -7,6 +7,8 @@ function validEnv(): Env {
     ENVIRONMENT: "test",
     PUBLIC_ORIGIN: "https://latergator.test",
     CLOUDFLARE_OIDC_ISSUER: "https://dash.cloudflare.com",
+    CLOUDFLARE_ACCESS_TEAM_DOMAIN: "https://later-gator-test.cloudflareaccess.com",
+    CLOUDFLARE_ACCESS_AUD: "a".repeat(64),
     CONTROL_SESSION_TTL_SECONDS: "43200",
     CLOUDFLARE_IDENTITY_CLIENT_ID: "client-id",
     CLOUDFLARE_IDENTITY_CLIENT_SECRET: "client-secret",

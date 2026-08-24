@@ -11,6 +11,7 @@ import {
 import { refreshCloudflareInstallerToken } from "../adapters/cloudflare-installer";
 import {
   claimProvisioningStep,
+  completeResourceCleanup,
   completeProvisioningStep,
   failProvisioningStep,
   findCompletedProvisioningStepResourceId,
@@ -104,8 +105,8 @@ function instanceMasterKey(): string {
   return btoa(binary);
 }
 
-/** Returns deterministic, collision-resistant resource names for one installation. */
-function resourceNames(installationId: string): {
+/** Returns the single reserved Later Gator resource set for one Cloudflare account. */
+function resourceNames(): {
   d1: string;
   oauthKv: string;
   thumbnails: string;
@@ -114,9 +115,7 @@ function resourceNames(installationId: string): {
   thumbnailQueue: string;
   worker: string;
 } {
-  const suffix = installationId.replaceAll("-", "").toLowerCase().slice(0, 16);
-  if (!/^[a-z0-9]{8,16}$/u.test(suffix)) throw new Error("installation_id_invalid");
-  const prefix = `later-gator-${suffix}`;
+  const prefix = "later-gator";
   return {
     d1: `${prefix}-db`,
     oauthKv: `${prefix}-oauth`,
@@ -126,6 +125,20 @@ function resourceNames(installationId: string): {
     thumbnailQueue: `${prefix}-thumbnail-jobs`,
     worker: prefix,
   };
+}
+
+/** Removes a partially uploaded runtime before a failed installation becomes retryable. */
+async function removeFailedWorker(
+  database: D1Database,
+  cloudflare: CloudflareProvisioner,
+  installationId: string,
+  workerName: string,
+  nowSeconds: number,
+): Promise<void> {
+  if (!await cloudflare.workerExists(workerName)) return;
+  await cloudflare.deleteResource({ type: "worker", id: workerName, name: workerName });
+  await completeResourceCleanup(database, installationId, "worker", nowSeconds);
+  await reopenProvisioningAfterMissingWorker(database, installationId, nowSeconds);
 }
 
 /** Loads one required resource or fails before a Worker can receive partial bindings. */
@@ -252,7 +265,7 @@ export async function provisionOwnerInstallation(
   );
   const cloudflare = new CloudflareProvisioner(installation.accountId, accessToken, fetcher);
   const artifact = await loadRuntimeRelease(artifacts, RELEASE);
-  const names = resourceNames(installation.id);
+  const names = resourceNames();
   const steps: ProvisioningStepCode[] = [
     "d1",
     "oauth_kv",
@@ -439,6 +452,28 @@ export async function provisionOwnerInstallation(
       const safeError = error instanceof CloudflareProvisioningError
         ? error.safeCode
         : "provisioning_step_failed";
+      const workerUploadIndex = steps.indexOf("worker_upload");
+      if (!r2Pause && index >= workerUploadIndex) {
+        try {
+          await removeFailedWorker(
+            database,
+            cloudflare,
+            installation.id,
+            names.worker,
+            nowSeconds,
+          );
+        } catch {
+          await failProvisioningStep(
+            database,
+            installation.id,
+            step,
+            "worker_cleanup_failed",
+            false,
+            nowSeconds,
+          );
+          return { status: "failed" };
+        }
+      }
       await failProvisioningStep(
         database,
         installation.id,

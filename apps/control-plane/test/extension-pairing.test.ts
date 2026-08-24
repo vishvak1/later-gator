@@ -15,9 +15,11 @@ const config: ControlConfig = {
   environment: "test",
   publicOrigin: "https://latergator.test",
   oidcIssuer: "https://dash.cloudflare.com",
+  accessTeamDomain: "https://later-gator-test.cloudflareaccess.com",
+  accessAudience: "a".repeat(64),
   sessionTtlSeconds: 43_200,
-  identityClientId: "test-client",
-  identityClientSecret: "test-secret",
+  installerClientId: "test-client",
+  installerClientSecret: "test-secret",
   installerTokenEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 };
 
@@ -101,5 +103,30 @@ describe("control-plane extension pairing", () => {
         100,
       )).rejects.toMatchObject({ code: "extension_redirect_rejected" });
     }
+  });
+
+  it("returns a state-bound installation-required result when no library exists", async () => {
+    await env.CONTROL_DB.prepare("DELETE FROM installations WHERE id = ?")
+      .bind(INSTALLATION_ID)
+      .run();
+    const requestToken = await startExtensionPairing(
+      env.CONTROL_DB,
+      config,
+      connectUrl(),
+      100,
+    );
+    const destination = new URL(await completeExtensionPairing(
+      env.CONTROL_DB,
+      config,
+      env.OWNER_ASSERTION_SIGNING_KEYS,
+      OWNER_ID,
+      requestToken,
+      101,
+    ));
+    expect(destination.searchParams.get("error")).toBe("installation_required");
+    expect(destination.searchParams.get("state")).toBe("s".repeat(43));
+    expect(destination.searchParams.get("device_id")).toBe("device_12345678");
+    expect(destination.searchParams.has("deployment")).toBe(false);
+    expect(destination.searchParams.has("grant")).toBe(false);
   });
 });

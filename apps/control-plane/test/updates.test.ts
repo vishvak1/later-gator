@@ -17,7 +17,6 @@ import { updateOwnerRuntime } from "../src/application/updates";
 import type { ControlConfig } from "../src/domain/config";
 import { encryptInstallerToken } from "../src/security/installer-token-vault";
 
-const ACCOUNT_ID = "a".repeat(32);
 const ENCRYPTION_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 const OLD_VERSION = "11111111-1111-4111-8111-111111111111";
 const NEW_VERSION = "22222222-2222-4222-8222-222222222222";
@@ -26,9 +25,11 @@ const config: ControlConfig = {
   environment: "test",
   publicOrigin: "https://latergator.test",
   oidcIssuer: "https://dash.cloudflare.com",
+  accessTeamDomain: "https://later-gator-test.cloudflareaccess.com",
+  accessAudience: "a".repeat(64),
   sessionTtlSeconds: 43_200,
-  identityClientId: "test-identity-client",
-  identityClientSecret: "test-identity-secret",
+  installerClientId: "test-identity-client",
+  installerClientSecret: "test-identity-secret",
   installerTokenEncryptionKey: ENCRYPTION_KEY,
 };
 
@@ -36,12 +37,13 @@ const config: ControlConfig = {
 async function priorInstallation(
   tokenExpiresIn = 3600,
 ): Promise<{ installationId: string; ownerId: string }> {
+  const accountId = crypto.randomUUID().replaceAll("-", "");
   const ownerId = await upsertOwner(env.CONTROL_DB, `update-${crypto.randomUUID()}`, 100);
   const installationId = crypto.randomUUID();
   await createAuthorizedInstallation(env.CONTROL_DB, {
     installationId,
     ownerId,
-    accountId: ACCOUNT_ID,
+    accountId,
     storageMode: "kv",
     requestedPlanJson: JSON.stringify({ contractVersion: 1, storageMode: "kv" }),
     nowSeconds: 100,
@@ -71,7 +73,7 @@ async function priorInstallation(
   const encrypted = await encryptInstallerToken(
     ENCRYPTION_KEY,
     ownerId,
-    ACCOUNT_ID,
+    accountId,
     {
       accessToken: "update-access-token",
       refreshToken: "update-refresh-token",
@@ -82,7 +84,7 @@ async function priorInstallation(
   );
   await storeInstallerAuthorization(env.CONTROL_DB, {
     ownerId,
-    accountId: ACCOUNT_ID,
+    accountId,
     ciphertext: encrypted.ciphertext,
     nonce: encrypted.nonce,
     grantedScopesJson: JSON.stringify(["d1.write", "workers-scripts.write"]),

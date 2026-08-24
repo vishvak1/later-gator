@@ -94,7 +94,7 @@ transform Later Gator data.
 | --- | --- | --- |
 | `CONTROL_DB` | D1 | Hashed owner identity, encrypted installer authorization, resources, jobs, rollout and audit metadata |
 | `RELEASE_ARTIFACTS` | Static Assets | Immutable runtime bundles, assets, schema statements and descriptors |
-| identity/installer/signing secrets | Secrets | Cloudflare confidential OAuth, encrypted token storage and ES256 assertion signing |
+| Access/installer/signing secrets | Secrets | Access JWT verification, Cloudflare installer OAuth, encrypted token storage and ES256 assertion signing |
 
 The control plane runs an hourly Cron at minute 17. The personal runtime has no
 Cron; its Queues and authenticated bootstrap repair bounded backlogs.
@@ -184,14 +184,32 @@ Tests read `apps/runtime/schema.sql`, compact each complete statement to the one
 expected by `D1Database.exec`, and initialize their isolated D1 binding before
 the suite.
 
+### Managed installation identity
+
+Control D1 enforces one installation and one active installer authorization per
+Cloudflare account ID. Provisioning uses the fixed Worker name `later-gator`
+and fixed supporting names (`later-gator-db`, `later-gator-oauth`, queues,
+thumbnail storage, and Vectorize), so a retry cannot mint a second suffixed
+library. If a failure occurs after upload, the compensating action deletes that
+Worker and reopens Worker-dependent steps before the failure is shown.
+
+The dashboard and its `/runtime/open` handoff reconcile the recorded Worker
+against Cloudflare's script settings endpoint. A definitive 404 marks runtime
+health unavailable, suppresses the stale link, and offers a CSRF-protected
+repair that recreates only the Worker. Provider outages leave the previous
+health result unchanged.
+
 ## 7. Authentication and credentials
 
 ### Owner identity
 
-The control plane uses Cloudflare Authorization Code flow with state, nonce and
-S256 PKCE. Identity requests only `user-details.read`, immediately discard the
-provider token, and store a one-way subject hash. Installer consent is a
-separate authorization request whose renewable token is encrypted at rest.
+Cloudflare Access protects `/auth/access` and supplies a signed application JWT
+after the owner logs in with a Cloudflare account. The control plane verifies
+the RS256 signature, team issuer, application audience, token type, and bounded
+email claim before storing a one-way email subject hash. Installer consent is a
+separate Authorization Code plus S256 PKCE request whose renewable token is
+encrypted at rest; `user-details.read` is used there only to prove the installer
+email matches the Access identity.
 
 The runtime redirects login to `/runtime/login` on the control plane. The return
 assertion is ES256-signed, short-lived, installation/audience/subject-bound, and
@@ -202,8 +220,9 @@ password or recovery fallback.
 ### Sessions
 
 A login creates a random token. D1 stores only its hash, CSRF hash, and expiry
-timestamps. Cookies are `HttpOnly`, `Secure`,
-`SameSite=Strict`, and scoped to `/`. Mutations require matching origin and CSRF
+timestamps. The session cookie is `HttpOnly` and both session/CSRF cookies are
+`Secure`, `SameSite=Lax`, and scoped to `/` so Access and runtime/extension
+top-level handoffs retain them. Mutations require matching origin and CSRF
 token. Logout and expiry revoke or expire the session.
 
 ### Provider credentials
@@ -364,9 +383,11 @@ Chrome manifest, icons, and extension-specific DOM tests.
 those canonical inputs, preventing generated copies from becoming a second
 source of truth.
 
-The official extension uses a separate public Cloudflare OAuth client with S256
-PKCE and no client secret. The control plane discovers the signed-in owner's
+The official extension opens the same Cloudflare Access login handoff as the
+control plane and runtime. The control plane discovers the signed-in owner's
 installation and issues a one-time, signed, installation-bound pairing grant.
+If no installation exists, the state-bound Chrome callback returns
+`installation_required` and the popup directs the owner to the control plane.
 The extension requests optional permission for the exact personal runtime host,
 then exchanges the grant directly with that runtime for a narrow capture token.
 

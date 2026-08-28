@@ -102,14 +102,15 @@ can then create separately scoped credentials for:
 Capture credentials can be revoked independently. AI assistants use OAuth
 instead of a copied secret.
 
-In Settings, select **Connect ChatGPT** or **Connect Claude**. Claude opens with
-the connector name and stable `/mcp` address prefilled; ChatGPT opens its
-connector settings and Later Gator copies the address for the remaining paste.
-The provider then redirects to the personal runtime, where the owner signs in
-through Cloudflare and approves read-only access. Settings lists each grant independently, including last-used
-activity and a Disconnect action. A successful install is confirmed by a Later
-Gator tool call—not by asking the model whether a connector is installed. Enable
-Later Gator's tools in each chat before using them.
+Settings generates one copyable command for Codex and one for Claude Code. Each
+command runs `mcp add` followed by `mcp login`, so installation immediately opens
+the browser authorization flow. If the runtime browser session has expired, the
+personal Worker sends the browser through the existing Cloudflare/control-plane
+owner login and resumes the pending MCP approval automatically. No developer
+mode or copied secret is required. The stable MCP URL and all private MCP calls
+remain on the personal Worker; the control plane participates only in owner
+authentication. Settings lists each active grant with last-used activity and an
+independent Disconnect action.
 
 ## AI providers and usage
 

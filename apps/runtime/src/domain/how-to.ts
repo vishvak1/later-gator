@@ -48,23 +48,22 @@ export const HOW_TO_PANELS: readonly { id: string; kicker: string; title: string
   {
     id: "mcp",
     kicker: "MCP",
-    title: "Connect ChatGPT or Claude",
-    body: `<p class="muted">Later Gator uses OAuth, so you never copy a secret token. The assistant opens Later Gator and you approve read-only access from an authenticated owner session.</p>
-      <h3>ChatGPT</h3>
+    title: "Connect Codex or Claude Code",
+    body: `<p class="muted">Later Gator uses OAuth, so you never copy a secret token or enable a developer mode. Each command installs the remote server and immediately starts browser login.</p>
+      <h3>Codex</h3>
       <ol class="setup-steps">
-        <li><strong>Select Connect ChatGPT.</strong><span>Later Gator opens ChatGPT's connector settings and copies the stable <code>/mcp</code> address.</span></li>
-        <li><strong>Add the connector.</strong><span>Turn on Developer mode if ChatGPT asks, create a connector, and paste the copied Streamable HTTP address.</span></li>
-        <li><strong>Approve read-only access.</strong><span>ChatGPT redirects to Later Gator. Sign in with Cloudflare if needed and select Connect ChatGPT.</span></li>
-        <li><strong>Enable it in a new chat.</strong><span>Select Later Gator from the available connectors or tools before prompting. A model cannot reliably report a connector that is installed but not enabled in that chat.</span></li>
-        <li><strong>Test the connection.</strong><span>Ask: <code>Use Later Gator to get my library status.</code> A successful response includes a Later Gator tool call.</span></li>
+        <li><strong>Copy the Codex command.</strong><span>Paste it into a terminal that has the Codex CLI installed.</span></li>
+        <li><strong>Finish browser login.</strong><span>The command opens Later Gator. Sign in through Cloudflare if needed, then approve read-only access. The original login resumes automatically.</span></li>
+        <li><strong>Confirm it.</strong><span>Run <code>codex mcp list</code>, then ask Codex: <code>Use Later Gator to get my library status.</code></span></li>
       </ol>
-      <h3>Claude</h3>
+      <h3>Claude Code</h3>
       <ol class="setup-steps">
-        <li><strong>Select Connect Claude.</strong><span>Later Gator opens Claude's custom-connector form with the name and address already filled in.</span></li>
-        <li><strong>Add and authorize it.</strong><span>Continue in Claude, then approve read-only access on the Later Gator page. Remote servers belong in Connectors, not <code>claude_desktop_config.json</code>.</span></li>
-        <li><strong>Enable its tools.</strong><span>In a new chat, open Search and tools, enable Later Gator, then ask it to get your library status.</span></li>
+        <li><strong>Copy the Claude command.</strong><span>Paste it into a terminal that has Claude Code installed. The user scope makes the server available across your projects.</span></li>
+        <li><strong>Finish browser login.</strong><span>Sign in through Cloudflare if needed and approve read-only access; you do not need to run a separate login command.</span></li>
+        <li><strong>Confirm it.</strong><span>Run <code>claude mcp list</code>, then ask Claude Code to get your Later Gator library status.</span></li>
       </ol>
-      <p class="muted"><strong>To remove access:</strong> return to Settings and select Disconnect beside that assistant. Other connected assistants keep working.</p>`,
+      <p class="muted"><strong>If the browser was signed out:</strong> the same command takes you through Cloudflare sign-in and returns to the pending MCP approval. If it expired, run the copied command again.</p>
+      <p class="muted"><strong>To remove access:</strong> return to Settings and select Disconnect beside that client. Other connected clients keep working.</p>`,
   },
   {
     id: "models",

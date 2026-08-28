@@ -107,6 +107,7 @@ import {
 } from "./adapters/organization-providers";
 import {
   handleMcpOAuthRequest,
+  hasPendingMcpAuthorization,
   listMcpConnections,
   revokeMcpConnection,
 } from "./routes/mcp-oauth";
@@ -159,7 +160,9 @@ async function ownerLoginCallback(request: Request, env: Env): Promise<Response>
   try {
     const session = await completeOwnerLogin(request, env);
     const headers = new Headers({
-      location: (await setupComplete(env.DB)) ? "/dashboard" : "/setup",
+      location: hasPendingMcpAuthorization(request)
+        ? "/authorize/resume"
+        : (await setupComplete(env.DB)) ? "/dashboard" : "/setup",
       "cache-control": "no-store",
     });
     headers.append("set-cookie", session.cookie);
@@ -1234,6 +1237,7 @@ async function handleFetch(
   if (
     url.pathname === "/mcp" ||
     url.pathname === "/authorize" ||
+    url.pathname === "/authorize/resume" ||
     url.pathname === "/oauth/token" ||
     url.pathname === "/oauth/register" ||
     url.pathname === "/.well-known/oauth-authorization-server" ||

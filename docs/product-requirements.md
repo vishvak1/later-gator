@@ -251,12 +251,13 @@ approves each AI assistant using an authenticated runtime session. Settings
 must show each active grant's assistant name, read-only scope, coarse last-used
 activity, and an independent Disconnect action.
 
-Setup guidance must distinguish installing the remote server, authorizing it,
-and enabling its tools in a conversation. ChatGPT gets a direct route to its
-connector settings with the stable endpoint copied; Claude gets a prefilled
-custom-connector URL rather than desktop stdio configuration. A successful tool
-call is the connection test; model self-report about whether a connector is
-installed is not.
+Setup guidance must provide copyable Codex and Claude Code commands that combine
+remote `mcp add` installation with immediate `mcp login`. Browser authorization
+must continue through Cloudflare owner login and return to the original OAuth
+request when the runtime session is absent. The continuation is private,
+single-use, installation-bound through the owner session, and expires within ten
+minutes. A successful tool call is the connection test; model self-report about
+whether a connector is installed is not.
 
 ## 13. Search and relationships
 

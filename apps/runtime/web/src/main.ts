@@ -2508,6 +2508,11 @@ function renderMcpConnections(connections: McpConnection[]): void {
 async function loadMcpConnections(): Promise<void> {
   const response = await api<McpConnectionsResponse>("/api/mcp/connections");
   el("#mcpEndpoint").textContent = response.endpoint;
+  const quotedEndpoint = `'${response.endpoint.replaceAll("'", `'"'"'`)}'`;
+  el("#codexMcpCommand").textContent =
+    `codex mcp add later-gator --url ${quotedEndpoint} && codex mcp login later-gator`;
+  el("#claudeMcpCommand").textContent =
+    `claude mcp add --transport http --scope user later-gator ${quotedEndpoint} && claude mcp login later-gator`;
   renderMcpConnections(response.connections);
 }
 
@@ -2559,24 +2564,6 @@ function renderExtensionDevices(devices: ExtensionDevice[]): void {
 async function loadExtensionDevices(): Promise<void> {
   const response = await api<{ devices: ExtensionDevice[] }>("/api/capture/devices");
   renderExtensionDevices(response.devices);
-}
-
-/** Opens an external setup page while keeping the self-hosted endpoint easy to paste. */
-async function openMcpSetup(destination: string, assistant: string): Promise<void> {
-  const endpoint = el("#mcpEndpoint").textContent?.trim() || `${location.origin}/mcp`;
-  window.open(destination, "_blank", "noopener,noreferrer");
-  try {
-    await navigator.clipboard.writeText(endpoint);
-    setStatus(
-      "#mcpConnectionStatus",
-      `${assistant} setup opened. The Later Gator address is copied—paste it when asked.`,
-    );
-  } catch {
-    setStatus(
-      "#mcpConnectionStatus",
-      `${assistant} setup opened. Copy the address under Advanced connection details if asked.`,
-    );
-  }
 }
 
 /** Loads settings for the dashboard UI. */
@@ -2989,15 +2976,19 @@ if (page === "settings") {
   el<HTMLButtonElement>("#copyIosToken").addEventListener("click", async () => {
     await copySecret("#iosToken", "#iosCredentialStatus", el<HTMLButtonElement>("#copyIosToken"));
   });
-  el<HTMLButtonElement>("#connectChatGpt").addEventListener("click", async () => {
-    await openMcpSetup("https://chatgpt.com/#settings/Connectors", "ChatGPT");
+  el<HTMLButtonElement>("#copyCodexMcpCommand").addEventListener("click", async () => {
+    await copySecret(
+      "#codexMcpCommand",
+      "#mcpConnectionStatus",
+      el<HTMLButtonElement>("#copyCodexMcpCommand"),
+    );
   });
-  el<HTMLButtonElement>("#connectClaude").addEventListener("click", async () => {
-    const endpoint = el("#mcpEndpoint").textContent?.trim() || `${location.origin}/mcp`;
-    const destination = "https://claude.ai/customize/connectors?modal=add-custom-connector" +
-      `&connectorName=${encodeURIComponent("Later Gator")}` +
-      `&connectorUrl=${encodeURIComponent(endpoint)}`;
-    await openMcpSetup(destination, "Claude");
+  el<HTMLButtonElement>("#copyClaudeMcpCommand").addEventListener("click", async () => {
+    await copySecret(
+      "#claudeMcpCommand",
+      "#mcpConnectionStatus",
+      el<HTMLButtonElement>("#copyClaudeMcpCommand"),
+    );
   });
   el<HTMLButtonElement>("#copyMcpEndpoint").addEventListener("click", async () => {
     await copySecret(

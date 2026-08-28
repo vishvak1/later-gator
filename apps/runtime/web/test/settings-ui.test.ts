@@ -267,7 +267,6 @@ describe("settings navigation lifecycle", () => {
       throw new Error("Unexpected request: " + path);
     });
     const writeText = vi.fn().mockResolvedValue(undefined);
-    const open = vi.spyOn(window, "open").mockImplementation(() => null);
     vi.stubGlobal("fetch", fetchMock);
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -303,18 +302,15 @@ describe("settings navigation lifecycle", () => {
     });
     expect(document.querySelector("#mcpConnections")?.textContent)
       .toContain("Read-only access · Last used just now");
-    document.querySelector<HTMLButtonElement>("#connectChatGpt")?.click();
-    await vi.waitFor(() => expect(open).toHaveBeenCalledWith(
-      "https://chatgpt.com/#settings/Connectors",
-      "_blank",
-      "noopener,noreferrer",
+    const quotedEndpoint = `'${endpoint}'`;
+    document.querySelector<HTMLButtonElement>("#copyCodexMcpCommand")?.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(
+      `codex mcp add later-gator --url ${quotedEndpoint} && codex mcp login later-gator`,
     ));
-    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(endpoint));
-    document.querySelector<HTMLButtonElement>("#connectClaude")?.click();
-    await vi.waitFor(() => expect(open.mock.calls.some(([url]) =>
-      String(url).startsWith("https://claude.ai/customize/connectors?") &&
-      String(url).includes("connectorUrl=" + encodeURIComponent(endpoint))
-    )).toBe(true));
+    document.querySelector<HTMLButtonElement>("#copyClaudeMcpCommand")?.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(
+      `claude mcp add --transport http --scope user later-gator ${quotedEndpoint} && claude mcp login later-gator`,
+    ));
     document.querySelector<HTMLButtonElement>("#mcpConnections button")?.click();
     await vi.waitFor(() => {
       expect(document.querySelector("#mcpConnections")?.textContent)
@@ -323,11 +319,12 @@ describe("settings navigation lifecycle", () => {
     document.querySelector<HTMLButtonElement>('[data-how-to="mcp"]')?.click();
     expect(dialog?.open).toBe(true);
     expect(document.querySelector<HTMLElement>("#howToTitle")?.textContent)
-      .toBe("Connect ChatGPT or Claude");
+      .toBe("Connect Codex or Claude Code");
     const guide = document.querySelector<HTMLElement>("#howToBody")?.textContent ?? "";
     expect(guide).toContain("you never copy a secret token");
-    expect(guide).toContain("Turn on Developer mode");
-    expect(guide).toContain("not claude_desktop_config.json");
+    expect(guide).toContain("you never copy a secret token or enable a developer mode");
+    expect(guide).toContain("codex mcp list");
+    expect(guide).toContain("claude mcp list");
     expect(guide).toContain("Use Later Gator to get my library status");
     window.dispatchEvent(new Event("pagehide"));
   });

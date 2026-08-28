@@ -220,8 +220,12 @@ and iOS routes authenticate and update last-used time. MCP uses the stable
 RFC 9728 protected-resource metadata and OAuth authorization-server metadata.
 Clients use CIMD when supported or Dynamic Client Registration as a fallback,
 then authorization code flow with S256 PKCE. The owner-facing consent page
-requires either an existing dashboard session plus CSRF or the existing Later
-Gator password.
+requires an authenticated runtime session plus CSRF. When that session is
+absent, the runtime stores only the bounded OAuth request under a hashed,
+single-use key in private `OAUTH_KV`, sets a ten-minute HttpOnly continuation
+cookie, and redirects through the existing Cloudflare/control-plane owner login.
+The callback resumes and revalidates the OAuth request; the control plane never
+receives the request, MCP bearer token, or bookmark data.
 
 OAuth client, grant, code, refresh-token, and access-token records live in the
 private `OAUTH_KV` binding. A configured deployment may bind it to the existing

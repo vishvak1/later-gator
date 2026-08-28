@@ -15,6 +15,7 @@ import {
   loadSession,
   originMatches,
   readCookie,
+  refreshSessionCsrf,
   requireCsrfValue,
 } from "../security/sessions";
 import { oauthConsentPage, oauthErrorPage, themeFromCookie } from "./pages";
@@ -22,6 +23,13 @@ import { handleMcp } from "./mcp";
 
 const OWNER_ID = "owner";
 const LIBRARY_READ_SCOPE = "library:read";
+const MCP_LOGIN_RESUME_COOKIE = "__Host-lg_mcp_resume";
+const MCP_LOGIN_RESUME_SECONDS = 10 * 60;
+const MCP_LOGIN_RESUME_PREFIX = "later-gator:mcp-login-resume:";
+
+const authorizationContinuationSchema = z.strictObject({
+  oauthRequest: z.string().min(1).max(16_384),
+});
 
 const serializedAuthRequestSchema = z.strictObject({
   responseType: z.string().min(1).max(32),
@@ -111,6 +119,45 @@ function deserializeAuthRequest(value: string): AuthRequest | null {
   }
 }
 
+/** Builds the private KV key for a short-lived opaque browser continuation. */
+async function authorizationContinuationKey(token: string): Promise<string> {
+  return MCP_LOGIN_RESUME_PREFIX + await sha256Base64(`mcp-login-resume:${token}`);
+}
+
+/** Creates a single-use continuation before sending an unauthenticated owner to login. */
+async function beginAuthorizationContinuation(
+  request: AuthRequest,
+  env: Env,
+  origin: string,
+): Promise<Response> {
+  const token = toBase64Url(crypto.getRandomValues(new Uint8Array(32)));
+  await env.OAUTH_KV.put(
+    await authorizationContinuationKey(token),
+    JSON.stringify({ oauthRequest: serializeAuthRequest(request) }),
+    { expirationTtl: MCP_LOGIN_RESUME_SECONDS },
+  );
+  const headers = new Headers({
+    location: new URL("/auth/login", origin).toString(),
+    "cache-control": "no-store",
+  });
+  headers.append(
+    "set-cookie",
+    `${MCP_LOGIN_RESUME_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${MCP_LOGIN_RESUME_SECONDS.toString()}`,
+  );
+  return new Response(null, { status: 302, headers });
+}
+
+/** Returns whether the current browser carries an MCP login continuation cookie. */
+export function hasPendingMcpAuthorization(request: Request): boolean {
+  const token = readCookie(request, MCP_LOGIN_RESUME_COOKIE);
+  return token !== null && /^[A-Za-z0-9_-]{40,64}$/u.test(token);
+}
+
+/** Creates the cookie that removes a consumed or invalid MCP login continuation. */
+function expiredAuthorizationContinuationCookie(): string {
+  return `${MCP_LOGIN_RESUME_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+}
+
 /** Rebuilds a GET authorization request so the provider revalidates submitted form state. */
 function authorizationRequestFromSerialized(request: AuthRequest, origin: string): Request {
   const url = new URL("/authorize", origin);
@@ -141,8 +188,14 @@ function describeClient(client: ClientInfo, request: AuthRequest): {
   const evidence = [client.clientId, client.clientName ?? "", request.redirectUri]
     .join(" ")
     .toLowerCase();
+  if (evidence.includes("codex")) {
+    return { clientType: "other", displayName: "Codex" };
+  }
   if (evidence.includes("chatgpt.com") || evidence.includes("openai")) {
     return { clientType: "chatgpt", displayName: "ChatGPT" };
+  }
+  if (evidence.includes("claude code")) {
+    return { clientType: "claude", displayName: "Claude Code" };
   }
   if (evidence.includes("claude.ai") || evidence.includes("anthropic") || evidence.includes("claude")) {
     return { clientType: "claude", displayName: "Claude" };
@@ -196,18 +249,34 @@ function denyAuthorization(request: AuthRequest): Response {
   return Response.redirect(redirect, 302);
 }
 
+/** Rejects explicit foreign origins while allowing browsers that omit or opaque the form Origin. */
+function oauthFormOriginMatches(request: Request): boolean {
+  const origin = request.headers.get("origin");
+  return origin === null || origin === "null" || originMatches(request);
+}
+
+/** Extracts the provider's opaque grant ID without rereading eventually consistent KV. */
+function grantIdFromAuthorizationRedirect(redirectTo: string): string {
+  const code = new URL(redirectTo).searchParams.get("code");
+  const parts = code?.split(":") ?? [];
+  const grantId = parts[1];
+  if (
+    parts.length !== 3 || parts[0] !== OWNER_ID || grantId === undefined ||
+    !/^[A-Za-z0-9_-]{16,64}$/u.test(grantId) ||
+    !/^[A-Za-z0-9_-]{32,128}$/u.test(parts[2] ?? "")
+  ) {
+    throw new Error("oauth_authorization_code_shape_invalid");
+  }
+  return grantId;
+}
+
 /** Records a completed OAuth grant so Settings can manage each connected assistant. */
 async function recordConnection(
   db: D1Database,
-  helpers: OAuthHelpers,
   client: ClientInfo,
   metadata: ConnectionMetadata,
+  grantId: string,
 ): Promise<void> {
-  const grants = await helpers.listUserGrants(OWNER_ID, { limit: 100 });
-  const grant = grants.items.find((item) =>
-    (item.metadata as Partial<ConnectionMetadata> | null)?.connectionId === metadata.connectionId
-  );
-  if (grant === undefined) throw new Error("oauth_grant_not_found_after_authorization");
   await db
     .prepare(
       `INSERT INTO mcp_connections (
@@ -217,7 +286,7 @@ async function recordConnection(
     )
     .bind(
       metadata.connectionId,
-      grant.id,
+      grantId,
       await sha256Base64(client.clientId),
       metadata.clientType,
       metadata.displayName,
@@ -225,6 +294,37 @@ async function recordConnection(
       metadata.connectedAt,
     )
     .run();
+}
+
+/** Replaces older grants for the same registered MCP client after a new grant succeeds. */
+async function revokePriorClientConnections(
+  db: D1Database,
+  helpers: OAuthHelpers,
+  client: ClientInfo,
+  currentConnectionId: string,
+): Promise<void> {
+  const rows = await db
+    .prepare(
+      `SELECT id, oauth_grant_id
+         FROM mcp_connections
+        WHERE client_id_hash = ? AND id <> ? AND revoked_at IS NULL`,
+    )
+    .bind(await sha256Base64(client.clientId), currentConnectionId)
+    .all<{ id: string; oauth_grant_id: string }>();
+  for (const row of rows.results) {
+    try {
+      await helpers.revokeGrant(row.oauth_grant_id, OWNER_ID);
+      await db
+        .prepare("UPDATE mcp_connections SET revoked_at = ? WHERE id = ?")
+        .bind(new Date().toISOString(), row.id)
+        .run();
+    } catch {
+      console.error(JSON.stringify({
+        event: "mcp_prior_connection_revocation_failed",
+        safeCode: "oauth_grant_revocation_failed",
+      }));
+    }
+  }
 }
 
 /** Completes an approved OAuth request and creates its dashboard connection record. */
@@ -254,15 +354,14 @@ async function approveAuthorization(
       permissions: [LIBRARY_READ_SCOPE],
     } satisfies McpAuthorizationProps,
   });
+  const grantId = grantIdFromAuthorizationRedirect(redirectTo);
   try {
-    await recordConnection(env.DB, helpers, client, metadata);
+    await recordConnection(env.DB, client, metadata, grantId);
   } catch (error) {
-    const grant = (await helpers.listUserGrants(OWNER_ID, { limit: 100 })).items.find((item) =>
-      (item.metadata as Partial<ConnectionMetadata> | null)?.connectionId === metadata.connectionId
-    );
-    if (grant !== undefined) await helpers.revokeGrant(grant.id, OWNER_ID);
+    await helpers.revokeGrant(grantId, OWNER_ID);
     throw error;
   }
+  await revokePriorClientConnections(env.DB, helpers, client, metadata.connectionId);
   return Response.redirect(redirectTo, 302);
 }
 
@@ -291,15 +390,63 @@ async function showAuthorization(
   const parsed = await parseAuthorization(request, helpers);
   if (parsed instanceof Response) return parsed;
   const session = await loadSession(request, env.DB);
+  if (session === null) {
+    return beginAuthorizationContinuation(parsed.request, env, new URL(request.url).origin);
+  }
+  let csrfToken = readCookie(request, "lg_csrf");
+  let refreshedCsrfCookie: string | null = null;
+  if (csrfToken === null || !(await requireCsrfValue(env.DB, session, csrfToken))) {
+    const refreshed = await refreshSessionCsrf(env.DB, session);
+    csrfToken = refreshed.csrfToken;
+    refreshedCsrfCookie = refreshed.cookie;
+  }
   const described = describeClient(parsed.client, parsed.request);
-  return oauthConsentPage({
+  const page = oauthConsentPage({
     clientName: described.displayName,
+    redirectUri: parsed.request.redirectUri,
     serializedRequest: serializeAuthRequest(parsed.request),
-    signedIn: session !== null,
-    csrfToken: session === null ? null : readCookie(request, "lg_csrf"),
+    csrfToken,
     error: null,
     theme: themeFromCookie(request),
   });
+  if (refreshedCsrfCookie === null) return page;
+  const headers = new Headers(page.headers);
+  headers.append("set-cookie", refreshedCsrfCookie);
+  headers.set("cache-control", "no-store");
+  return new Response(page.body, { status: page.status, headers });
+}
+
+/** Consumes the login continuation and returns the owner to the provider-validated request. */
+async function resumeAuthorization(request: Request, env: Env): Promise<Response> {
+  if (await loadSession(request, env.DB) === null) {
+    return Response.redirect(new URL("/auth/login", request.url), 302);
+  }
+  const token = readCookie(request, MCP_LOGIN_RESUME_COOKIE);
+  let stored: string | null = null;
+  if (token !== null && /^[A-Za-z0-9_-]{40,64}$/u.test(token)) {
+    const key = await authorizationContinuationKey(token);
+    stored = await env.OAUTH_KV.get(key);
+    await env.OAUTH_KV.delete(key);
+  }
+  let authRequest: AuthRequest | null = null;
+  if (stored !== null) {
+    try {
+      const parsed = authorizationContinuationSchema.safeParse(JSON.parse(stored) as unknown);
+      authRequest = parsed.success ? deserializeAuthRequest(parsed.data.oauthRequest) : null;
+    } catch {
+      authRequest = null;
+    }
+  }
+  const result = authRequest === null
+    ? oauthErrorPage("This connection request expired. Run the MCP login command again.")
+    : Response.redirect(
+      authorizationRequestFromSerialized(authRequest, new URL(request.url).origin).url,
+      302,
+    );
+  const headers = new Headers(result.headers);
+  headers.append("set-cookie", expiredAuthorizationContinuationCookie());
+  headers.set("cache-control", "no-store");
+  return new Response(result.body, { status: result.status, headers });
 }
 
 /** Validates and completes the owner's submitted OAuth consent decision. */
@@ -308,7 +455,13 @@ async function submitAuthorization(
   env: Env,
   helpers: OAuthHelpers,
 ): Promise<Response> {
-  if (!originMatches(request)) return oauthErrorPage("Reload Later Gator and try again.");
+  if (!oauthFormOriginMatches(request)) {
+    console.error(JSON.stringify({
+      event: "mcp_authorization_rejected",
+      safeCode: "oauth_origin_rejected",
+    }));
+    return oauthErrorPage("The browser could not verify this approval. Return to the terminal and run MCP login again.");
+  }
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredLength) && declaredLength > 24 * 1024) {
     return oauthErrorPage("This connection request is too large.");
@@ -330,7 +483,11 @@ async function submitAuthorization(
   }
   const csrfToken = formString(form, "csrf_token", 256);
   if (csrfToken === null || !(await requireCsrfValue(env.DB, session, csrfToken))) {
-    return oauthErrorPage("Reload Later Gator and try again.");
+    console.error(JSON.stringify({
+      event: "mcp_authorization_rejected",
+      safeCode: "oauth_csrf_rejected",
+    }));
+    return oauthErrorPage("This approval expired. Return to the terminal and run MCP login again.");
   }
 
   return approveAuthorization(reparsed.request, reparsed.client, env, helpers);
@@ -346,6 +503,9 @@ const authorizationHandler: ExportedHandler<Env> = {
     }
     if (request.method === "POST" && new URL(request.url).pathname === "/authorize") {
       return submitAuthorization(request, env, helpers);
+    }
+    if (request.method === "GET" && new URL(request.url).pathname === "/authorize/resume") {
+      return resumeAuthorization(request, env);
     }
     return Promise.resolve(new Response("Not found", { status: 404 }));
   },

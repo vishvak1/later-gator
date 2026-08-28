@@ -1,10 +1,11 @@
 import { ASSET_MANIFEST } from "../generated/asset-manifest";
 import { ICONS } from "../domain/icons";
+const PAGE_CSP =
+  "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self' https://api.openai.com https://api.anthropic.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 const PAGE_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
-  "content-security-policy":
-    "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self' https://api.openai.com https://api.anthropic.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  "content-security-policy": PAGE_CSP,
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff",
 } satisfies HeadersInit;
@@ -54,7 +55,22 @@ function page(
   body: string,
   status = 200,
   theme: Theme = "system",
+  formRedirectUri: string | null = null,
 ): Response {
+  const headers = new Headers(PAGE_HEADERS);
+  if (formRedirectUri !== null) {
+    const callback = new URL(formRedirectUri);
+    const isLoopback = callback.protocol === "http:" &&
+      (callback.hostname === "127.0.0.1" || callback.hostname === "localhost" ||
+        callback.hostname === "[::1]");
+    if (callback.protocol !== "https:" && !isLoopback) {
+      throw new Error("oauth_callback_origin_invalid");
+    }
+    headers.set(
+      "content-security-policy",
+      PAGE_CSP.replace("form-action 'self'", `form-action 'self' ${callback.origin}`),
+    );
+  }
   return new Response(
     `<!doctype html>
 <html lang="en"${theme === "system" ? "" : ` data-theme="${theme}"`}>
@@ -71,7 +87,7 @@ ${body}
 <script type="module" src="${ASSET_MANIFEST.js}"></script>
 </body>
 </html>`,
-    { status, headers: PAGE_HEADERS },
+    { status, headers },
   );
 }
 
@@ -179,8 +195,8 @@ export function loginPage(
 
 interface OAuthConsentPageOptions {
   clientName: string;
+  redirectUri: string;
   serializedRequest: string;
-  signedIn: boolean;
   csrfToken: string | null;
   error: string | null;
   theme: Theme;
@@ -207,22 +223,17 @@ export function oauthConsentPage(options: OAuthConsentPageOptions): Response {
           <div><strong>Not allowed</strong><ul><li>Add, edit, or delete bookmarks</li><li>Change settings or access credentials</li></ul></div>
         </div>
         ${options.error === null ? "" : `<p class="error" role="alert">${escapeHtml(options.error)}</p>`}
-        ${options.signedIn
-          ? `<form class="stack" method="post" action="/authorize">
-              <input type="hidden" name="oauth_request" value="${request}">
-              ${csrf}
-              <p class="connection-ready">Signed in as the Later Gator owner.</p>
-              <div class="actions split"><button class="secondary" type="submit" name="decision" value="deny">Cancel</button><button type="submit" name="decision" value="approve">Connect ${clientName}</button></div>
-            </form>`
-          : `<p class="error" role="alert">Sign in to Later Gator before approving this connection.</p>
-             <div class="actions split">
-               <form method="post" action="/authorize"><input type="hidden" name="oauth_request" value="${request}"><button class="secondary" type="submit" name="decision" value="deny">Cancel</button></form>
-               <a class="button-link" href="/">Sign in with Cloudflare</a>
-             </div>`}
+        <form class="stack" method="post" action="/authorize">
+          <input type="hidden" name="oauth_request" value="${request}">
+          ${csrf}
+          <p class="connection-ready">Signed in as the Later Gator owner.</p>
+          <div class="actions split"><button class="secondary" type="submit" name="decision" value="deny">Cancel</button><button type="submit" name="decision" value="approve">Connect ${clientName}</button></div>
+        </form>
       </section>
     </main>`,
     200,
     options.theme,
+    options.redirectUri,
   );
 }
 
@@ -532,7 +543,7 @@ export function settingsPage(theme: Theme = "system"): Response {
           <p id="extensionDeviceStatus" class="status" role="status"></p>
         </section>
         <section class="panel panel-flow"><h2>iOS Share Sheet Shortcut</h2><p class="muted">Generate one endpoint and token for an iPhone or iPad Shortcut.</p><div class="connection-actions"><button id="pairIos">Generate iOS connection</button><a class="button-link" href="${IOS_SHORTCUT_URL}" target="_blank" rel="noreferrer">Add to Shortcuts ↗</a><button class="secondary" type="button" data-how-to="ios">Setup instructions</button></div><div id="iosCredentialPanel" class="connection-code-panel" hidden><div class="connection-secret"><p class="eyebrow">Endpoint</p><pre id="iosEndpoint" class="secret-output" tabindex="0"></pre><button id="copyIosEndpoint" type="button">Copy endpoint</button></div><div class="connection-secret"><p class="eyebrow">One-time token</p><pre id="iosToken" class="secret-output" tabindex="0"></pre><button id="copyIosToken" type="button">Copy token</button></div><p id="iosCredentialStatus" class="status" role="status"></p></div></section>
-        <section class="panel panel-flow span-two"><div><p class="eyebrow">MCP</p><h2>Connect AI assistants</h2></div><p class="muted">Let ChatGPT, Claude, or another compatible assistant search and read your Later Gator library. Each assistant asks for your approval and cannot change anything.</p><div class="connection-actions"><button id="connectChatGpt" type="button">Connect ChatGPT</button><button id="connectClaude" type="button">Connect Claude</button><button class="secondary" type="button" data-how-to="mcp">Setup help</button></div><p id="mcpConnectionStatus" class="status" role="status"></p><div id="mcpConnections" class="ai-connection-list" aria-live="polite"><p class="muted">Loading connected assistants…</p></div><details class="advanced-connection"><summary>Advanced connection details</summary><p class="muted">Use this address with any OAuth-capable MCP client.</p><div class="endpoint-row"><code id="mcpEndpoint"></code><button id="copyMcpEndpoint" class="secondary" type="button">Copy address</button></div></details></section>
+        <section class="panel panel-flow span-two"><div><p class="eyebrow">MCP</p><h2>Connect Codex or Claude Code</h2></div><p class="muted">Copy one command into your terminal. It installs Later Gator, opens your browser for Cloudflare sign-in when needed, and asks you to approve read-only access. No developer mode or secret token is required.</p><div class="connection-code-panel mcp-command-panel"><div class="connection-secret"><p class="eyebrow">Codex</p><pre id="codexMcpCommand" class="secret-output" tabindex="0"></pre><button id="copyCodexMcpCommand" type="button">Copy Codex command</button></div><div class="connection-secret"><p class="eyebrow">Claude Code</p><pre id="claudeMcpCommand" class="secret-output" tabindex="0"></pre><button id="copyClaudeMcpCommand" type="button">Copy Claude command</button></div></div><div class="connection-actions"><button class="secondary" type="button" data-how-to="mcp">Setup help</button></div><p id="mcpConnectionStatus" class="status" role="status"></p><div id="mcpConnections" class="ai-connection-list" aria-live="polite"><p class="muted">Loading connected assistants…</p></div><details class="advanced-connection"><summary>Advanced connection details</summary><p class="muted">Use this address with any OAuth-capable remote MCP client.</p><div class="endpoint-row"><code id="mcpEndpoint"></code><button id="copyMcpEndpoint" class="secondary" type="button">Copy address</button></div></details></section>
         <section class="panel panel-flow span-two danger-zone"><p class="eyebrow">Testing tools</p><h2>Reset Later Gator</h2><p>Delete every bookmark, tag, thumbnail, import, connection, provider credential, and preference, then return this installation to setup. Your Cloudflare owner binding is kept.</p><button id="resetApplicationButton" class="danger" type="button">Delete everything and restart setup</button></section>
       </div>
       <p id="settingsStatus" class="status"></p>

@@ -17,9 +17,11 @@ const config: ControlConfig = {
   environment: "test",
   publicOrigin: "https://latergator.test",
   oidcIssuer: "https://dash.cloudflare.com",
+  accessTeamDomain: "https://later-gator-test.cloudflareaccess.com",
+  accessAudience: "a".repeat(64),
   sessionTtlSeconds: 43_200,
-  identityClientId: "test-identity-client",
-  identityClientSecret: "test-identity-secret",
+  installerClientId: "test-identity-client",
+  installerClientSecret: "test-identity-secret",
   installerTokenEncryptionKey: ENCRYPTION_KEY,
 };
 

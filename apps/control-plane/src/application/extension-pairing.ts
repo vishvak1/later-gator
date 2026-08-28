@@ -88,7 +88,13 @@ export async function completeExtensionPairing(
   if (request === null) throw new ControlPlaneError("extension_request_rejected", 401);
   extensionRedirectUri(config, request.redirectUri);
   const installation = await findPairableInstallation(database, ownerId);
-  if (installation === null) throw new ControlPlaneError("extension_installation_unavailable", 409);
+  if (installation === null) {
+    const unavailable = new URL(request.redirectUri);
+    unavailable.searchParams.set("error", "installation_required");
+    unavailable.searchParams.set("device_id", request.extensionDeviceId);
+    unavailable.searchParams.set("state", request.extensionState);
+    return unavailable.toString();
+  }
   const jti = crypto.randomUUID();
   const grant = await issuePairingGrant(
     parseOwnerAssertionKeyRing(signingKeys),

@@ -1,6 +1,7 @@
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { upsertOwner } from "../src/adapters/control-repository";
+import { createAuthorizedInstallation } from "../src/adapters/installation-repository";
 import {
   completeInstallerAuthorization,
   installerScopes,
@@ -15,6 +16,7 @@ import {
 
 const ACCOUNT_ID = "a".repeat(32);
 const CLOUDFLARE_USER_ID = "cloudflare-user-0001";
+const CLOUDFLARE_EMAIL = "owner@example.test";
 const ENCRYPTION_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 const config: ControlConfig = {
@@ -22,9 +24,11 @@ const config: ControlConfig = {
   environment: "test",
   publicOrigin: "https://latergator.test",
   oidcIssuer: "https://dash.cloudflare.com",
+  accessTeamDomain: "https://later-gator-test.cloudflareaccess.com",
+  accessAudience: "a".repeat(64),
   sessionTtlSeconds: 43_200,
-  identityClientId: "test-identity-client",
-  identityClientSecret: "test-identity-secret",
+  installerClientId: "test-identity-client",
+  installerClientSecret: "test-identity-secret",
   installerTokenEncryptionKey: ENCRYPTION_KEY,
 };
 
@@ -54,7 +58,7 @@ function cloudflareFetcher(grantedScopes: string[] = installerScopes("kv")) {
     if (url.pathname === "/client/v4/user") {
       return Promise.resolve(Response.json({
         success: true,
-        result: { id: CLOUDFLARE_USER_ID, email: "discard@example.test" },
+        result: { id: CLOUDFLARE_USER_ID, email: CLOUDFLARE_EMAIL },
       }));
     }
     if (url.pathname === "/client/v4/accounts") {
@@ -75,7 +79,6 @@ beforeEach(async () => {
     env.CONTROL_DB.prepare("DELETE FROM oauth_installer_requests"),
     env.CONTROL_DB.prepare("DELETE FROM control_audit_events"),
     env.CONTROL_DB.prepare("DELETE FROM control_sessions"),
-    env.CONTROL_DB.prepare("DELETE FROM oauth_login_requests"),
     env.CONTROL_DB.prepare("DELETE FROM owners"),
   ]);
 });
@@ -84,7 +87,7 @@ describe("purpose-specific installer authorization", () => {
   it("requests only the KV subset and stores renewable credentials only as ciphertext", async () => {
     const ownerId = await upsertOwner(
       env.CONTROL_DB,
-      await sha256Base64Url(`cloudflare-user\u0000${CLOUDFLARE_USER_ID}`),
+      await sha256Base64Url(`cloudflare-account-email\u0000${CLOUDFLARE_EMAIL}`),
       100,
     );
     const fetcher = cloudflareFetcher();
@@ -162,7 +165,7 @@ describe("purpose-specific installer authorization", () => {
   it("rejects a token missing any immutable requested scope", async () => {
     const ownerId = await upsertOwner(
       env.CONTROL_DB,
-      await sha256Base64Url(`cloudflare-user\u0000${CLOUDFLARE_USER_ID}`),
+      await sha256Base64Url(`cloudflare-account-email\u0000${CLOUDFLARE_EMAIL}`),
       100,
     );
     const startFetcher = cloudflareFetcher();
@@ -186,6 +189,30 @@ describe("purpose-specific installer authorization", () => {
       cloudflareFetcher(installerScopes("kv").filter((scope) => scope !== "d1.write")),
       200,
     )).rejects.toMatchObject({ code: "installer_scope_rejected" });
+  });
+
+  it("allows exactly one Later Gator installation claim per Cloudflare account", async () => {
+    const firstOwner = await upsertOwner(env.CONTROL_DB, "first-access-owner", 100);
+    const secondOwner = await upsertOwner(env.CONTROL_DB, "second-access-owner", 100);
+    await createAuthorizedInstallation(env.CONTROL_DB, {
+      installationId: crypto.randomUUID(),
+      ownerId: firstOwner,
+      accountId: ACCOUNT_ID,
+      storageMode: "kv",
+      requestedPlanJson: "{}",
+      nowSeconds: 100,
+    });
+    await expect(createAuthorizedInstallation(env.CONTROL_DB, {
+      installationId: crypto.randomUUID(),
+      ownerId: secondOwner,
+      accountId: ACCOUNT_ID,
+      storageMode: "kv",
+      requestedPlanJson: "{}",
+      nowSeconds: 101,
+    })).rejects.toMatchObject({
+      code: "installer_account_already_linked",
+      status: 409,
+    });
   });
 });
 

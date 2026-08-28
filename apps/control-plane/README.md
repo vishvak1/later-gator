@@ -4,10 +4,13 @@ This Worker owns Cloudflare identity sessions, installation-management metadata,
 and public signing keys. It never receives bookmark content, thumbnails, AI
 provider keys, prompts, or responses.
 
-Production requires three secrets:
+Production requires six secrets:
 
 - `CLOUDFLARE_IDENTITY_CLIENT_ID`;
 - `CLOUDFLARE_IDENTITY_CLIENT_SECRET`; and
+- `CLOUDFLARE_ACCESS_TEAM_DOMAIN`, the exact `https://<team>.cloudflareaccess.com` issuer;
+- `CLOUDFLARE_ACCESS_AUD`, the audience tag for the protected `/auth/access` application;
+- `INSTALLER_TOKEN_ENCRYPTION_KEY`; and
 - `OWNER_ASSERTION_SIGNING_KEYS`, a bounded JSON ES256 key ring whose
   `activeKid` selects one private P-256 key and whose retained keys publish
   through `/.well-known/later-gator-jwks.json` for rotation-safe verification.
@@ -27,10 +30,9 @@ dedicated commands below and the main-branch workflow.
 
 ## Present scope
 
-- Cloudflare OpenID Connect identity login using Authorization Code, state,
-  nonce, and S256 PKCE;
-- RS256 ID-token verification against Cloudflare's pinned discovery/JWKS
-  endpoints;
+- Cloudflare Access login through the Cloudflare identity provider;
+- RS256 Access application-token verification against the configured team
+  issuer, application audience, and rotating remote JWKS;
 - opaque, hashed control-plane sessions with same-origin CSRF logout;
 - short-lived installation-bound ES256 owner assertions and a rotation-safe
   public JWKS endpoint;
@@ -44,28 +46,39 @@ traffic.
 
 ## Development setup
 
-Register a private development OAuth client in Cloudflare with the exact HTTPS
-callback URL that serves the development Worker:
+Create a Cloudflare Access self-hosted application for the development hostname
+with the exact protected path `/auth/access`. Use an Allow policy for everyone
+who successfully authenticates, select only the Cloudflare identity provider,
+and disable **Restrict to account members** so owners of other Cloudflare
+accounts can sign in. Copy its team domain and Application Audience tag into
+the Worker secrets named above.
+
+Register a private development OAuth client only for installer authorization,
+with this exact callback:
 
 ```text
-https://later-gator-control-plane-dev.vishvak-v.workers.dev/auth/cloudflare/callback
+https://later-gator-control-plane-dev.vishvak-v.workers.dev/install/cloudflare/callback
 ```
 
-The public callback is
-`https://latergator.app/auth/cloudflare/callback`. The authoritative identity,
-installer, and Chrome client/redirect inventory is in
+The production installer callback is
+`https://latergator.app/install/cloudflare/callback`. The authoritative Access,
+installer, and Chrome redirect inventory is in
 [`docs/developer-guide.md`](../../docs/developer-guide.md).
 
-The private development OAuth client is used for two purpose-separated flows:
-identity requests only `user-details.read`, while installation and managed
-updates request the declared Cloudflare resource-management scopes. The control
-plane never treats identity authorization as deployment authorization.
+The OAuth client is used only for installation and managed updates. Its
+`user-details.read` scope binds installer consent to the verified Access email;
+the remaining scopes manage the declared Cloudflare resources. Ordinary login
+never opens an OAuth consent screen and never returns an OAuth token to Later
+Gator.
 
 Create `apps/control-plane/.dev.vars` locally and do not commit it:
 
 ```dotenv
 CLOUDFLARE_IDENTITY_CLIENT_ID="..."
 CLOUDFLARE_IDENTITY_CLIENT_SECRET="..."
+CLOUDFLARE_ACCESS_TEAM_DOMAIN="https://<team>.cloudflareaccess.com"
+CLOUDFLARE_ACCESS_AUD="..."
+INSTALLER_TOKEN_ENCRYPTION_KEY="..."
 OWNER_ASSERTION_SIGNING_KEYS='{"activeKid":"...","keys":[...]}'
 ```
 
@@ -80,9 +93,10 @@ npm run db:init:local --workspace @later-gator/control-plane
 npm run dev --workspace @later-gator/control-plane
 ```
 
-Local tests use fake provider responses and test-only key material. Live OAuth
-acceptance uses the registered HTTPS development Worker callback; never place
-client secrets in `wrangler.jsonc` or a shell command.
+Local tests use signed fake Access tokens, fake provider responses, and
+test-only key material. Live acceptance requires both the Access path and the
+registered installer callback; never place client secrets in `wrangler.jsonc`
+or a shell command.
 
 `wrangler.dev.jsonc` isolates the connected test-account Worker, origin, and D1
 name from the future production configuration. The deliberately non-validation

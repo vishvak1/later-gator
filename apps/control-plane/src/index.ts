@@ -1,11 +1,10 @@
 import {
   authenticateControlSession,
   authorizeControlMutation,
-  completeIdentityLogin,
+  completeAccessLogin,
   controlCsrfCookieMatches,
   deleteControlIdentityMetadata,
   logoutControlSession,
-  startIdentityLogin,
 } from "./application/identity";
 import {
   completeInstallerAuthorization,
@@ -13,6 +12,10 @@ import {
 } from "./application/installer";
 import { provisionOwnerInstallation } from "./application/provisioning";
 import { cleanupOwnerInstallation } from "./application/cleanup";
+import {
+  reconcileOwnerRuntime,
+  repairMissingOwnerRuntime,
+} from "./application/reconciliation";
 import { updateOwnerRuntime } from "./application/updates";
 import {
   completeRuntimeLogin,
@@ -40,7 +43,6 @@ import {
   EXTENSION_REQUEST_COOKIE,
   expireCookie,
   INSTALLER_STATE_COOKIE,
-  OAUTH_STATE_COOKIE,
   readCookie,
   RUNTIME_LOGIN_COOKIE,
   serializeCookie,
@@ -90,12 +92,12 @@ function isSameOriginMutation(request: Request, config: ControlConfig): boolean 
     new URL(request.url).origin === config.publicOrigin;
 }
 
-/** Validates a short OAuth callback parameter without retaining provider error text. */
+/** Validates a short installer callback parameter without retaining provider error text. */
 function callbackParameter(url: URL, name: "code" | "state"): string {
   const value = url.searchParams.get(name);
   const maximumLength = name === "state" ? 256 : 8192;
   if (value === null || value.length < 8 || value.length > maximumLength) {
-    throw new ControlPlaneError("identity_callback_rejected", 401);
+    throw new ControlPlaneError("installer_callback_rejected", 401);
   }
   return value;
 }
@@ -110,6 +112,7 @@ async function handleHome(request: Request, env: Env, config: ControlConfig): Pr
   if (session === null || !await controlCsrfCookieMatches(session, csrfToken)) {
     return expiredControlSession(config);
   }
+  await reconcileOwnerRuntime(env.CONTROL_DB, config, session.ownerId);
   const [installation, releases] = await Promise.all([
     findOwnerInstallationSummary(env.CONTROL_DB, session.ownerId),
     findOwnerReleaseHistory(env.CONTROL_DB, session.ownerId),
@@ -126,41 +129,14 @@ function expiredControlSession(config: ControlConfig): Response {
   return response;
 }
 
-/** Starts identity-only Cloudflare OAuth and stores no deployment authorization. */
-async function handleIdentityStart(env: Env, config: ControlConfig, requestId: string): Promise<Response> {
-  const login = await startIdentityLogin(env.CONTROL_DB, config);
-  const response = redirect(login.location, 302);
-  response.headers.append(
-    "set-cookie",
-    serializeCookie(OAUTH_STATE_COOKIE, login.state, {
-      httpOnly: true,
-      maxAge: 600,
-      sameSite: "Lax",
-      secure: secureCookies(config),
-    }),
-  );
-  logControlEvent("identity_login_started", requestId, "redirected");
-  return response;
-}
-
-/** Completes the identity callback and creates a local opaque session. */
-async function handleIdentityCallback(
+/** Converts the Cloudflare Access assertion into a local opaque session. */
+async function handleAccessLogin(
   request: Request,
   env: Env,
   config: ControlConfig,
   requestId: string,
 ): Promise<Response> {
-  const url = new URL(request.url);
-  if (url.searchParams.has("error")) {
-    throw new ControlPlaneError("identity_callback_rejected", 401);
-  }
-  const cookieState = readCookie(request, OAUTH_STATE_COOKIE);
-  if (cookieState === null) throw new ControlPlaneError("identity_callback_rejected", 401);
-  const login = await completeIdentityLogin(env.CONTROL_DB, config, {
-    code: callbackParameter(url, "code"),
-    state: callbackParameter(url, "state"),
-    cookieState,
-  });
+  const login = await completeAccessLogin(env.CONTROL_DB, config, request);
   const secure = secureCookies(config);
   const response = redirect("/");
   response.headers.append(
@@ -181,7 +157,6 @@ async function handleIdentityCallback(
       secure,
     }),
   );
-  response.headers.append("set-cookie", expireCookie(OAUTH_STATE_COOKIE, secure));
   logControlEvent("identity_login_succeeded", requestId, "session_created");
   const extensionRequest = readCookie(request, EXTENSION_REQUEST_COOKIE);
   const runtimeRequest = readCookie(request, RUNTIME_LOGIN_COOKIE);
@@ -209,7 +184,7 @@ async function handleRuntimeLoginStart(
   if (session !== null && session.ownerId === pending.ownerId) {
     response = redirect("/runtime/login/resume", 302);
   } else {
-    response = await handleIdentityStart(env, config, requestId);
+    response = redirect("/auth/access", 302);
   }
   response.headers.append(
     "set-cookie",
@@ -271,6 +246,7 @@ async function handleExtensionConnect(
     ? null
     : await authenticateControlSession(env.CONTROL_DB, sessionToken);
   if (session !== null) {
+    await reconcileOwnerRuntime(env.CONTROL_DB, config, session.ownerId);
     const destination = await completeExtensionPairing(
       env.CONTROL_DB,
       config,
@@ -281,18 +257,8 @@ async function handleExtensionConnect(
     logControlEvent("extension_pairing_issued", requestId, "existing_session");
     return redirect(destination, 302);
   }
-  const login = await startIdentityLogin(env.CONTROL_DB, config);
-  const response = redirect(login.location, 302);
+  const response = redirect("/auth/access", 302);
   const secure = secureCookies(config);
-  response.headers.append(
-    "set-cookie",
-    serializeCookie(OAUTH_STATE_COOKIE, login.state, {
-      httpOnly: true,
-      maxAge: 600,
-      sameSite: "Lax",
-      secure,
-    }),
-  );
   response.headers.append(
     "set-cookie",
     serializeCookie(EXTENSION_REQUEST_COOKIE, requestToken, {
@@ -320,6 +286,7 @@ async function handleExtensionConnectResume(
   }
   const session = await authenticateControlSession(env.CONTROL_DB, sessionToken);
   if (session === null) throw new ControlPlaneError("session_invalid", 403);
+  await reconcileOwnerRuntime(env.CONTROL_DB, config, session.ownerId);
   const destination = await completeExtensionPairing(
     env.CONTROL_DB,
     config,
@@ -334,6 +301,47 @@ async function handleExtensionConnectResume(
   );
   logControlEvent("extension_pairing_issued", requestId, "identity_completed");
   return response;
+}
+
+/** Revalidates a runtime immediately before following its control-plane link. */
+async function handleRuntimeOpen(
+  request: Request,
+  env: Env,
+  config: ControlConfig,
+): Promise<Response> {
+  const sessionToken = readCookie(request, SESSION_COOKIE);
+  const csrfToken = readCookie(request, CSRF_COOKIE);
+  if (sessionToken === null || csrfToken === null) return expiredControlSession(config);
+  const session = await authenticateControlSession(env.CONTROL_DB, sessionToken);
+  if (session === null || !await controlCsrfCookieMatches(session, csrfToken)) {
+    return expiredControlSession(config);
+  }
+  await reconcileOwnerRuntime(env.CONTROL_DB, config, session.ownerId);
+  const installation = await findOwnerInstallationSummary(env.CONTROL_DB, session.ownerId);
+  if (
+    installation?.status !== "ready" ||
+    installation.runtimeHealthStatus !== "ready" ||
+    installation.workerOrigin === null
+  ) return redirect("/");
+  return redirect(new URL("/dashboard", installation.workerOrigin).toString(), 302);
+}
+
+/** Recreates a runtime Worker only after Cloudflare confirms it is missing. */
+async function handleRuntimeRepair(
+  request: Request,
+  env: Env,
+  config: ControlConfig,
+  requestId: string,
+): Promise<Response> {
+  const ownerId = await authenticatedFormOwner(request, env, config);
+  await repairMissingOwnerRuntime(
+    env.CONTROL_DB,
+    env.RELEASE_ARTIFACTS,
+    config,
+    ownerId,
+  );
+  logControlEvent("runtime_missing_repaired", requestId, "recreated");
+  return redirect("/");
 }
 
 /** Enforces same-origin CSRF before revoking the local control-plane session. */
@@ -621,12 +629,12 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/runtime/login/resume" && request.method === "GET") {
       return await handleRuntimeLoginResume(request, env, config, requestId);
     }
-    if (url.pathname === "/" && request.method === "GET") return await handleHome(request, env, config);
-    if (url.pathname === "/auth/cloudflare" && request.method === "GET") {
-      return await handleIdentityStart(env, config, requestId);
+    if (url.pathname === "/runtime/open" && request.method === "GET") {
+      return await handleRuntimeOpen(request, env, config);
     }
-    if (url.pathname === "/auth/cloudflare/callback" && request.method === "GET") {
-      return await handleIdentityCallback(request, env, config, requestId);
+    if (url.pathname === "/" && request.method === "GET") return await handleHome(request, env, config);
+    if (url.pathname === "/auth/access" && request.method === "GET") {
+      return await handleAccessLogin(request, env, config, requestId);
     }
     if (url.pathname === "/auth/logout" && request.method === "POST") {
       return await handleLogout(request, env, config, requestId);
@@ -643,6 +651,9 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
     if (url.pathname === "/install/cleanup" && request.method === "POST") {
       return await handleInstallationCleanup(request, env, config, requestId);
     }
+    if (url.pathname === "/install/repair" && request.method === "POST") {
+      return await handleRuntimeRepair(request, env, config, requestId);
+    }
     if (url.pathname === "/account/delete" && request.method === "POST") {
       return await handleIdentityDeletion(request, env, config, requestId);
     }
@@ -656,14 +667,15 @@ async function handleRequest(request: Request, env: Env): Promise<Response> {
         "/extension/connect/resume",
         "/runtime/login",
         "/runtime/login/resume",
-        "/auth/cloudflare",
-        "/auth/cloudflare/callback",
+        "/runtime/open",
+        "/auth/access",
         "/auth/logout",
         "/account/delete",
         "/install/authorize",
         "/install/cloudflare/callback",
         "/install/provision",
         "/install/cleanup",
+        "/install/repair",
       ].includes(url.pathname)
     ) {
       throw new ControlPlaneError("method_not_allowed", 405);

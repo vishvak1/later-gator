@@ -1,3 +1,5 @@
+import { ControlPlaneError } from "../domain/errors";
+
 export type ThumbnailStorageMode = "kv" | "r2";
 
 export interface StoredInstallerRequest {
@@ -15,6 +17,7 @@ export interface InstallationSummary {
   desiredRelease: string;
   updateStatus: string;
   workerOrigin: string | null;
+  runtimeHealthStatus: "unknown" | "ready" | "unavailable";
   authorizationActive: boolean;
 }
 
@@ -82,7 +85,7 @@ export async function findOwnerInstallationSummary(
 ): Promise<InstallationSummary | null> {
   const detailed = await database.prepare(
     `SELECT i.status, i.storage_mode, i.safe_error_code, i.installed_release,
-            i.desired_release, i.update_status, m.worker_origin,
+            i.desired_release, i.update_status, m.worker_origin, m.health_status,
             EXISTS(SELECT 1 FROM installer_authorizations a
               WHERE a.owner_id = i.owner_id AND a.revoked_at IS NULL) AS authorization_active
        FROM installations i
@@ -96,6 +99,7 @@ export async function findOwnerInstallationSummary(
     desired_release: string;
     update_status: string;
     worker_origin: string | null;
+    health_status: "unknown" | "ready" | "unavailable" | null;
     authorization_active: number;
   }>();
   if (detailed === null || (detailed.storage_mode !== "kv" && detailed.storage_mode !== "r2")) {
@@ -109,8 +113,57 @@ export async function findOwnerInstallationSummary(
     desiredRelease: detailed.desired_release,
     updateStatus: detailed.update_status,
     workerOrigin: detailed.worker_origin,
+    runtimeHealthStatus: detailed.health_status ?? "unknown",
     authorizationActive: detailed.authorization_active === 1,
   };
+}
+
+/** Loads the minimum account and Worker inventory required for live reconciliation. */
+export async function findOwnerRuntimeInventory(
+  database: D1Database,
+  ownerId: string,
+): Promise<{
+  installationId: string;
+  accountId: string;
+  workerName: string;
+} | null> {
+  const row = await database.prepare(
+    `SELECT i.id, i.account_id, r.resource_name
+       FROM installations i
+       JOIN installation_resources r
+         ON r.installation_id = i.id AND r.resource_type = 'worker' AND r.status = 'active'
+      WHERE i.owner_id = ? AND i.status = 'ready'`,
+  ).bind(ownerId).first<{ id: string; account_id: string; resource_name: string }>();
+  return row === null ? null : {
+    installationId: row.id,
+    accountId: row.account_id,
+    workerName: row.resource_name,
+  };
+}
+
+/** Records only whether the account-owned Worker still exists in Cloudflare. */
+export async function setRuntimeWorkerAvailability(
+  database: D1Database,
+  installationId: string,
+  available: boolean,
+  nowSeconds: number,
+): Promise<void> {
+  await database.batch([
+    database.prepare(
+      `UPDATE installation_runtime_metadata
+          SET health_status = ?, updated_at = ? WHERE installation_id = ?`,
+    ).bind(available ? "ready" : "unavailable", nowSeconds, installationId),
+    database.prepare(
+      `UPDATE installations
+          SET safe_error_code = CASE
+                WHEN ? = 1 AND safe_error_code = 'runtime_worker_missing' THEN NULL
+                WHEN ? = 0 THEN 'runtime_worker_missing'
+                ELSE safe_error_code
+              END,
+              updated_at = ?
+        WHERE id = ?`,
+    ).bind(available ? 1 : 0, available ? 1 : 0, nowSeconds, installationId),
+  ]);
 }
 
 /** Resolves one ready installation without exposing unrelated owner metadata. */
@@ -289,6 +342,47 @@ export async function findOwnerSubjectHash(
   return row?.subject_hash ?? null;
 }
 
+/** Transfers one pre-Access installation only when the same Cloudflare user reauthorizes it. */
+export async function adoptLegacyCloudflareInstallation(
+  database: D1Database,
+  currentOwnerId: string,
+  legacySubjectHash: string,
+  accountId: string,
+): Promise<void> {
+  const legacy = await database.prepare(
+    `SELECT o.id, i.account_id AS installation_account_id,
+            a.account_id AS authorization_account_id
+       FROM owners o
+       LEFT JOIN installations i ON i.owner_id = o.id
+       LEFT JOIN installer_authorizations a ON a.owner_id = o.id
+      WHERE o.subject_hash = ?`,
+  ).bind(legacySubjectHash).first<{
+    id: string;
+    installation_account_id: string | null;
+    authorization_account_id: string | null;
+  }>();
+  if (legacy === null || legacy.id === currentOwnerId) return;
+  if (
+    (legacy.installation_account_id !== null && legacy.installation_account_id !== accountId) ||
+    (legacy.authorization_account_id !== null && legacy.authorization_account_id !== accountId)
+  ) {
+    throw new ControlPlaneError("installer_account_already_linked", 409);
+  }
+  const currentInstallation = await database.prepare(
+    "SELECT id FROM installations WHERE owner_id = ?",
+  ).bind(currentOwnerId).first<{ id: string }>();
+  if (currentInstallation !== null && legacy.installation_account_id !== null) {
+    throw new ControlPlaneError("installer_account_already_linked", 409);
+  }
+  await database.batch([
+    database.prepare("DELETE FROM runtime_login_requests WHERE owner_id = ?").bind(legacy.id),
+    database.prepare("DELETE FROM extension_pairing_grants WHERE owner_id = ?").bind(legacy.id),
+    database.prepare("DELETE FROM installer_authorizations WHERE owner_id = ?").bind(legacy.id),
+    database.prepare("UPDATE installations SET owner_id = ? WHERE owner_id = ?")
+      .bind(currentOwnerId, legacy.id),
+  ]);
+}
+
 /** Stores one encrypted renewable authorization and its safe management metadata. */
 export async function storeInstallerAuthorization(
   database: D1Database,
@@ -364,6 +458,12 @@ export async function createAuthorizedInstallation(
       ) VALUES (?, ?, 'pending', ?)`,
     ).bind(installationId, step, input.nowSeconds)));
   };
+  const accountOwner = await database.prepare(
+    "SELECT owner_id FROM installations WHERE account_id = ?",
+  ).bind(input.accountId).first<{ owner_id: string }>();
+  if (accountOwner !== null && accountOwner.owner_id !== input.ownerId) {
+    throw new ControlPlaneError("installer_account_already_linked", 409);
+  }
   const existing = await database
     .prepare(
       `SELECT id, account_id, storage_mode, requested_plan_json
@@ -595,7 +695,11 @@ export async function reopenProvisioningAfterMissingWorker(
           SET status = 'authorized', current_step = 'worker_upload', safe_error_code = NULL,
               installed_release = NULL, current_version_id = NULL, update_status = 'idle',
               updated_at = ?
-        WHERE id = ? AND status <> 'ready'`,
+        WHERE id = ?`,
+    ).bind(nowSeconds, installationId),
+    database.prepare(
+      `UPDATE installation_runtime_metadata
+          SET health_status = 'unknown', updated_at = ? WHERE installation_id = ?`,
     ).bind(nowSeconds, installationId),
   ]);
 }

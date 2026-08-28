@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { authenticateCloudflareAccess } from "../src/adapters/cloudflare-access";
 import {
-  buildCloudflareAuthorizationUrl,
   discoverCloudflareIdentity,
-  fetchCloudflareUserId,
+  fetchCloudflareUserDetails,
   type CloudflareDiscovery,
   type Fetcher,
 } from "../src/adapters/cloudflare-identity";
@@ -13,9 +14,11 @@ const config: ControlConfig = {
   environment: "test",
   publicOrigin: "https://latergator.test",
   oidcIssuer: "https://dash.cloudflare.com",
+  accessTeamDomain: "https://later-gator-test.cloudflareaccess.com",
+  accessAudience: "a".repeat(64),
   sessionTtlSeconds: 43_200,
-  identityClientId: "test-identity-client",
-  identityClientSecret: "test-identity-secret",
+  installerClientId: "test-identity-client",
+  installerClientSecret: "test-identity-secret",
   installerTokenEncryptionKey: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
 };
 
@@ -67,24 +70,7 @@ describe("Cloudflare identity adapter", () => {
     expect(calls).toBe(2);
   });
 
-  it("requests only User Details Read and includes state plus S256 PKCE", () => {
-    const url = buildCloudflareAuthorizationUrl(
-      discovery,
-      config,
-      "state-value",
-      "challenge-value",
-    );
-    expect(url.origin).toBe("https://dash.cloudflare.com");
-    expect(url.searchParams.get("scope")).toBe("user-details.read");
-    expect(url.searchParams.get("state")).toBe("state-value");
-    expect(url.searchParams.has("nonce")).toBe(false);
-    expect(url.searchParams.get("code_challenge_method")).toBe("S256");
-    expect(url.search).not.toContain("Workers Scripts");
-    expect(url.search).not.toContain("D1");
-    expect(url.search).not.toContain("R2");
-  });
-
-  it("extracts only the stable user ID from a bounded Cloudflare API response", async () => {
+  it("extracts only the installer identity from a bounded Cloudflare API response", async () => {
     let requestUrl = "";
     let authorization = "";
     let redirectMode: RequestRedirect | undefined;
@@ -97,16 +83,17 @@ describe("Cloudflare identity adapter", () => {
           success: true,
           result: {
             id: "stable-cloudflare-user-id",
-            email: "must-not-be-returned@example.test",
+            email: "Owner@Example.test",
             organizations: [{ id: "must-not-be-retained" }],
           },
         }),
       );
     };
 
-    await expect(fetchCloudflareUserId("temporary-access-token", fetcher)).resolves.toBe(
-      "stable-cloudflare-user-id",
-    );
+    await expect(fetchCloudflareUserDetails("temporary-access-token", fetcher)).resolves.toEqual({
+      id: "stable-cloudflare-user-id",
+      email: "owner@example.test",
+    });
     expect(requestUrl).toBe("https://api.cloudflare.com/client/v4/user");
     expect(authorization).toBe("Bearer temporary-access-token");
     expect(redirectMode).toBe("manual");
@@ -119,7 +106,42 @@ describe("Cloudflare identity adapter", () => {
         }),
       );
     await expect(
-      fetchCloudflareUserId("temporary-access-token", redirectFetcher),
-    ).rejects.toMatchObject({ code: "identity_callback_rejected" });
+      fetchCloudflareUserDetails("temporary-access-token", redirectFetcher),
+    ).rejects.toMatchObject({ code: "installer_callback_rejected" });
+  });
+
+  it("accepts only a signed Access application token for the configured audience", async () => {
+    const keys = await generateKeyPair("RS256", { extractable: true });
+    const publicKey = await exportJWK(keys.publicKey);
+    Object.assign(publicKey, { alg: "RS256", kid: "access-key", use: "sig" });
+    const assertion = await new SignJWT({
+      email: "Owner@Example.test",
+      sub: "7335d417-61da-459d-899c-0a01c76a2f94",
+      type: "app",
+    })
+      .setProtectedHeader({ alg: "RS256", kid: "access-key" })
+      .setIssuer(config.accessTeamDomain)
+      .setAudience(config.accessAudience)
+      .setIssuedAt()
+      .setExpirationTime("5m")
+      .sign(keys.privateKey);
+    const fetcher: Fetcher = (input) => {
+      expect(new Request(input).url).toBe(
+        "https://later-gator-test.cloudflareaccess.com/cdn-cgi/access/certs",
+      );
+      return Promise.resolve(Response.json({ keys: [publicKey] }));
+    };
+    const request = new Request("https://latergator.test/auth/access", {
+      headers: { "cf-access-jwt-assertion": assertion },
+    });
+    await expect(authenticateCloudflareAccess(request, config, fetcher)).resolves.toEqual({
+      email: "owner@example.test",
+      subject: "7335d417-61da-459d-899c-0a01c76a2f94",
+    });
+
+    const forged = new Request(request, { headers: { "cf-access-jwt-assertion": `${assertion}x` } });
+    await expect(authenticateCloudflareAccess(forged, config, fetcher)).rejects.toMatchObject({
+      code: "identity_token_invalid",
+    });
   });
 });

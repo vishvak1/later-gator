@@ -96,6 +96,9 @@ async function connectWithCloudflare() {
   }
   if (result.searchParams.get("state") !== state) throw new Error("Cloudflare connection state did not match.");
   if (result.searchParams.get("device_id") !== deviceId) throw new Error("Cloudflare returned another device.");
+  if (result.searchParams.get("error") === "installation_required") {
+    throw new Error("Open Later Gator control plane and create your first Later Gator library.");
+  }
   const deployment = connectionOrigin(result.searchParams.get("deployment") || "");
   const grant = result.searchParams.get("grant");
   if (grant === null || grant.length < 32 || grant.length > 8192) {

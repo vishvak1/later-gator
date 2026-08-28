@@ -1,58 +1,7 @@
-export interface StoredLoginRequest {
-  codeVerifier: string;
-  returnPath: "/";
-}
-
 export interface ControlSessionRecord {
   ownerId: string;
   csrfHash: string;
   expiresAt: number;
-}
-
-/** Stores a short-lived OAuth request before redirecting to Cloudflare. */
-export async function storeLoginRequest(
-  database: D1Database,
-  input: {
-    stateHash: string;
-    codeVerifier: string;
-    returnPath: "/";
-    createdAt: number;
-    expiresAt: number;
-  },
-): Promise<void> {
-  await database
-    .prepare(
-      `INSERT INTO oauth_login_requests
-       (state_hash, code_verifier, return_path, created_at, expires_at)
-       VALUES (?, ?, ?, ?, ?)`,
-    )
-    .bind(
-      input.stateHash,
-      input.codeVerifier,
-      input.returnPath,
-      input.createdAt,
-      input.expiresAt,
-    )
-    .run();
-}
-
-/** Atomically consumes an OAuth request so a callback cannot be replayed. */
-export async function consumeLoginRequest(
-  database: D1Database,
-  stateHash: string,
-  nowSeconds: number,
-): Promise<StoredLoginRequest | null> {
-  const row = await database
-    .prepare(
-      `UPDATE oauth_login_requests
-       SET consumed_at = ?
-       WHERE state_hash = ? AND consumed_at IS NULL AND expires_at >= ?
-       RETURNING code_verifier, return_path`,
-    )
-    .bind(nowSeconds, stateHash, nowSeconds)
-    .first<{ code_verifier: string; return_path: string }>();
-  if (row?.return_path !== "/") return null;
-  return { codeVerifier: row.code_verifier, returnPath: "/" };
 }
 
 /** Creates or updates the opaque owner record for a stable Cloudflare subject hash. */

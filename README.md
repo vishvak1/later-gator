@@ -112,6 +112,10 @@ remain on the personal Worker; the control plane participates only in owner
 authentication. Settings lists each active grant with last-used activity and an
 independent Disconnect action.
 
+The generated Claude command targets current Claude Code releases that expose
+`claude mcp login`. Older releases can complete the same OAuth flow from `/mcp`
+inside Claude Code after adding the server.
+
 ## AI providers and usage
 
 Cloudflare Workers AI is the default. OpenAI and Anthropic credentials can be

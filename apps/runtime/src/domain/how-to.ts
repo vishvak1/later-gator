@@ -58,10 +58,11 @@ export const HOW_TO_PANELS: readonly { id: string; kicker: string; title: string
       </ol>
       <h3>Claude Code</h3>
       <ol class="setup-steps">
-        <li><strong>Copy the Claude command.</strong><span>Paste it into a terminal that has Claude Code installed. The user scope makes the server available across your projects.</span></li>
+        <li><strong>Copy the Claude command.</strong><span>Paste it into a terminal with the current Claude Code CLI. The user scope makes the server available across your projects.</span></li>
         <li><strong>Finish browser login.</strong><span>Sign in through Cloudflare if needed and approve read-only access; you do not need to run a separate login command.</span></li>
         <li><strong>Confirm it.</strong><span>Run <code>claude mcp list</code>, then ask Claude Code to get your Later Gator library status.</span></li>
       </ol>
+      <p class="muted">If an older Claude Code version does not recognize <code>claude mcp login</code>, update Claude Code or open Claude Code and use <code>/mcp</code> to finish authentication.</p>
       <p class="muted"><strong>If the browser was signed out:</strong> the same command takes you through Cloudflare sign-in and returns to the pending MCP approval. If it expired, run the copied command again.</p>
       <p class="muted"><strong>To remove access:</strong> return to Settings and select Disconnect beside that client. Other connected clients keep working.</p>`,
   },

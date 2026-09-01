@@ -63,12 +63,16 @@ function page(
     const isLoopback = callback.protocol === "http:" &&
       (callback.hostname === "127.0.0.1" || callback.hostname === "localhost" ||
         callback.hostname === "[::1]");
-    if (callback.protocol !== "https:" && !isLoopback) {
+    const unsafeProtocol = callback.protocol === "about:" || callback.protocol === "blob:" ||
+      callback.protocol === "data:" || callback.protocol === "file:" ||
+      callback.protocol === "javascript:";
+    if ((callback.protocol === "http:" && !isLoopback) || unsafeProtocol) {
       throw new Error("oauth_callback_origin_invalid");
     }
+    const formActionSource = callback.origin === "null" ? callback.protocol : callback.origin;
     headers.set(
       "content-security-policy",
-      PAGE_CSP.replace("form-action 'self'", `form-action 'self' ${callback.origin}`),
+      PAGE_CSP.replace("form-action 'self'", `form-action 'self' ${formActionSource}`),
     );
   }
   return new Response(

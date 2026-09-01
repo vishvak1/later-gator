@@ -325,6 +325,8 @@ describe("settings navigation lifecycle", () => {
     expect(guide).toContain("you never copy a secret token or enable a developer mode");
     expect(guide).toContain("codex mcp list");
     expect(guide).toContain("claude mcp list");
+    expect(guide).toContain("does not recognize claude mcp login");
+    expect(guide).toContain("use /mcp to finish authentication");
     expect(guide).toContain("Use Later Gator to get my library status");
     window.dispatchEvent(new Event("pagehide"));
   });

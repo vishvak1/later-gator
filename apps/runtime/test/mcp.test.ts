@@ -383,18 +383,23 @@ describe("OAuth-protected MCP connector", () => {
       }
       return originalList(options);
     });
+    let connection: ConnectionResponse["connections"][number] | undefined;
     try {
       await authorize(owner, registered);
+      const listedWhileStale = await exports.default.fetch(`${ORIGIN}/api/mcp/connections`, {
+        headers: { cookie: owner.cookie },
+      });
+      expect(listedWhileStale.status, await listedWhileStale.clone().text()).toBe(200);
+      connection = (await listedWhileStale.json<ConnectionResponse>()).connections[0];
     } finally {
       listSpy.mockRestore();
     }
-
-    const listed = await exports.default.fetch(`${ORIGIN}/api/mcp/connections`, {
+    if (connection === undefined) throw new Error("KV-stale authorization was not recorded");
+    const listedAfterConvergence = await exports.default.fetch(`${ORIGIN}/api/mcp/connections`, {
       headers: { cookie: owner.cookie },
     });
-    expect(listed.status, await listed.clone().text()).toBe(200);
-    const connection = (await listed.json<ConnectionResponse>()).connections[0];
-    if (connection === undefined) throw new Error("KV-stale authorization was not recorded");
+    expect((await listedAfterConvergence.json<ConnectionResponse>()).connections)
+      .toContainEqual(expect.objectContaining({ id: connection.id }));
     const disconnected = await exports.default.fetch(
       `${ORIGIN}/api/mcp/connections/${connection.id}`,
       {
@@ -420,6 +425,18 @@ describe("OAuth-protected MCP connector", () => {
     const policy = consent.headers.get("content-security-policy");
     expect(policy).toContain("form-action 'self' http://127.0.0.1:45123");
     expect(policy).not.toContain("http://127.0.0.1:*");
+  });
+
+  it("allows a provider-validated private-use callback scheme through consent CSP", async () => {
+    const owner = await login();
+    const redirectUri = "com.example.client:/oauth";
+    const registered = await registerClient("Native MCP client", redirectUri);
+    const consent = await exports.default.fetch(await authorizationUrl(registered, redirectUri), {
+      headers: { cookie: owner.cookie },
+    });
+    expect(consent.status, await consent.clone().text()).toBe(200);
+    expect(consent.headers.get("content-security-policy"))
+      .toContain("form-action 'self' com.example.client:");
   });
 
   it("replaces an older grant when the same registered client logs in again", async () => {

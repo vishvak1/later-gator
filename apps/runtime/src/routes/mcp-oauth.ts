@@ -26,6 +26,7 @@ const LIBRARY_READ_SCOPE = "library:read";
 const MCP_LOGIN_RESUME_COOKIE = "__Host-lg_mcp_resume";
 const MCP_LOGIN_RESUME_SECONDS = 10 * 60;
 const MCP_LOGIN_RESUME_PREFIX = "later-gator:mcp-login-resume:";
+const MCP_GRANT_VISIBILITY_GRACE_MS = 5 * 60 * 1000;
 
 const authorizationContinuationSchema = z.strictObject({
   oauthRequest: z.string().min(1).max(16_384),
@@ -568,7 +569,10 @@ export async function listMcpConnections(
       connected_at: string;
       last_used_at: string | null;
     }>();
-  const missing = rows.results.filter((row) => !grantIds.has(row.oauth_grant_id));
+  const visibilityCutoff = new Date(Date.now() - MCP_GRANT_VISIBILITY_GRACE_MS).toISOString();
+  const missing = rows.results.filter((row) =>
+    !grantIds.has(row.oauth_grant_id) && row.connected_at < visibilityCutoff
+  );
   if (missing.length > 0) {
     const now = new Date().toISOString();
     await env.DB.batch(missing.map((row) =>
@@ -577,7 +581,7 @@ export async function listMcpConnections(
     ));
   }
   return rows.results
-    .filter((row) => grantIds.has(row.oauth_grant_id))
+    .filter((row) => grantIds.has(row.oauth_grant_id) || row.connected_at >= visibilityCutoff)
     .map((row) => ({
       id: row.id,
       clientType: row.client_type,

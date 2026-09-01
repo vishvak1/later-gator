@@ -259,8 +259,10 @@ remote `mcp add` installation with immediate `mcp login`. Browser authorization
 must continue through Cloudflare owner login and return to the original OAuth
 request when the runtime session is absent. The continuation is private,
 single-use, installation-bound through the owner session, and expires within ten
-minutes. A successful tool call is the connection test; model self-report about
-whether a connector is installed is not.
+minutes. Guidance must direct older Claude Code releases without the CLI login
+subcommand to the interactive `/mcp` authentication flow. A successful tool call
+is the connection test; model self-report about whether a connector is installed
+is not.
 
 ## 13. Search and relationships
 

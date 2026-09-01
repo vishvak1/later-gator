@@ -114,6 +114,23 @@ export async function requireCsrfValue(
   return result !== null;
 }
 
+/** Rotates the CSRF credential for an already authenticated dashboard session. */
+export async function refreshSessionCsrf(
+  db: D1Database,
+  session: DashboardSession,
+): Promise<{ cookie: string; csrfToken: string }> {
+  const csrfToken = toBase64(randomBytes(32));
+  await db
+    .prepare(
+      `UPDATE sessions
+          SET csrf_token_hash = ?
+        WHERE id_hash = ? AND revoked_at IS NULL`,
+    )
+    .bind(await sha256Base64(csrfToken), session.idHash)
+    .run();
+  return { cookie: csrfCookie(csrfToken), csrfToken };
+}
+
 /** Revokes the current session without affecting any other device. */
 export async function revokeSession(db: D1Database, session: DashboardSession): Promise<void> {
   await db

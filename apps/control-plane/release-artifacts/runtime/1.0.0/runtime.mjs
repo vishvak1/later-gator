@@ -40453,8 +40453,8 @@ __name(getBookmarkDetails, "getBookmarkDetails");
 
 // src/generated/asset-manifest.ts
 var ASSET_MANIFEST = {
-  css: "/assets/app.A3T3SM3Z.css",
-  js: "/assets/main.DGSCMZ6T.js"
+  css: "/assets/app.P7C3PTCI.css",
+  js: "/assets/main.GNGV3XJJ.js"
 };
 
 // src/domain/icons.ts
@@ -40513,10 +40513,11 @@ var FOLDER_ICONS = {
 };
 
 // src/routes/pages.ts
+var PAGE_CSP = "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self' https://api.openai.com https://api.anthropic.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 var PAGE_HEADERS = {
   "content-type": "text/html; charset=utf-8",
   "cache-control": "no-store",
-  "content-security-policy": "default-src 'none'; style-src 'self'; script-src 'self'; img-src 'self' data:; connect-src 'self' https://api.openai.com https://api.anthropic.com; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+  "content-security-policy": PAGE_CSP,
   "referrer-policy": "no-referrer",
   "x-content-type-options": "nosniff"
 };
@@ -40535,7 +40536,21 @@ function themeFromCookie(request) {
   return match?.[1] ?? "system";
 }
 __name(themeFromCookie, "themeFromCookie");
-function page(title, pageName, body, status = 200, theme = "system") {
+function page(title, pageName, body, status = 200, theme = "system", formRedirectUri = null) {
+  const headers = new Headers(PAGE_HEADERS);
+  if (formRedirectUri !== null) {
+    const callback = new URL(formRedirectUri);
+    const isLoopback = callback.protocol === "http:" && (callback.hostname === "127.0.0.1" || callback.hostname === "localhost" || callback.hostname === "[::1]");
+    const unsafeProtocol = callback.protocol === "about:" || callback.protocol === "blob:" || callback.protocol === "data:" || callback.protocol === "file:" || callback.protocol === "javascript:";
+    if (callback.protocol === "http:" && !isLoopback || unsafeProtocol) {
+      throw new Error("oauth_callback_origin_invalid");
+    }
+    const formActionSource = callback.origin === "null" ? callback.protocol : callback.origin;
+    headers.set(
+      "content-security-policy",
+      PAGE_CSP.replace("form-action 'self'", `form-action 'self' ${formActionSource}`)
+    );
+  }
   return new Response(
     `<!doctype html>
 <html lang="en"${theme === "system" ? "" : ` data-theme="${theme}"`}>
@@ -40552,7 +40567,7 @@ ${body}
 <script type="module" src="${ASSET_MANIFEST.js}"><\/script>
 </body>
 </html>`,
-    { status, headers: PAGE_HEADERS }
+    { status, headers }
   );
 }
 __name(page, "page");
@@ -40656,20 +40671,17 @@ function oauthConsentPage(options) {
           <div><strong>Not allowed</strong><ul><li>Add, edit, or delete bookmarks</li><li>Change settings or access credentials</li></ul></div>
         </div>
         ${options.error === null ? "" : `<p class="error" role="alert">${escapeHtml(options.error)}</p>`}
-        ${options.signedIn ? `<form class="stack" method="post" action="/authorize">
-              <input type="hidden" name="oauth_request" value="${request}">
-              ${csrf}
-              <p class="connection-ready">Signed in as the Later Gator owner.</p>
-              <div class="actions split"><button class="secondary" type="submit" name="decision" value="deny">Cancel</button><button type="submit" name="decision" value="approve">Connect ${clientName}</button></div>
-            </form>` : `<p class="error" role="alert">Sign in to Later Gator before approving this connection.</p>
-             <div class="actions split">
-               <form method="post" action="/authorize"><input type="hidden" name="oauth_request" value="${request}"><button class="secondary" type="submit" name="decision" value="deny">Cancel</button></form>
-               <a class="button-link" href="/">Sign in with Cloudflare</a>
-             </div>`}
+        <form class="stack" method="post" action="/authorize">
+          <input type="hidden" name="oauth_request" value="${request}">
+          ${csrf}
+          <p class="connection-ready">Signed in as the Later Gator owner.</p>
+          <div class="actions split"><button class="secondary" type="submit" name="decision" value="deny">Cancel</button><button type="submit" name="decision" value="approve">Connect ${clientName}</button></div>
+        </form>
       </section>
     </main>`,
     200,
-    options.theme
+    options.theme,
+    options.redirectUri
   );
 }
 __name(oauthConsentPage, "oauthConsentPage");
@@ -40975,7 +40987,7 @@ function settingsPage(theme = "system") {
           <p id="extensionDeviceStatus" class="status" role="status"></p>
         </section>
         <section class="panel panel-flow"><h2>iOS Share Sheet Shortcut</h2><p class="muted">Generate one endpoint and token for an iPhone or iPad Shortcut.</p><div class="connection-actions"><button id="pairIos">Generate iOS connection</button><a class="button-link" href="${IOS_SHORTCUT_URL}" target="_blank" rel="noreferrer">Add to Shortcuts \u2197</a><button class="secondary" type="button" data-how-to="ios">Setup instructions</button></div><div id="iosCredentialPanel" class="connection-code-panel" hidden><div class="connection-secret"><p class="eyebrow">Endpoint</p><pre id="iosEndpoint" class="secret-output" tabindex="0"></pre><button id="copyIosEndpoint" type="button">Copy endpoint</button></div><div class="connection-secret"><p class="eyebrow">One-time token</p><pre id="iosToken" class="secret-output" tabindex="0"></pre><button id="copyIosToken" type="button">Copy token</button></div><p id="iosCredentialStatus" class="status" role="status"></p></div></section>
-        <section class="panel panel-flow span-two"><div><p class="eyebrow">MCP</p><h2>Connect AI assistants</h2></div><p class="muted">Let ChatGPT, Claude, or another compatible assistant search and read your Later Gator library. Each assistant asks for your approval and cannot change anything.</p><div class="connection-actions"><button id="connectChatGpt" type="button">Connect ChatGPT</button><button id="connectClaude" type="button">Connect Claude</button><button class="secondary" type="button" data-how-to="mcp">Setup help</button></div><p id="mcpConnectionStatus" class="status" role="status"></p><div id="mcpConnections" class="ai-connection-list" aria-live="polite"><p class="muted">Loading connected assistants\u2026</p></div><details class="advanced-connection"><summary>Advanced connection details</summary><p class="muted">Use this address with any OAuth-capable MCP client.</p><div class="endpoint-row"><code id="mcpEndpoint"></code><button id="copyMcpEndpoint" class="secondary" type="button">Copy address</button></div></details></section>
+        <section class="panel panel-flow span-two"><div><p class="eyebrow">MCP</p><h2>Connect Codex or Claude Code</h2></div><p class="muted">Copy one command into your terminal. It installs Later Gator, opens your browser for Cloudflare sign-in when needed, and asks you to approve read-only access. No developer mode or secret token is required.</p><div class="connection-code-panel mcp-command-panel"><div class="connection-secret"><p class="eyebrow">Codex</p><pre id="codexMcpCommand" class="secret-output" tabindex="0"></pre><button id="copyCodexMcpCommand" type="button">Copy Codex command</button></div><div class="connection-secret"><p class="eyebrow">Claude Code</p><pre id="claudeMcpCommand" class="secret-output" tabindex="0"></pre><button id="copyClaudeMcpCommand" type="button">Copy Claude command</button></div></div><div class="connection-actions"><button class="secondary" type="button" data-how-to="mcp">Setup help</button></div><p id="mcpConnectionStatus" class="status" role="status"></p><div id="mcpConnections" class="ai-connection-list" aria-live="polite"><p class="muted">Loading connected assistants\u2026</p></div><details class="advanced-connection"><summary>Advanced connection details</summary><p class="muted">Use this address with any OAuth-capable remote MCP client.</p><div class="endpoint-row"><code id="mcpEndpoint"></code><button id="copyMcpEndpoint" class="secondary" type="button">Copy address</button></div></details></section>
         <section class="panel panel-flow span-two danger-zone"><p class="eyebrow">Testing tools</p><h2>Reset Later Gator</h2><p>Delete every bookmark, tag, thumbnail, import, connection, provider credential, and preference, then return this installation to setup. Your Cloudflare owner binding is kept.</p><button id="resetApplicationButton" class="danger" type="button">Delete everything and restart setup</button></section>
       </div>
       <p id="settingsStatus" class="status"></p>
@@ -41157,6 +41169,16 @@ async function requireCsrfValue(db, session, supplied) {
   return result !== null;
 }
 __name(requireCsrfValue, "requireCsrfValue");
+async function refreshSessionCsrf(db, session) {
+  const csrfToken = toBase64(randomBytes(32));
+  await db.prepare(
+    `UPDATE sessions
+          SET csrf_token_hash = ?
+        WHERE id_hash = ? AND revoked_at IS NULL`
+  ).bind(await sha256Base64(csrfToken), session.idHash).run();
+  return { cookie: csrfCookie(csrfToken), csrfToken };
+}
+__name(refreshSessionCsrf, "refreshSessionCsrf");
 async function revokeSession(db, session) {
   await db.prepare("UPDATE sessions SET revoked_at = ? WHERE id_hash = ?").bind((/* @__PURE__ */ new Date()).toISOString(), session.idHash).run();
 }
@@ -93481,6 +93503,13 @@ __name(handleMcp, "handleMcp");
 // src/routes/mcp-oauth.ts
 var OWNER_ID = "owner";
 var LIBRARY_READ_SCOPE = "library:read";
+var MCP_LOGIN_RESUME_COOKIE = "__Host-lg_mcp_resume";
+var MCP_LOGIN_RESUME_SECONDS = 10 * 60;
+var MCP_LOGIN_RESUME_PREFIX = "later-gator:mcp-login-resume:";
+var MCP_GRANT_VISIBILITY_GRACE_MS = 5 * 60 * 1e3;
+var authorizationContinuationSchema = external_exports.strictObject({
+  oauthRequest: external_exports.string().min(1).max(16384)
+});
 var serializedAuthRequestSchema = external_exports.strictObject({
   responseType: external_exports.string().min(1).max(32),
   clientId: external_exports.string().min(1).max(2048),
@@ -93541,6 +93570,37 @@ function deserializeAuthRequest(value) {
   }
 }
 __name(deserializeAuthRequest, "deserializeAuthRequest");
+async function authorizationContinuationKey(token) {
+  return MCP_LOGIN_RESUME_PREFIX + await sha256Base64(`mcp-login-resume:${token}`);
+}
+__name(authorizationContinuationKey, "authorizationContinuationKey");
+async function beginAuthorizationContinuation(request, env2, origin) {
+  const token = toBase64Url2(crypto.getRandomValues(new Uint8Array(32)));
+  await env2.OAUTH_KV.put(
+    await authorizationContinuationKey(token),
+    JSON.stringify({ oauthRequest: serializeAuthRequest(request) }),
+    { expirationTtl: MCP_LOGIN_RESUME_SECONDS }
+  );
+  const headers = new Headers({
+    location: new URL("/auth/login", origin).toString(),
+    "cache-control": "no-store"
+  });
+  headers.append(
+    "set-cookie",
+    `${MCP_LOGIN_RESUME_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${MCP_LOGIN_RESUME_SECONDS.toString()}`
+  );
+  return new Response(null, { status: 302, headers });
+}
+__name(beginAuthorizationContinuation, "beginAuthorizationContinuation");
+function hasPendingMcpAuthorization(request) {
+  const token = readCookie(request, MCP_LOGIN_RESUME_COOKIE);
+  return token !== null && /^[A-Za-z0-9_-]{40,64}$/u.test(token);
+}
+__name(hasPendingMcpAuthorization, "hasPendingMcpAuthorization");
+function expiredAuthorizationContinuationCookie() {
+  return `${MCP_LOGIN_RESUME_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`;
+}
+__name(expiredAuthorizationContinuationCookie, "expiredAuthorizationContinuationCookie");
 function authorizationRequestFromSerialized(request, origin) {
   const url2 = new URL("/authorize", origin);
   url2.searchParams.set("response_type", request.responseType);
@@ -93562,8 +93622,14 @@ function authorizationRequestFromSerialized(request, origin) {
 __name(authorizationRequestFromSerialized, "authorizationRequestFromSerialized");
 function describeClient(client, request) {
   const evidence = [client.clientId, client.clientName ?? "", request.redirectUri].join(" ").toLowerCase();
+  if (evidence.includes("codex")) {
+    return { clientType: "other", displayName: "Codex" };
+  }
   if (evidence.includes("chatgpt.com") || evidence.includes("openai")) {
     return { clientType: "chatgpt", displayName: "ChatGPT" };
+  }
+  if (evidence.includes("claude code")) {
+    return { clientType: "claude", displayName: "Claude Code" };
   }
   if (evidence.includes("claude.ai") || evidence.includes("anthropic") || evidence.includes("claude")) {
     return { clientType: "claude", displayName: "Claude" };
@@ -93613,12 +93679,22 @@ function denyAuthorization(request) {
   return Response.redirect(redirect2, 302);
 }
 __name(denyAuthorization, "denyAuthorization");
-async function recordConnection(db, helpers, client, metadata) {
-  const grants = await helpers.listUserGrants(OWNER_ID, { limit: 100 });
-  const grant = grants.items.find(
-    (item) => item.metadata?.connectionId === metadata.connectionId
-  );
-  if (grant === void 0) throw new Error("oauth_grant_not_found_after_authorization");
+function oauthFormOriginMatches(request) {
+  const origin = request.headers.get("origin");
+  return origin === null || origin === "null" || originMatches(request);
+}
+__name(oauthFormOriginMatches, "oauthFormOriginMatches");
+function grantIdFromAuthorizationRedirect(redirectTo) {
+  const code = new URL(redirectTo).searchParams.get("code");
+  const parts = code?.split(":") ?? [];
+  const grantId = parts[1];
+  if (parts.length !== 3 || parts[0] !== OWNER_ID || grantId === void 0 || !/^[A-Za-z0-9_-]{16,64}$/u.test(grantId) || !/^[A-Za-z0-9_-]{32,128}$/u.test(parts[2] ?? "")) {
+    throw new Error("oauth_authorization_code_shape_invalid");
+  }
+  return grantId;
+}
+__name(grantIdFromAuthorizationRedirect, "grantIdFromAuthorizationRedirect");
+async function recordConnection(db, client, metadata, grantId) {
   await db.prepare(
     `INSERT INTO mcp_connections (
         id, oauth_grant_id, client_id_hash, client_type, display_name, scope,
@@ -93626,7 +93702,7 @@ async function recordConnection(db, helpers, client, metadata) {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL)`
   ).bind(
     metadata.connectionId,
-    grant.id,
+    grantId,
     await sha256Base64(client.clientId),
     metadata.clientType,
     metadata.displayName,
@@ -93635,6 +93711,25 @@ async function recordConnection(db, helpers, client, metadata) {
   ).run();
 }
 __name(recordConnection, "recordConnection");
+async function revokePriorClientConnections(db, helpers, client, currentConnectionId) {
+  const rows = await db.prepare(
+    `SELECT id, oauth_grant_id
+         FROM mcp_connections
+        WHERE client_id_hash = ? AND id <> ? AND revoked_at IS NULL`
+  ).bind(await sha256Base64(client.clientId), currentConnectionId).all();
+  for (const row of rows.results) {
+    try {
+      await helpers.revokeGrant(row.oauth_grant_id, OWNER_ID);
+      await db.prepare("UPDATE mcp_connections SET revoked_at = ? WHERE id = ?").bind((/* @__PURE__ */ new Date()).toISOString(), row.id).run();
+    } catch {
+      console.error(JSON.stringify({
+        event: "mcp_prior_connection_revocation_failed",
+        safeCode: "oauth_grant_revocation_failed"
+      }));
+    }
+  }
+}
+__name(revokePriorClientConnections, "revokePriorClientConnections");
 async function approveAuthorization(request, client, env2, helpers) {
   if (!request.scope.includes(LIBRARY_READ_SCOPE)) {
     return oauthErrorPage("This AI assistant did not request read-only library access.");
@@ -93656,15 +93751,14 @@ async function approveAuthorization(request, client, env2, helpers) {
       permissions: [LIBRARY_READ_SCOPE]
     }
   });
+  const grantId = grantIdFromAuthorizationRedirect(redirectTo);
   try {
-    await recordConnection(env2.DB, helpers, client, metadata);
+    await recordConnection(env2.DB, client, metadata, grantId);
   } catch (error51) {
-    const grant = (await helpers.listUserGrants(OWNER_ID, { limit: 100 })).items.find(
-      (item) => item.metadata?.connectionId === metadata.connectionId
-    );
-    if (grant !== void 0) await helpers.revokeGrant(grant.id, OWNER_ID);
+    await helpers.revokeGrant(grantId, OWNER_ID);
     throw error51;
   }
+  await revokePriorClientConnections(env2.DB, helpers, client, metadata.connectionId);
   return Response.redirect(redirectTo, 302);
 }
 __name(approveAuthorization, "approveAuthorization");
@@ -93684,19 +93778,70 @@ async function showAuthorization(request, env2, helpers) {
   const parsed = await parseAuthorization(request, helpers);
   if (parsed instanceof Response) return parsed;
   const session = await loadSession(request, env2.DB);
+  if (session === null) {
+    return beginAuthorizationContinuation(parsed.request, env2, new URL(request.url).origin);
+  }
+  let csrfToken = readCookie(request, "lg_csrf");
+  let refreshedCsrfCookie = null;
+  if (csrfToken === null || !await requireCsrfValue(env2.DB, session, csrfToken)) {
+    const refreshed = await refreshSessionCsrf(env2.DB, session);
+    csrfToken = refreshed.csrfToken;
+    refreshedCsrfCookie = refreshed.cookie;
+  }
   const described = describeClient(parsed.client, parsed.request);
-  return oauthConsentPage({
+  const page2 = oauthConsentPage({
     clientName: described.displayName,
+    redirectUri: parsed.request.redirectUri,
     serializedRequest: serializeAuthRequest(parsed.request),
-    signedIn: session !== null,
-    csrfToken: session === null ? null : readCookie(request, "lg_csrf"),
+    csrfToken,
     error: null,
     theme: themeFromCookie(request)
   });
+  if (refreshedCsrfCookie === null) return page2;
+  const headers = new Headers(page2.headers);
+  headers.append("set-cookie", refreshedCsrfCookie);
+  headers.set("cache-control", "no-store");
+  return new Response(page2.body, { status: page2.status, headers });
 }
 __name(showAuthorization, "showAuthorization");
+async function resumeAuthorization(request, env2) {
+  if (await loadSession(request, env2.DB) === null) {
+    return Response.redirect(new URL("/auth/login", request.url), 302);
+  }
+  const token = readCookie(request, MCP_LOGIN_RESUME_COOKIE);
+  let stored = null;
+  if (token !== null && /^[A-Za-z0-9_-]{40,64}$/u.test(token)) {
+    const key = await authorizationContinuationKey(token);
+    stored = await env2.OAUTH_KV.get(key);
+    await env2.OAUTH_KV.delete(key);
+  }
+  let authRequest = null;
+  if (stored !== null) {
+    try {
+      const parsed = authorizationContinuationSchema.safeParse(JSON.parse(stored));
+      authRequest = parsed.success ? deserializeAuthRequest(parsed.data.oauthRequest) : null;
+    } catch {
+      authRequest = null;
+    }
+  }
+  const result = authRequest === null ? oauthErrorPage("This connection request expired. Run the MCP login command again.") : Response.redirect(
+    authorizationRequestFromSerialized(authRequest, new URL(request.url).origin).url,
+    302
+  );
+  const headers = new Headers(result.headers);
+  headers.append("set-cookie", expiredAuthorizationContinuationCookie());
+  headers.set("cache-control", "no-store");
+  return new Response(result.body, { status: result.status, headers });
+}
+__name(resumeAuthorization, "resumeAuthorization");
 async function submitAuthorization(request, env2, helpers) {
-  if (!originMatches(request)) return oauthErrorPage("Reload Later Gator and try again.");
+  if (!oauthFormOriginMatches(request)) {
+    console.error(JSON.stringify({
+      event: "mcp_authorization_rejected",
+      safeCode: "oauth_origin_rejected"
+    }));
+    return oauthErrorPage("The browser could not verify this approval. Return to the terminal and run MCP login again.");
+  }
   const declaredLength = Number(request.headers.get("content-length") ?? "0");
   if (Number.isFinite(declaredLength) && declaredLength > 24 * 1024) {
     return oauthErrorPage("This connection request is too large.");
@@ -93717,7 +93862,11 @@ async function submitAuthorization(request, env2, helpers) {
   }
   const csrfToken = formString(form, "csrf_token", 256);
   if (csrfToken === null || !await requireCsrfValue(env2.DB, session, csrfToken)) {
-    return oauthErrorPage("Reload Later Gator and try again.");
+    console.error(JSON.stringify({
+      event: "mcp_authorization_rejected",
+      safeCode: "oauth_csrf_rejected"
+    }));
+    return oauthErrorPage("This approval expired. Return to the terminal and run MCP login again.");
   }
   return approveAuthorization(reparsed.request, reparsed.client, env2, helpers);
 }
@@ -93731,6 +93880,9 @@ var authorizationHandler = {
     }
     if (request.method === "POST" && new URL(request.url).pathname === "/authorize") {
       return submitAuthorization(request, env2, helpers);
+    }
+    if (request.method === "GET" && new URL(request.url).pathname === "/authorize/resume") {
+      return resumeAuthorization(request, env2);
     }
     return Promise.resolve(new Response("Not found", { status: 404 }));
   }
@@ -93768,14 +93920,17 @@ async function listMcpConnections(env2, origin) {
         WHERE revoked_at IS NULL
         ORDER BY connected_at DESC`
   ).all();
-  const missing = rows.results.filter((row) => !grantIds.has(row.oauth_grant_id));
+  const visibilityCutoff = new Date(Date.now() - MCP_GRANT_VISIBILITY_GRACE_MS).toISOString();
+  const missing = rows.results.filter(
+    (row) => !grantIds.has(row.oauth_grant_id) && row.connected_at < visibilityCutoff
+  );
   if (missing.length > 0) {
     const now = (/* @__PURE__ */ new Date()).toISOString();
     await env2.DB.batch(missing.map(
       (row) => env2.DB.prepare("UPDATE mcp_connections SET revoked_at = ? WHERE id = ?").bind(now, row.id)
     ));
   }
-  return rows.results.filter((row) => grantIds.has(row.oauth_grant_id)).map((row) => ({
+  return rows.results.filter((row) => grantIds.has(row.oauth_grant_id) || row.connected_at >= visibilityCutoff).map((row) => ({
     id: row.id,
     clientType: row.client_type,
     displayName: row.display_name,
@@ -95565,7 +95720,7 @@ async function ownerLoginCallback(request, env2) {
   try {
     const session = await completeOwnerLogin(request, env2);
     const headers = new Headers({
-      location: await setupComplete(env2.DB) ? "/dashboard" : "/setup",
+      location: hasPendingMcpAuthorization(request) ? "/authorize/resume" : await setupComplete(env2.DB) ? "/dashboard" : "/setup",
       "cache-control": "no-store"
     });
     headers.append("set-cookie", session.cookie);
@@ -96502,7 +96657,7 @@ async function handleFetch(request, env2, context2) {
   if (request.method === "POST" && url2.pathname === "/api/capture/pair") {
     return capturePairingExchange(request, env2);
   }
-  if (url2.pathname === "/mcp" || url2.pathname === "/authorize" || url2.pathname === "/oauth/token" || url2.pathname === "/oauth/register" || url2.pathname === "/.well-known/oauth-authorization-server" || url2.pathname.startsWith("/.well-known/oauth-protected-resource")) {
+  if (url2.pathname === "/mcp" || url2.pathname === "/authorize" || url2.pathname === "/authorize/resume" || url2.pathname === "/oauth/token" || url2.pathname === "/oauth/register" || url2.pathname === "/.well-known/oauth-authorization-server" || url2.pathname.startsWith("/.well-known/oauth-protected-resource")) {
     return handleMcpOAuthRequest(request, env2, context2);
   }
   const session = await loadSession(request, env2.DB);

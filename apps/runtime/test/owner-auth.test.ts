@@ -137,6 +137,21 @@ describe("installation-bound owner login", () => {
     expect(sessionColumns.results.map((column) => column.name)).not.toContain("encrypted_data_key");
   });
 
+  it("returns a successful owner login to a pending MCP authorization", async () => {
+    const keys = await generateTestKey();
+    mockJwks([{ kid: KEY_ID, publicJwk: keys.publicJwk }]);
+    const login = await startLogin();
+    const assertion = await signAssertion(keys.privateKey, login);
+    const response = await exports.default.fetch(callbackRequest(login, assertion), {
+      redirect: "manual",
+      headers: {
+        cookie: "__Host-lg_mcp_resume=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      },
+    });
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/authorize/resume");
+  });
+
   it("rejects callback and JTI replay", async () => {
     const keys = await generateTestKey();
     mockJwks([{ kid: KEY_ID, publicJwk: keys.publicJwk }]);

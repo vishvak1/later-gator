@@ -20,12 +20,12 @@
     "kv",
     "r2"
   ],
-  "artifactDigest": "2b24823fe769d6a702ac42817287fde1abf20a93d9e74eb50933864d06c1de90",
+  "artifactDigest": "21eb854ba30bebaf3b15a04c91b3bc80b8afb9d9501c62e359a7b2432330b2d2",
   "baseSchemaDigest": "f8595802db7ed2da19379d0cc35d20be1fb529345d27a101157c090adf29e89c",
   "mainModule": {
     "artifactPath": "/release-artifacts/runtime/1.0.0/runtime.mjs",
-    "sha256": "ff76cbc7ad7408d42becef2417cdd572c07990f5059d835333381c0a3f585014",
-    "size": 3589900
+    "sha256": "3505690ac4cf5cdfcc93357bd82b27b8a0d95e5a46afb41201130081496e8bd1",
+    "size": 3597182
   },
   "assets": [
     {
@@ -36,18 +36,18 @@
       "size": 165
     },
     {
-      "path": "/assets/app.A3T3SM3Z.css",
-      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/assets/app.A3T3SM3Z.css",
-      "sha256": "e8f779fe152b4d0c3cb8c20849c656cd49ef1f25112050008c0387184b991528",
-      "assetHash": "e8f779fe152b4d0c3cb8c20849c656cd",
-      "size": 51623
+      "path": "/assets/app.P7C3PTCI.css",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/assets/app.P7C3PTCI.css",
+      "sha256": "d5df118abb7892c45b4daf113947882529d6107afe27a466b228841564d45aa6",
+      "assetHash": "d5df118abb7892c45b4daf1139478825",
+      "size": 51805
     },
     {
-      "path": "/assets/main.DGSCMZ6T.js",
-      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/assets/main.DGSCMZ6T.js",
-      "sha256": "1513288ca1b816dd4334cfbef64152f54168af13ba80575cd2e527a2c0845faa",
-      "assetHash": "1513288ca1b816dd4334cfbef64152f5",
-      "size": 71461
+      "path": "/assets/main.GNGV3XJJ.js",
+      "artifactPath": "/release-artifacts/runtime/1.0.0/assets/assets/main.GNGV3XJJ.js",
+      "sha256": "2e2ab84e71dab7d030a8cadf8e5e7974e47131274148fd86cfa157d1e2fca14e",
+      "assetHash": "2e2ab84e71dab7d030a8cadf8e5e7974",
+      "size": 71171
     },
     {
       "path": "/img/cf-model.png",

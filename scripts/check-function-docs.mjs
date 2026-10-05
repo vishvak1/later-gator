@@ -10,8 +10,6 @@ import ts from "typescript";
 const REPOSITORY_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE_ROOTS = [
   "apps/runtime/src",
-  "apps/control-plane/src",
-  "packages/contracts/src",
   "apps/runtime/web/src",
   "apps/chrome-extension/src",
   "scripts",

@@ -53,17 +53,17 @@ export const HOW_TO_PANELS: readonly { id: string; kicker: string; title: string
       <h3>Codex</h3>
       <ol class="setup-steps">
         <li><strong>Copy the Codex command.</strong><span>Paste it into a terminal that has the Codex CLI installed.</span></li>
-        <li><strong>Finish browser login.</strong><span>The command opens Later Gator. Sign in through Cloudflare if needed, then approve read-only access. The original login resumes automatically.</span></li>
+        <li><strong>Finish browser login.</strong><span>The command opens Later Gator. Sign in to Later Gator if needed, then approve read-only access. The original login resumes automatically.</span></li>
         <li><strong>Confirm it.</strong><span>Run <code>codex mcp list</code>, then ask Codex: <code>Use Later Gator to get my library status.</code></span></li>
       </ol>
       <h3>Claude Code</h3>
       <ol class="setup-steps">
         <li><strong>Copy the Claude command.</strong><span>Paste it into a terminal with the current Claude Code CLI. The user scope makes the server available across your projects.</span></li>
-        <li><strong>Finish browser login.</strong><span>Sign in through Cloudflare if needed and approve read-only access; you do not need to run a separate login command.</span></li>
+        <li><strong>Finish browser login.</strong><span>Sign in to Later Gator if needed and approve read-only access; you do not need to run a separate login command.</span></li>
         <li><strong>Confirm it.</strong><span>Run <code>claude mcp list</code>, then ask Claude Code to get your Later Gator library status.</span></li>
       </ol>
       <p class="muted">If an older Claude Code version does not recognize <code>claude mcp login</code>, update Claude Code or open Claude Code and use <code>/mcp</code> to finish authentication.</p>
-      <p class="muted"><strong>If the browser was signed out:</strong> the same command takes you through Cloudflare sign-in and returns to the pending MCP approval. If it expired, run the copied command again.</p>
+      <p class="muted"><strong>If the browser was signed out:</strong> the same command takes you through Later Gator sign-in and returns to the pending MCP approval. If it expired, run the copied command again.</p>
       <p class="muted"><strong>To remove access:</strong> return to Settings and select Disconnect beside that client. Other connected clients keep working.</p>`,
   },
   {
@@ -93,6 +93,6 @@ export const HOW_TO_PANELS: readonly { id: string; kicker: string; title: string
         <li><strong>Add credits.</strong><span>Buy any one-time amount on the AI Gateway page. A 5% fee applies to the purchase; inference itself is charged at the standard rate with no markup.</span></li>
         <li><strong>Tell Later Gator.</strong><span>In Settings, open <strong>Advanced</strong> beside Test and activate, paste the gateway ID, and save. Leaving it empty keeps calling Workers AI directly on the free allocation.</span></li>
       </ol>
-      <p class="muted">Cloudflare cannot create a gateway from the Deploy to Cloudflare button, so this step is manual. Once the ID is saved it applies to both organizing and search embeddings.</p>`,
+      <p class="muted">Create the gateway in your Cloudflare account. Once the ID is saved it applies to both organizing and search embeddings.</p>`,
   },
 ];

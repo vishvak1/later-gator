@@ -25,21 +25,7 @@ function optionsResponse(): Response {
 }
 
 function browserMock(storedConnection: { deployment: string; token: string } | null) {
-  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
   return {
-    identity: {
-      getRedirectURL: vi.fn(() => `https://${extensionId}.chromiumapp.org/cloudflare`),
-      launchWebAuthFlow: vi.fn(({ url }: { url: string }) => {
-        const request = new URL(url);
-        const callback = new URL(`https://${extensionId}.chromiumapp.org/cloudflare`);
-        callback.searchParams.set("grant", "g".repeat(96));
-        callback.searchParams.set("deployment", deployment);
-        callback.searchParams.set("device_id", request.searchParams.get("device_id") ?? "");
-        callback.searchParams.set("device_name", request.searchParams.get("device_name") ?? "");
-        callback.searchParams.set("state", request.searchParams.get("state") ?? "");
-        return Promise.resolve(callback.toString());
-      }),
-    },
     permissions: {
       contains: vi.fn().mockResolvedValue(true),
       request: vi.fn().mockResolvedValue(true),
@@ -77,8 +63,6 @@ async function renderPopup(): Promise<void> {
   const body = /<body>([\s\S]*?)<\/body>/u.exec(popupHtml)?.[1];
   if (body === undefined) throw new Error("Extension popup body was not rendered");
   document.body.innerHTML = body.replaceAll(/\s*<script[^>]*><\/script>/gu, "");
-  // @ts-expect-error The shipped WebExtension script is intentionally plain JavaScript.
-  await import("../src/config.js");
   // @ts-expect-error The shipped WebExtension script is intentionally plain JavaScript.
   await import("../src/common.js");
   // @ts-expect-error The shipped WebExtension script is intentionally plain JavaScript.
@@ -145,103 +129,31 @@ describe("extension popup connection lifecycle", () => {
     expect(browser.storage.local.remove).not.toHaveBeenCalled();
   });
 
-  it("stores nothing when Cloudflare sign-in is cancelled", async () => {
+  it.each(["valid", "invalid", "denied", "unavailable"])("connects directly with a code: %s", async (scenario) => {
     const browser = browserMock(null);
-    browser.identity.launchWebAuthFlow.mockRejectedValueOnce(new Error("cancelled"));
+    browser.permissions.request.mockResolvedValue(scenario !== "denied");
     vi.stubGlobal("browser", undefined);
     vi.stubGlobal("chrome", browser);
-    vi.stubGlobal("fetch", vi.fn());
-
-    await renderPopup();
-    await vi.waitFor(() => expect(visiblePanels()).toEqual(["connectionPanel"]));
-    document.querySelector<HTMLButtonElement>("#connectButton")?.click();
-
-    await vi.waitFor(() => {
-      expect(document.querySelector("#connectionStatus")?.textContent).toContain("cancelled");
-    });
-    expect(browser.storage.local.set).not.toHaveBeenCalled();
-    expect(visiblePanels()).toEqual(["connectionPanel"]);
-  });
-
-  it("directs an authenticated owner without a library to the control plane", async () => {
-    const browser = browserMock(null);
-    browser.identity.launchWebAuthFlow.mockImplementationOnce(({ url }: { url: string }) => {
-      const request = new URL(url);
-      const callback = new URL(request.searchParams.get("redirect_uri") ?? "");
-      callback.searchParams.set("error", "installation_required");
-      callback.searchParams.set("device_id", request.searchParams.get("device_id") ?? "");
-      callback.searchParams.set("state", request.searchParams.get("state") ?? "");
-      return Promise.resolve(callback.toString());
-    });
-    vi.stubGlobal("browser", undefined);
-    vi.stubGlobal("chrome", browser);
-    vi.stubGlobal("fetch", vi.fn());
-
-    await renderPopup();
-    await vi.waitFor(() => expect(visiblePanels()).toEqual(["connectionPanel"]));
-    document.querySelector<HTMLButtonElement>("#connectButton")?.click();
-
-    await vi.waitFor(() => {
-      expect(document.querySelector("#connectionStatus")?.textContent).toContain(
-        "Open Later Gator control plane and create your first Later Gator library.",
-      );
-    });
-    expect(browser.storage.local.set).not.toHaveBeenCalled();
-  });
-
-  it("uses Cloudflare identity, exact-origin permission, and one-time runtime exchange", async () => {
-    const browser = browserMock(null);
-    vi.stubGlobal("browser", undefined);
-    vi.stubGlobal("chrome", browser);
-    const fetchMock = vi.fn((input: string | URL | Request) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.endsWith("/api/capture/pair")) {
-        return json({ ok: true, credential: { token } }, 201);
-      }
-      return optionsResponse();
-    });
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
+      scenario === "unavailable" ? json({}, 503) : optionsResponse(),
+    ));
     vi.stubGlobal("fetch", fetchMock);
-
     await renderPopup();
     await vi.waitFor(() => expect(visiblePanels()).toEqual(["connectionPanel"]));
-    document.querySelector<HTMLButtonElement>("#connectButton")?.click();
-
-    await vi.waitFor(() => expect(visiblePanels()).toEqual(["captureForm"]));
-    expect(browser.identity.launchWebAuthFlow).toHaveBeenCalledWith(expect.objectContaining({
-      interactive: true,
-    }));
-    expect(browser.permissions.request).toHaveBeenCalledWith({ origins: [deployment + "/*"] });
-    expect(fetchMock.mock.calls.some(([input]) => {
-      const address = typeof input === "string"
-        ? input
-        : input instanceof URL
-          ? input.href
-          : input.url;
-      return address.endsWith("/api/capture/pair");
-    })).toBe(true);
-    const saved = browser.storage.local.set.mock.calls.at(-1)?.[0] as unknown;
-    expect(saved).toMatchObject({ laterGatorConnection: { deployment, token } });
-  });
-
-  it("stores nothing and never exchanges the grant when exact-origin permission is declined", async () => {
-    const browser = browserMock(null);
-    browser.permissions.request.mockResolvedValueOnce(false);
-    vi.stubGlobal("browser", undefined);
-    vi.stubGlobal("chrome", browser);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    await renderPopup();
-    await vi.waitFor(() => expect(visiblePanels()).toEqual(["connectionPanel"]));
-    document.querySelector<HTMLButtonElement>("#connectButton")?.click();
-
-    await vi.waitFor(() => {
-      expect(document.querySelector("#connectionStatus")?.textContent)
-        .toContain("Access to your personal Later Gator was not granted");
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(browser.storage.local.set).not.toHaveBeenCalled();
-    expect(visiblePanels()).toEqual(["connectionPanel"]);
+    const input = document.querySelector<HTMLInputElement>("#connectionCode");
+    if (input === null) throw new Error("code input missing");
+    input.value = scenario === "invalid" ? "invalid" : "later-gator." + btoa(JSON.stringify({ deployment, token }));
+    document.querySelector("#connectionPanel")?.dispatchEvent(new Event("submit", { cancelable: true }));
+    if (scenario === "valid") {
+      await vi.waitFor(() => expect(visiblePanels()).toEqual(["captureForm"]));
+      expect(browser.storage.local.set).toHaveBeenCalledWith({ laterGatorConnection: { deployment, token } });
+      expect(browser.permissions.request).toHaveBeenCalledWith({ origins: [deployment + "/*"] });
+      expect(fetchMock.mock.calls.every(([url]) => String(url).startsWith(deployment))).toBe(true);
+    } else {
+      await vi.waitFor(() => expect(document.querySelector("#connectionStatus")?.textContent).not.toBe("Checking connection…"));
+      expect(browser.storage.local.set).not.toHaveBeenCalled();
+      if (scenario !== "unavailable") expect(fetchMock).not.toHaveBeenCalled();
+    }
   });
 
   it("shows an already-saved page and adds a tick to the regular toolbar icon", async () => {

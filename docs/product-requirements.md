@@ -1,7 +1,7 @@
 # Later Gator — Product Requirements
 
 **Product version:** 1.0.0
-**Status:** current implementation contract; public-release gates are listed in section 17
+**Status:** current implementation contract; deployment gates are listed in section 17
 
 ## 1. Product definition
 
@@ -27,33 +27,19 @@ second source of truth.
 - Honest status: the UI distinguishes waiting, processing, provider delay,
   owner pause, review, failure, and completion.
 - Portable ownership: the owner can export the library as JSON or CSV.
-- Separated trust: the management service may provision and update declared
-  resources but never becomes the bookmark data plane.
+- Personal ownership: authentication and all library operations run on the same
+  personal instance.
 
 ## 3. Deployment and authentication
 
-The owner signs in through Cloudflare Access using an ordinary Cloudflare
-account login, without a user-details consent screen. Access identity and
-installer authorization are purpose-separated: Access identifies the owner,
-while a later explicit consent grants the limited Cloudflare API scopes needed
-to create and manage the personal installation.
+The owner deploys one personal runtime directly to their Cloudflare account.
+Login uses a private `PASSWORD` Worker secret with a minimum length of 16
+characters. Failed attempts are throttled; successful login creates a local
+session. There is no separate identity or publishing service.
 
-The control plane provisions one personal runtime Worker and its declared D1,
-KV or R2, Vectorize, Queue, and private OAuth resources. Each Cloudflare account
-has one reserved `later-gator` Worker and one reserved supporting resource set,
-so retries cannot create suffixed duplicate libraries. It generates a random
-per-installation `INSTANCE_MASTER_KEY` as a Worker secret. There is no Later
-Gator password, recovery phrase, GitHub fork, manual binding ID, or provider key
-in the control-plane flow.
-
-Opening the personal runtime redirects the owner to the control plane. After
-Cloudflare sign-in, the control plane returns a short-lived signed assertion
-bound to the owner, installation, runtime origin, nonce, and one-time token ID.
-The runtime verifies it and creates its own local session. The control plane is
-not consulted for ordinary authenticated application requests.
-
-State-changing dashboard requests require a valid runtime session, a same-origin
-request, and the session's CSRF token.
+The existing `INSTANCE_MASTER_KEY` encrypts provider credentials independently
+of login. State-changing dashboard requests require a valid runtime session,
+a same-origin request, and the session's CSRF token.
 
 ## 4. Setup
 
@@ -212,13 +198,12 @@ approval before deleting source objects.
 
 ### Chrome extension
 
-The official extension selects **Continue with Cloudflare**, completes a public
-PKCE identity flow, and receives a one-time installation-bound pairing grant.
-It asks for host access to the exact personal runtime origin and exchanges the
-grant there for a narrow capture credential. It stores only that origin, the
-capture credential, a safe device identifier, and non-sensitive preferences.
-It never receives installer authorization or provider credentials and does not
-request browsing history.
+The owner generates a private connection code in authenticated Settings and
+pastes it into the unpacked Chrome extension. The code contains the instance
+origin and a scoped capture token. The extension requests permission only for
+that origin, validates the connection, then stores it locally. It never receives
+the owner's password or provider credentials and does not request browsing history.
+Each connection can be revoked from Settings.
 
 The popup can save the page to Unsorted for AI or directly to a fixed folder
 with owner-selected tags and relationships. It reports saved, already saved,
@@ -256,7 +241,7 @@ activity, and an independent Disconnect action.
 
 Setup guidance must provide copyable Codex and Claude Code commands that combine
 remote `mcp add` installation with immediate `mcp login`. Browser authorization
-must continue through Cloudflare owner login and return to the original OAuth
+must continue through the instance password login and return to the original OAuth
 request when the runtime session is absent. The continuation is private,
 single-use, installation-bound through the owner session, and expires within ten
 minutes. Guidance must direct older Claude Code releases without the CLI login
@@ -306,36 +291,13 @@ state to their defaults without exposing deleted content in logs.
 - Setup topic selection, bookmark and tag deletion checkboxes, and confirmation
   dialogs are release-blocking interactions.
 
-## 16. Managed installation and updates
+## 16. Personal deployment and updates
 
-The control plane stores only hashed Cloudflare identity, encrypted renewable
-installer authorization, opaque resource identifiers, installation state,
-release state, and content-free audit outcomes. It must not contain bookmark,
-thumbnail, provider-key, prompt, response, capture, or MCP content.
-
-Runtime releases are immutable and checksum-verified. Each declares its
-application release, schema compatibility, required bindings, health contract,
-assets, and ordered schema changes. Automatic updates:
-
-1. select only ready installations in the active rollout cohort;
-2. use the owner's still-valid installer authorization;
-3. accept unattended schema changes only when they are additive/expand-only;
-4. record a D1 Time Travel bookmark before applying a schema change;
-5. upload a new Worker version while inheriting the existing runtime secret;
-6. stage it at zero traffic and health-check that exact version;
-7. promote it atomically to all traffic; and
-8. health-check again, record success, or roll back when schema compatibility
-   permits.
-
-Managed updates are a condition of the managed Later Gator service because UI,
-runtime APIs, AI-provider contracts, model catalogs, and schemas must remain
-compatible. The product exposes no pause, release pin, or update-authorization
-revocation control. If the owner revokes access directly in Cloudflare, the
-control plane marks the installation as requiring re-authorization and does not
-claim that an increasingly stale runtime remains supported. A control-plane
-outage may delay sign-in, new installation, pairing, and updates; an existing
-runtime and its existing capture credentials continue operating during the
-outage.
+One owner maintains one instance using Wrangler. Updates are deliberate manual
+deployments after local checks, a backup, and disposable-instance validation.
+Existing resource bindings, library data, and the provider-encryption secret
+must be retained. There are no managed rollouts, release cohorts, or public
+publishing requirements.
 
 ## 17. Acceptance gate
 
@@ -350,9 +312,6 @@ A change is complete only when:
 - the Chrome package is regenerated from the canonical extension source; and
 - named production functions remain documented.
 
-Public release additionally requires connected-account acceptance for clean KV
-and R2 installs, a supported prior-version update and rollback, installer
-revocation, control-plane outage behavior, public OAuth client promotion after
-domain verification, privacy/incident/secret-rotation operations, and Chrome Web
-Store publication. These are release checks, not competing future product
-specifications.
+Before production-library testing, validate sign-in, capture/revocation, MCP
+consent, storage, backup and rollback on a disposable instance. Publishing to a
+store or promoting public OAuth clients is outside this personal-app scope.

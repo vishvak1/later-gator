@@ -36,6 +36,7 @@ export default defineConfig({
         // the test environment.
         bindings: {
           TEST_SCHEMA: schema,
+          PASSWORD: "test-owner-password-long-enough",
           INSTANCE_MASTER_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
         },
       },

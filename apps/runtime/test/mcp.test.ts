@@ -261,7 +261,15 @@ describe("OAuth-protected MCP connector", () => {
     const continuation = started.headers.get("set-cookie")?.split(";")[0];
     if (continuation === undefined) throw new Error("Missing MCP login continuation cookie");
 
-    const owner = await login();
+    const signedIn = await exports.default.fetch(`${ORIGIN}/auth/login`, {
+      method: "POST", redirect: "manual",
+      headers: { origin: ORIGIN, cookie: continuation, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: env.PASSWORD }).toString(),
+    });
+    expect(signedIn.status).toBe(303);
+    expect(signedIn.headers.get("location")).toBe("/authorize/resume");
+    const cookies = signedIn.headers.getSetCookie().map((value) => value.split(";")[0] ?? "");
+    const owner = { cookie: cookies.join("; ") };
     const resumed = await exports.default.fetch(`${ORIGIN}/authorize/resume`, {
       redirect: "manual",
       headers: { cookie: `${owner.cookie}; ${continuation}` },

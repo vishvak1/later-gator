@@ -56,29 +56,6 @@ function thumbnailStorageState(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function catalogState() {
-  return {
-    models: {
-      revision: 1,
-      publishedAt: "2026-08-21T00:00:00.000Z",
-      models: [
-        { provider: "cloudflare", modelId: "test-model", displayName: "Test model", isDefault: false, deprecatedAfter: null, minimumRuntimeRelease: "1.0.0" },
-        { provider: "cloudflare", modelId: "@cf/nvidia/nemotron-3-120b-a12b", displayName: "Nemotron 3", isDefault: false, deprecatedAfter: null, minimumRuntimeRelease: "1.0.0" },
-        { provider: "cloudflare", modelId: "@cf/meta/llama-3.3-70b-instruct-fp8-fast", displayName: "Llama 3.3", isDefault: true, deprecatedAfter: null, minimumRuntimeRelease: "1.0.0" },
-      ],
-    },
-    storagePlans: {
-      reviewedOn: "2026-08-21",
-      disclaimer: "Allowances may change.",
-      plans: [
-        { storageVariant: "kv", title: "Workers KV", summary: "KV summary", billingProfileMayBeRequired: false, informationalAllowances: ["1 GB"], officialUrls: ["https://developers.cloudflare.com/kv/platform/pricing/"] },
-        { storageVariant: "r2", title: "R2", summary: "R2 summary", billingProfileMayBeRequired: true, informationalAllowances: ["10 GB-month"], officialUrls: ["https://developers.cloudflare.com/r2/pricing/"] },
-        { storageVariant: "disabled", title: "Disabled", summary: "No thumbnails", billingProfileMayBeRequired: false, informationalAllowances: [], officialUrls: ["https://developers.cloudflare.com/workers/"] },
-      ],
-    },
-  };
-}
-
 describe("settings navigation lifecycle", () => {
   beforeEach(async () => {
     vi.resetModules();
@@ -131,7 +108,6 @@ describe("settings navigation lifecycle", () => {
       if (path === "/api/storage/thumbnails" && (init?.method ?? "GET") === "GET") {
         return Promise.resolve(json({ storage }));
       }
-      if (path === "/api/catalogs") return Promise.resolve(json({ catalogs: catalogState() }));
       if (path === "/api/capture/devices") return Promise.resolve(json({ devices: [] }));
       if (path === "/api/storage/thumbnails/disable" && init?.method === "POST") {
         storage = thumbnailStorageState({ mode: "disabled", safeErrorCode: "thumbnail_storage_disabled" });
@@ -178,7 +154,7 @@ describe("settings navigation lifecycle", () => {
     window.dispatchEvent(new Event("pagehide"));
   });
 
-  it("shows and independently revokes Cloudflare-paired Chrome devices", async () => {
+  it("shows and independently revokes locally connected Chrome devices", async () => {
     let connected = true;
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const path = requestPath(input);
@@ -189,7 +165,6 @@ describe("settings navigation lifecycle", () => {
       if (path === "/api/storage/thumbnails") {
         return Promise.resolve(json({ storage: thumbnailStorageState() }));
       }
-      if (path === "/api/catalogs") return Promise.resolve(json({ catalogs: catalogState() }));
       if (path === "/api/capture/devices") {
         return Promise.resolve(json({ devices: connected ? [{
           id: "device_12345678",
@@ -222,7 +197,7 @@ describe("settings navigation lifecycle", () => {
     await vi.waitFor(() => {
       expect(document.querySelector("#extensionDevices")?.textContent).toContain("Chrome on Mac");
     });
-    expect(document.querySelector("#extensionCredential")).toBeNull();
+    expect(document.querySelector<HTMLElement>("#extensionCredentialPanel")?.hidden).toBe(true);
     document.querySelector<HTMLButtonElement>("#extensionDevices button")?.click();
     await vi.waitFor(() => {
       expect(document.querySelector("#extensionDevices")?.textContent)
@@ -257,7 +232,6 @@ describe("settings navigation lifecycle", () => {
       if (path === "/api/storage/thumbnails") {
         return Promise.resolve(json({ storage: thumbnailStorageState() }));
       }
-      if (path === "/api/catalogs") return Promise.resolve(json({ catalogs: catalogState() }));
       if (path === "/api/capture/devices") return Promise.resolve(json({ devices: [] }));
       if (path.endsWith("/api/mcp/connections/11111111-1111-4111-8111-111111111111") &&
           init?.method === "DELETE") {
@@ -275,6 +249,15 @@ describe("settings navigation lifecycle", () => {
 
     await import("../src/main");
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    document.querySelector<HTMLButtonElement>("#pairExtension")?.click();
+    expect(document.querySelector<HTMLButtonElement>("#pairExtension")?.disabled).toBe(true);
+    await vi.waitFor(() => expect(document.querySelector("#extensionCredentialStatus")?.textContent).toContain("Connection code generated"));
+    const code = document.querySelector("#extensionCredential")?.textContent ?? "";
+    expect(code).toMatch(/^later-gator\./u);
+    expect(JSON.parse(atob(code.slice("later-gator.".length).replaceAll("-", "+").replaceAll("_", "/")))).toEqual({ deployment: location.origin, token });
+    document.querySelector<HTMLButtonElement>("#copyExtensionCredential")?.click();
+    await vi.waitFor(() => expect(writeText).toHaveBeenCalledWith(code));
 
     document.querySelector<HTMLButtonElement>("#pairIos")?.click();
     await vi.waitFor(() => {
@@ -358,9 +341,6 @@ describe("provider form under the settings refresh poll", () => {
       if (path.startsWith("/api/storage/thumbnails")) {
         return Promise.resolve(json({ storage: thumbnailStorageState() }));
       }
-      if (path.startsWith("/api/catalogs")) {
-        return Promise.resolve(json({ catalogs: catalogState() }));
-      }
       if (path.startsWith("/api/capture/devices")) {
         return Promise.resolve(json({ devices: [] }));
       }
@@ -376,7 +356,7 @@ describe("provider form under the settings refresh poll", () => {
     await import("../src/main");
     const model = document.getElementById("providerModel");
     const status = document.querySelector<HTMLElement>("#providerStatus");
-    if (!(model instanceof HTMLSelectElement) || status === null) {
+    if (!(model instanceof HTMLInputElement) || status === null) {
       throw new Error("provider form missing");
     }
     await vi.waitFor(() => expect(model.value).toBe("test-model"));
@@ -406,15 +386,9 @@ describe("provider form under the settings refresh poll", () => {
     vi.useRealTimers();
   });
 
-  it("keeps an unknown active model visible and disables another deprecated model", async () => {
+  it("keeps any active model visible and accepts a model without a catalog", async () => {
     const bootstrap = settingsState();
     bootstrap.provider.model = "legacy-active-model";
-    const catalogs = catalogState();
-    const deprecatedModel = catalogs.models.models[0] as
-      | { deprecatedAfter: string | null }
-      | undefined;
-    if (deprecatedModel === undefined) throw new Error("deprecated model fixture missing");
-    deprecatedModel.deprecatedAfter = "2026-08-01T00:00:00.000Z";
     vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
       const path = requestPath(input);
       if (path.startsWith("/api/bootstrap")) return Promise.resolve(json({ state: bootstrap }));
@@ -424,7 +398,6 @@ describe("provider form under the settings refresh poll", () => {
       if (path.startsWith("/api/storage/thumbnails")) {
         return Promise.resolve(json({ storage: thumbnailStorageState() }));
       }
-      if (path.startsWith("/api/catalogs")) return Promise.resolve(json({ catalogs }));
       if (path.startsWith("/api/capture/devices")) return Promise.resolve(json({ devices: [] }));
       return Promise.resolve(json({ ok: true }));
     }));
@@ -432,15 +405,11 @@ describe("provider form under the settings refresh poll", () => {
     await import("../src/main");
 
     const model = document.getElementById("providerModel");
-    if (!(model instanceof HTMLSelectElement)) throw new Error("provider model select missing");
+    if (!(model instanceof HTMLInputElement)) throw new Error("provider model input missing");
     await vi.waitFor(() => expect(model.value).toBe("legacy-active-model"));
-    const options = [...model.options];
-    expect(options[0]?.textContent).toBe(
-      "legacy-active-model — current model unavailable in catalog",
-    );
-    const deprecated = options.find((option) => option.value === "test-model");
-    expect(deprecated?.textContent).toBe("Test model — deprecated");
-    expect(deprecated?.disabled).toBe(true);
+    model.value = "custom-owner-model";
+    model.dispatchEvent(new Event("input", { bubbles: true }));
+    expect(model.value).toBe("custom-owner-model");
     window.dispatchEvent(new Event("pagehide"));
   });
 });

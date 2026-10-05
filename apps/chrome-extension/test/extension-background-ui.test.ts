@@ -83,14 +83,14 @@ describe("extension saved-page background indicator", () => {
     }
   });
 
-  it("declares identity and only the bounded managed-runtime host ceiling", () => {
+  it("requests only local capture permissions and the bounded runtime host ceiling", () => {
     const manifest = JSON.parse(chromeManifestRaw) as {
       permissions: string[];
       optional_host_permissions?: string[];
       background?: { service_worker?: string };
     };
     expect(manifest.permissions).toContain("tabs");
-    expect(manifest.permissions).toContain("identity");
+    expect(manifest.permissions).not.toContain("identity");
     expect(manifest.optional_host_permissions).toEqual([
       "https://*.workers.dev/*",
       "http://localhost/*",

@@ -9,7 +9,6 @@ export default tseslint.config(
     ignores: [
       ".wrangler/**",
       "**/dist/**",
-      "**/release-artifacts/**",
       "apps/chrome-extension/assets/**",
       "apps/chrome-extension/src/**",
       "extension/**",

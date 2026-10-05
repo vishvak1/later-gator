@@ -1,5 +1,7 @@
 "use strict";
 
+import { extensionConnectionCode } from "./extension-connection";
+
 import type {
   Bookmark,
   TagSummary,
@@ -162,41 +164,6 @@ interface ThumbnailStorageResponse {
   storage: ThumbnailStorageSummary;
 }
 
-interface CatalogModel {
-  provider: "cloudflare" | "openai" | "anthropic";
-  modelId: string;
-  displayName: string;
-  isDefault: boolean;
-  deprecatedAfter: string | null;
-  minimumRuntimeRelease: string;
-}
-
-interface ModelCatalog {
-  publishedAt: string;
-  revision: number;
-  models: CatalogModel[];
-}
-
-interface StoragePlanCatalog {
-  reviewedOn: string;
-  disclaimer: string;
-  plans: Array<{
-    storageVariant: "kv" | "r2" | "disabled";
-    title: string;
-    summary: string;
-    billingProfileMayBeRequired: boolean;
-    informationalAllowances: string[];
-    officialUrls: string[];
-  }>;
-}
-
-interface PublicCatalogResponse {
-  catalogs: {
-    models: ModelCatalog | null;
-    storagePlans: StoragePlanCatalog | null;
-  };
-}
-
 interface ExtensionDevice {
   id: string;
   name: string;
@@ -204,7 +171,7 @@ interface ExtensionDevice {
   lastUsedAt: string | null;
 }
 
-let publicModelCatalog: ModelCatalog | null = null;
+
 
 /** Sends an authenticated dashboard API request and returns its parsed JSON body. */
 async function api<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
@@ -2570,7 +2537,7 @@ async function loadExtensionDevices(): Promise<void> {
 async function loadSettings() {
   bootstrap = (await api<{ state: BootstrapState }>("/api/bootstrap")).state;
   const providerSelect = el<HTMLSelectElement>("#providerName");
-  const providerModel = el<HTMLSelectElement>("#providerModel");
+  const providerModel = el<HTMLInputElement>("#providerModel");
   // Settings polls every 5s. Overwriting these fields mid-edit made the model
   // box impossible to type into, and replaced the result of a test the owner
   // had just run with a stale "ready".
@@ -2606,83 +2573,9 @@ async function loadSettings() {
   return bootstrap;
 }
 
-/** Maps the runtime's provider name to the public catalog's provider name. */
-function catalogProvider(provider: string): CatalogModel["provider"] {
-  return provider === "workers-ai" ? "cloudflare" : provider as CatalogModel["provider"];
-}
-
-/** Renders signed model choices while retaining an unknown active model visibly. */
-function renderProviderModels(provider: string, selectedModel?: string): void {
-  const select = el<HTMLSelectElement>("#providerModel");
-  const models = publicModelCatalog?.models.filter(
-    (model) => model.provider === catalogProvider(provider),
-  ) ?? [];
-  const current = selectedModel ?? select.value;
-  select.replaceChildren();
-  if (current !== "" && !models.some((model) => model.modelId === current)) {
-    const unavailable = document.createElement("option");
-    unavailable.value = current;
-    unavailable.textContent = `${current} — current model unavailable in catalog`;
-    select.appendChild(unavailable);
-  }
-  for (const model of models) {
-    const option = document.createElement("option");
-    option.value = model.modelId;
-    const deprecated = model.deprecatedAfter !== null ? " — deprecated" : "";
-    option.textContent = `${model.displayName}${deprecated}`;
-    option.disabled = model.deprecatedAfter !== null && model.modelId !== current;
-    select.appendChild(option);
-  }
-  const preferred = models.find((model) => model.isDefault)?.modelId ?? models[0]?.modelId ?? "";
-  select.value = current !== "" ? current : preferred;
-  if (select.value === "" && preferred !== "") select.value = preferred;
-}
-
-/** Renders dated Cloudflare facts as informational links, never quota controls. */
-function renderStoragePlanFacts(catalog: StoragePlanCatalog | null): void {
-  const container = el("#storagePlanFacts");
-  container.replaceChildren();
-  if (catalog === null) {
-    const fallback = document.createElement("p");
-    fallback.className = "muted";
-    fallback.textContent = "Current plan information is temporarily unavailable; storage behavior is unchanged.";
-    container.appendChild(fallback);
-    return;
-  }
-  const reviewed = document.createElement("p");
-  reviewed.className = "muted";
-  reviewed.textContent = `Plan facts reviewed ${catalog.reviewedOn}. ${catalog.disclaimer}`;
-  container.appendChild(reviewed);
-  for (const plan of catalog.plans.filter((entry) => entry.storageVariant !== "disabled")) {
-    const detail = document.createElement("details");
-    const summary = document.createElement("summary");
-    summary.textContent = plan.title;
-    const copy = document.createElement("p");
-    copy.className = "muted";
-    copy.textContent = `${plan.summary} ${plan.informationalAllowances.join("; ")}.`;
-    detail.appendChild(summary);
-    detail.appendChild(copy);
-    for (const [index, url] of plan.officialUrls.entries()) {
-      const link = document.createElement("a");
-      link.href = url;
-      link.target = "_blank";
-      link.rel = "noreferrer";
-      link.textContent = index === 0 ? "Official Cloudflare details ↗" : "Additional limits ↗";
-      detail.appendChild(link);
-      if (index < plan.officialUrls.length - 1) detail.appendChild(document.createTextNode(" · "));
-    }
-    container.appendChild(detail);
-  }
-}
-
-/** Loads the last signature-verified catalogs cached by this installation. */
-async function loadPublicCatalogs(): Promise<void> {
-  const response = await api<PublicCatalogResponse>("/api/catalogs");
-  publicModelCatalog = response.catalogs.models;
-  renderStoragePlanFacts(response.catalogs.storagePlans);
-  if (bootstrap !== null && el("#providerModel").dataset.dirty !== "true") {
-    renderProviderModels(state().provider.provider, state().provider.model);
-  }
+/** Keeps the owner's model editable without a hosted catalog. */
+function renderProviderModels(_provider: string, selectedModel?: string): void {
+  el<HTMLInputElement>("#providerModel").value = selectedModel ?? "";
 }
 
 /** Formats an approximate thumbnail byte count without treating it as quota truth. */
@@ -2744,7 +2637,6 @@ if (page === "settings") {
         loadMcpConnections(),
         loadExtensionDevices(),
         loadThumbnailStorage(),
-        loadPublicCatalogs(),
       ]);
       const activeImport = state().activeImport;
       if (activeImport !== null) {
@@ -2788,14 +2680,15 @@ if (page === "settings") {
   }, { once: true });
   /** Marks the provider fields as owner-edited so the poll stops overwriting them. */
   const markProviderDirty = (): void => {
-    el<HTMLSelectElement>("#providerModel").dataset.dirty = "true";
+    el<HTMLInputElement>("#providerModel").dataset.dirty = "true";
   };
   /** Releases provider fields for the dashboard UI. */
   const releaseProviderFields = (): void => {
-    delete el<HTMLSelectElement>("#providerModel").dataset.dirty;
+    delete el<HTMLInputElement>("#providerModel").dataset.dirty;
     delete el("#providerStatus").dataset.transient;
   };
-  el<HTMLSelectElement>("#providerModel").addEventListener("change", markProviderDirty);
+  el<HTMLInputElement>("#providerModel").addEventListener("input", markProviderDirty);
+  el<HTMLInputElement>("#providerModel").addEventListener("change", markProviderDirty);
   el<HTMLInputElement>("#providerKey").addEventListener("input", markProviderDirty);
   el<HTMLSelectElement>("#providerName").addEventListener("change", () => {
     // Each provider names its models differently, so a switch is an edit.
@@ -2874,7 +2767,7 @@ if (page === "settings") {
           method: "POST",
           body: JSON.stringify({
             provider: el<HTMLSelectElement>("#providerName").value,
-            model: el<HTMLSelectElement>("#providerModel").value.trim(),
+            model: el<HTMLInputElement>("#providerModel").value.trim(),
             aiGatewayId: el<HTMLInputElement>("#aiGatewayId").value.trim(),
           }),
         });
@@ -2895,7 +2788,7 @@ if (page === "settings") {
     setStatus("#providerStatus", "Testing provider…", "loading");
     try {
       const provider = el<HTMLSelectElement>("#providerName").value;
-      const model = el<HTMLSelectElement>("#providerModel").value.trim();
+      const model = el<HTMLInputElement>("#providerModel").value.trim();
       const credential = el<HTMLInputElement>("#providerKey").value || null;
       await api("/api/providers/test", { method: "POST", body: JSON.stringify({ provider, model, credential }) });
       await api("/api/providers/activate", {
@@ -2959,6 +2852,28 @@ if (page === "settings") {
       setImportPanel(false);
       currentImportId = null;
     }
+  });
+  el<HTMLButtonElement>("#pairExtension").addEventListener("click", async () => {
+    const button = el<HTMLButtonElement>("#pairExtension");
+    button.disabled = true;
+    el("#extensionCredentialPanel").hidden = false;
+    setStatus("#extensionCredentialStatus", "Creating connection…", "loading");
+    try {
+      const result = await api<{ credential: { token: string } }>("/api/capture/credentials", {
+        method: "POST",
+        body: JSON.stringify({ kind: "extension", name: "Browser extension" }),
+      });
+      showSecret("#extensionCredential", extensionConnectionCode(location.origin, result.credential.token));
+      setStatus("#extensionCredentialStatus", "Connection code generated. Copy it before leaving this page.");
+      await loadExtensionDevices();
+    } catch (error) {
+      setStatus("#extensionCredentialStatus", messageOf(error), "error");
+    } finally {
+      button.disabled = false;
+    }
+  });
+  el<HTMLButtonElement>("#copyExtensionCredential").addEventListener("click", async () => {
+    await copySecret("#extensionCredential", "#extensionCredentialStatus", el<HTMLButtonElement>("#copyExtensionCredential"));
   });
   el<HTMLButtonElement>("#pairIos").addEventListener("click", async () => {
     const result = await api<{ credential: { token: string } }>("/api/capture/credentials", {

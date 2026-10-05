@@ -12,5 +12,3 @@ coverage/
 .DS_Store
 **/web/public/
 extension/chrome/
-apps/control-plane/.dev.vars
-apps/control-plane/.dev.vars.*

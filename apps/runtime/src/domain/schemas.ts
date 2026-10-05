@@ -164,3 +164,6 @@ export const thumbnailMessageSchema = z.union([
 ]);
 
 export type ThumbnailMessage = z.infer<typeof thumbnailMessageSchema>;
+
+/** Bounds the single-owner password submitted at login. */
+export const loginInputSchema = z.strictObject({ password: z.string().min(1).max(1024) });

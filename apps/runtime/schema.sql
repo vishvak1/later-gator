@@ -23,39 +23,6 @@ CREATE TABLE IF NOT EXISTS app_state (
 INSERT OR IGNORE INTO app_state (id, setup_status, created_at, updated_at)
 VALUES (1, 'setup_incomplete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
 
-CREATE TABLE IF NOT EXISTS runtime_release_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  release TEXT NOT NULL,
-  schema_version INTEGER NOT NULL CHECK (schema_version >= 0),
-  health_contract_version INTEGER NOT NULL CHECK (health_contract_version > 0),
-  installed_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-INSERT OR IGNORE INTO runtime_release_state (
-  id, release, schema_version, health_contract_version, installed_at, updated_at
-) VALUES (1, '1.0.0', 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
-
-CREATE TABLE IF NOT EXISTS runtime_schema_migrations (
-  migration_id TEXT PRIMARY KEY,
-  from_schema_version INTEGER NOT NULL CHECK (from_schema_version >= 0),
-  to_schema_version INTEGER NOT NULL CHECK (to_schema_version > from_schema_version),
-  phase TEXT NOT NULL CHECK (phase IN ('expand', 'migrate', 'contract')),
-  checksum TEXT NOT NULL,
-  state TEXT NOT NULL CHECK (state IN ('running', 'complete', 'failed')),
-  time_travel_bookmark TEXT,
-  started_at TEXT NOT NULL,
-  completed_at TEXT
-);
-
-INSERT OR IGNORE INTO runtime_schema_migrations (
-  migration_id, from_schema_version, to_schema_version, phase, checksum,
-  state, started_at, completed_at
-) VALUES (
-  'base-schema', 0, 1, 'expand',
-  'managed-by-release-artifact', 'complete', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS profile (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   personal_instructions TEXT,
@@ -275,26 +242,11 @@ CREATE TABLE IF NOT EXISTS thumbnail_migration_objects (
 CREATE INDEX IF NOT EXISTS thumbnail_migration_objects_work
   ON thumbnail_migration_objects(migration_id, state, thumbnail_id);
 
-CREATE TABLE IF NOT EXISTS owner_identity (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  subject TEXT NOT NULL UNIQUE,
-  bound_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS owner_login_requests (
-  state_hash TEXT PRIMARY KEY,
-  nonce_hash TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  consumed_at TEXT
-);
-
-CREATE INDEX IF NOT EXISTS owner_login_requests_expiry
-  ON owner_login_requests(expires_at, consumed_at);
-
-CREATE TABLE IF NOT EXISTS owner_assertion_jtis (
-  jti_hash TEXT PRIMARY KEY,
-  consumed_at TEXT NOT NULL
+CREATE TABLE IF NOT EXISTS login_attempts (
+  client_hash TEXT PRIMARY KEY,
+  window_started_at TEXT NOT NULL,
+  failure_count INTEGER NOT NULL,
+  blocked_until TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sessions (
@@ -333,24 +285,6 @@ CREATE TABLE IF NOT EXISTS provider_settings (
 INSERT OR IGNORE INTO provider_settings (id, provider, model, updated_at)
 VALUES (1, 'workers-ai', '@cf/meta/llama-3.3-70b-instruct-fp8-fast', CURRENT_TIMESTAMP);
 
-CREATE TABLE IF NOT EXISTS public_catalog_cache (
-  kind TEXT PRIMARY KEY CHECK (kind IN ('models', 'storage-plans')),
-  revision INTEGER NOT NULL CHECK (revision > 0),
-  payload_json TEXT NOT NULL,
-  source_timestamp TEXT NOT NULL,
-  accepted_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS public_catalog_status (
-  kind TEXT PRIMARY KEY CHECK (kind IN ('models', 'storage-plans')),
-  last_checked_at TEXT,
-  last_safe_error_code TEXT,
-  updated_at TEXT NOT NULL
-);
-
-INSERT OR IGNORE INTO public_catalog_status (kind, updated_at)
-VALUES ('models', CURRENT_TIMESTAMP), ('storage-plans', CURRENT_TIMESTAMP);
-
 CREATE TABLE IF NOT EXISTS provider_candidates (
   id INTEGER PRIMARY KEY CHECK (id = 1),
   provider TEXT NOT NULL CHECK (provider IN ('workers-ai', 'openai', 'anthropic')),
@@ -384,11 +318,6 @@ CREATE TABLE IF NOT EXISTS extension_devices (
 
 CREATE INDEX IF NOT EXISTS extension_devices_active
   ON extension_devices(revoked_at, connected_at DESC);
-
-CREATE TABLE IF NOT EXISTS extension_pairing_jtis (
-  jti_hash TEXT PRIMARY KEY,
-  consumed_at TEXT NOT NULL
-);
 
 CREATE TABLE IF NOT EXISTS mcp_connections (
   id TEXT PRIMARY KEY,

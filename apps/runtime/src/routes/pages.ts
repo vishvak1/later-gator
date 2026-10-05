@@ -170,15 +170,17 @@ function howToDialog(): string {
   </dialog>`;
 }
 
-/** Renders the Cloudflare-only owner sign-in entry point. */
+/** Renders the signed-out password form with CSRF-safe client behavior. */
 export function loginPage(
-  error: "unavailable" | null = null,
+  error: "invalid" | "unavailable" | null = null,
   theme: Theme = "system",
 ): Response {
   const errorMessage =
-    error === "unavailable"
-      ? "Cloudflare sign-in could not be completed. Please try again."
-      : null;
+    error === "invalid"
+      ? "That password was not accepted."
+      : error === "unavailable"
+        ? "Secure authentication is temporarily unavailable. Please try again after updating Later Gator."
+        : null;
   return page(
     "Sign in",
     "login",
@@ -188,8 +190,15 @@ export function loginPage(
         <h1>Later Gator</h1>
         <p class="muted">Your private, AI-organized bookmark library.</p>
         ${errorMessage === null ? "" : `<p class="error" role="alert">${errorMessage}</p>`}
-        <a class="button-link wide" href="/auth/login">Continue with Cloudflare</a>
-        <p class="muted">Later Gator does not use a separate password or recovery phrase.</p>
+        <form id="loginForm" class="stack" method="post" action="/auth/login">
+          <label for="loginPassword">Later Gator password</label>
+          <div class="password-field">
+            <input id="loginPassword" name="password" type="password" autocomplete="current-password"
+              required maxlength="1024" autofocus aria-describedby="loginValidation">
+          </div>
+          <p id="loginValidation" class="status error" role="alert" hidden></p>
+          <button class="wide" type="submit">Continue</button>
+        </form>
       </section>
     </main>`,
     error === "unavailable" ? 503 : 200,
@@ -493,7 +502,7 @@ export function settingsPage(theme: Theme = "system"): Response {
         <section class="panel panel-flow"><h2>AI provider</h2>
           <form id="providerForm" class="stack">
             <label>Provider<select id="providerName"><option value="workers-ai">Cloudflare Workers AI</option><option value="openai">OpenAI</option><option value="anthropic">Anthropic</option></select></label>
-            <label>Model<select id="providerModel" required><option value="">Loading supported models…</option></select></label>
+            <label>Model<input id="providerModel" maxlength="160" placeholder="Enter a model ID" required></label>
             <label id="providerKeyLabel">API key<input id="providerKey" type="password" autocomplete="off"></label>
             <div class="control-row"><button type="submit">Test and activate</button><button id="openAdvancedProvider" class="icon-toggle" type="button" aria-label="Advanced provider settings" title="Advanced">${ICONS.settings}</button></div>
           </form><p id="providerStatus" class="status"></p>
@@ -529,7 +538,7 @@ export function settingsPage(theme: Theme = "system"): Response {
         <section class="panel panel-flow"><h2>Thumbnail storage</h2>
           <p id="thumbnailStorageSummary" class="muted">Loading personal storage status…</p>
           <p id="thumbnailStorageMigration" class="muted" hidden></p>
-          <div id="storagePlanFacts" class="stack"><p class="muted">Loading current Cloudflare plan information…</p></div>
+          <p class="muted">Review storage usage and billing in your Cloudflare account.</p>
           <div class="connection-actions">
             <button id="disableThumbnailStorage" class="secondary" type="button">Stop future thumbnails</button>
             <button id="enableKvThumbnailStorage" class="secondary" type="button" hidden>Use KV again</button>
@@ -541,14 +550,18 @@ export function settingsPage(theme: Theme = "system"): Response {
           <p id="thumbnailStorageStatus" class="status" role="status"></p>
         </section>
         <section class="panel panel-flow"><h2>Browser extension</h2>
-          <p class="muted">Install the official Chrome extension, then choose Continue with Cloudflare in its popup. It discovers this personal installation and asks Chrome for access only to this Worker.</p>
-          <div class="connection-actions"><button class="secondary" type="button" data-how-to="chrome">Set up Chrome</button></div>
-          <div id="extensionDevices" class="ai-connection-list" aria-live="polite"><p class="muted">Loading connected Chrome devices…</p></div>
-          <p id="extensionDeviceStatus" class="status" role="status"></p>
+          <p class="muted">Create one code containing everything the extension needs. Copy it once, then paste it into the toolbar popup.</p>
+          <div class="connection-actions"><button id="pairExtension">Generate connection code</button><button class="secondary" type="button" data-how-to="chrome">Set up Chrome</button></div>
+          <div id="extensionCredentialPanel" class="connection-code-panel" hidden>
+            <p class="eyebrow">Private connection code</p>
+            <pre id="extensionCredential" class="secret-output" tabindex="0"></pre>
+            <div class="actions split"><p id="extensionCredentialStatus" class="status" role="status"></p><button id="copyExtensionCredential" type="button">Copy code</button></div>
+          </div>
+          <div id="extensionDevices" class="ai-connection-list"></div><p id="extensionDeviceStatus" class="status" role="status"></p>
         </section>
         <section class="panel panel-flow"><h2>iOS Share Sheet Shortcut</h2><p class="muted">Generate one endpoint and token for an iPhone or iPad Shortcut.</p><div class="connection-actions"><button id="pairIos">Generate iOS connection</button><a class="button-link" href="${IOS_SHORTCUT_URL}" target="_blank" rel="noreferrer">Add to Shortcuts ↗</a><button class="secondary" type="button" data-how-to="ios">Setup instructions</button></div><div id="iosCredentialPanel" class="connection-code-panel" hidden><div class="connection-secret"><p class="eyebrow">Endpoint</p><pre id="iosEndpoint" class="secret-output" tabindex="0"></pre><button id="copyIosEndpoint" type="button">Copy endpoint</button></div><div class="connection-secret"><p class="eyebrow">One-time token</p><pre id="iosToken" class="secret-output" tabindex="0"></pre><button id="copyIosToken" type="button">Copy token</button></div><p id="iosCredentialStatus" class="status" role="status"></p></div></section>
-        <section class="panel panel-flow span-two"><div><p class="eyebrow">MCP</p><h2>Connect Codex or Claude Code</h2></div><p class="muted">Copy one command into your terminal. It installs Later Gator, opens your browser for Cloudflare sign-in when needed, and asks you to approve read-only access. No developer mode or secret token is required.</p><div class="connection-code-panel mcp-command-panel"><div class="connection-secret"><p class="eyebrow">Codex</p><pre id="codexMcpCommand" class="secret-output" tabindex="0"></pre><button id="copyCodexMcpCommand" type="button">Copy Codex command</button></div><div class="connection-secret"><p class="eyebrow">Claude Code</p><pre id="claudeMcpCommand" class="secret-output" tabindex="0"></pre><button id="copyClaudeMcpCommand" type="button">Copy Claude command</button></div></div><div class="connection-actions"><button class="secondary" type="button" data-how-to="mcp">Setup help</button></div><p id="mcpConnectionStatus" class="status" role="status"></p><div id="mcpConnections" class="ai-connection-list" aria-live="polite"><p class="muted">Loading connected assistants…</p></div><details class="advanced-connection"><summary>Advanced connection details</summary><p class="muted">Use this address with any OAuth-capable remote MCP client.</p><div class="endpoint-row"><code id="mcpEndpoint"></code><button id="copyMcpEndpoint" class="secondary" type="button">Copy address</button></div></details></section>
-        <section class="panel panel-flow span-two danger-zone"><p class="eyebrow">Testing tools</p><h2>Reset Later Gator</h2><p>Delete every bookmark, tag, thumbnail, import, connection, provider credential, and preference, then return this installation to setup. Your Cloudflare owner binding is kept.</p><button id="resetApplicationButton" class="danger" type="button">Delete everything and restart setup</button></section>
+        <section class="panel panel-flow span-two"><div><p class="eyebrow">MCP</p><h2>Connect Codex or Claude Code</h2></div><p class="muted">Copy one command into your terminal. It installs Later Gator, opens your browser for Later Gator sign-in when needed, and asks you to approve read-only access. No developer mode or secret token is required.</p><div class="connection-code-panel mcp-command-panel"><div class="connection-secret"><p class="eyebrow">Codex</p><pre id="codexMcpCommand" class="secret-output" tabindex="0"></pre><button id="copyCodexMcpCommand" type="button">Copy Codex command</button></div><div class="connection-secret"><p class="eyebrow">Claude Code</p><pre id="claudeMcpCommand" class="secret-output" tabindex="0"></pre><button id="copyClaudeMcpCommand" type="button">Copy Claude command</button></div></div><div class="connection-actions"><button class="secondary" type="button" data-how-to="mcp">Setup help</button></div><p id="mcpConnectionStatus" class="status" role="status"></p><div id="mcpConnections" class="ai-connection-list" aria-live="polite"><p class="muted">Loading connected assistants…</p></div><details class="advanced-connection"><summary>Advanced connection details</summary><p class="muted">Use this address with any OAuth-capable remote MCP client.</p><div class="endpoint-row"><code id="mcpEndpoint"></code><button id="copyMcpEndpoint" class="secondary" type="button">Copy address</button></div></details></section>
+        <section class="panel panel-flow span-two danger-zone"><p class="eyebrow">Testing tools</p><h2>Reset Later Gator</h2><p>Delete every bookmark, tag, thumbnail, import, connection, provider credential, and preference, then return this installation to setup. Your owner password and instance encryption key are kept.</p><button id="resetApplicationButton" class="danger" type="button">Delete everything and restart setup</button></section>
       </div>
       <p id="settingsStatus" class="status"></p>
     </main>

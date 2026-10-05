@@ -73,17 +73,16 @@ describe("Worker foundation", () => {
     await env.DB.prepare("DELETE FROM sessions").run();
   });
 
-  it("serves Cloudflare-only owner sign-in at the root", async () => {
+  it("serves single-owner password sign-in at the root", async () => {
     const response = await exports.default.fetch("https://later-gator.test/");
     expect(response.status).toBe(200);
     const html = await response.text();
-    expect(html).toContain("Continue with Cloudflare");
-    expect(html).toContain("does not use a separate password or recovery phrase");
-    expect(html).not.toContain("Later Gator password");
+    expect(html).not.toContain("Continue with Cloudflare");
+    expect(html).toContain("Later Gator password");
     expect(html).toContain('rel="icon"');
     expect(html).toContain('href="/img/icon-transparent.png"');
     expect(html).toContain('rel="apple-touch-icon"');
-    expect(html).not.toContain('type="password"');
+    expect(html).toContain('type="password"');
   });
 
   it("uses ordinary sessions without password-derived encryption material", async () => {
@@ -99,27 +98,17 @@ describe("Worker foundation", () => {
     expect(response.headers.get("location")).toBe("https://later-gator.test/setup");
   });
 
-  it("starts one installation-bound owner login without storing raw state or nonce", async () => {
-    const response = await exports.default.fetch("https://later-gator.test/auth/login", {
-      redirect: "manual",
-    });
-    expect(response.status).toBe(302);
-    const destination = new URL(response.headers.get("location") ?? "");
-    expect(destination.origin).toBe("https://control-plane.test");
-    expect(destination.pathname).toBe("/runtime/login");
-    expect(destination.searchParams.get("installation_id")).toBe("test-installation-0001");
-    expect(destination.searchParams.get("callback")).toBe(
-      "https://later-gator.test/auth/callback",
-    );
-    const state = destination.searchParams.get("state");
-    const nonce = destination.searchParams.get("nonce");
-    expect(state).toMatch(/^[A-Za-z0-9_-]{40,}$/u);
-    expect(nonce).toMatch(/^[A-Za-z0-9_-]{40,}$/u);
-    const row = await env.DB
-      .prepare("SELECT state_hash, nonce_hash FROM owner_login_requests")
-      .first<{ state_hash: string; nonce_hash: string }>();
-    expect(row?.state_hash).not.toBe(state);
-    expect(row?.nonce_hash).not.toBe(nonce);
+  it("serves the local sign-in form without an external redirect", async () => {
+    const response = await exports.default.fetch("https://later-gator.test/auth/login");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("location")).toBeNull();
+    expect(await response.text()).toContain('action="/auth/login"');
+  });
+
+  it("reports only instance health without release or private metadata", async () => {
+    const response = await exports.default.fetch("https://later-gator.test/health");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "ready" });
   });
 
   it("requires CSRF on setup mutations", async () => {

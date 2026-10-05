@@ -8,35 +8,16 @@ Workers AI, OpenAI, or Anthropic.
 Raindrop is optional and is used only as a CSV import source. Later Gator never
 connects to, changes, or deletes data in your Raindrop account.
 
-## Architecture and availability
+## Single personal instance
 
-The managed product has two deliberately separate Workers:
+Later Gator is maintained for one owner. One Cloudflare Worker serves sign-in,
+the dashboard, capture APIs, MCP, and bookmark processing. There is no public
+installer, management service, hosted catalog, or automatic release rollout.
 
-- `latergator.app` is the control plane. It signs owners in with Cloudflare,
-  provisions installations, records content-free resource/release metadata,
-  pairs the official Chrome extension, and manages runtime releases.
-- Each owner has a personal runtime Worker in their own Cloudflare account. It
-  serves the dashboard, capture APIs, MCP, and all bookmark processing. Private
-  library data, thumbnails, provider credentials, prompts, responses, and
-  application logs stay there.
-
-The development control plane and the first disposable KV installation have
-passed their initial connected-account test. The public OAuth clients, clean R2
-installation, prior-version update/rollback drill, and Chrome Web Store release
-are still release gates. The managed installer is therefore not yet presented
-here as a public production service.
-
-When public installation opens, the owner will sign in at `latergator.app`,
-choose thumbnail storage, and approve the exact Cloudflare permissions shown in
-the consent screen. Later Gator then provisions the personal Worker, D1, private
-OAuth KV, optional thumbnail KV or R2, Vectorize index, and two Queues. No GitHub
-fork, Wrangler command, resource ID, Later Gator password, or manual Vectorize
-configuration is part of the managed owner journey.
-
-The control plane redirects the owner to the personal runtime using a short-lived,
-installation-bound assertion. Ordinary dashboard, extension, MCP, AI-provider,
-and storage traffic goes directly to that runtime rather than through the
-control plane.
+Sign in directly with the `PASSWORD` Worker secret (at least 16 characters).
+Provider credentials remain encrypted using `INSTANCE_MASTER_KEY`, independently
+of the login password. Follow the [deployment guide](docs/developer-guide.md#15-direct-deployment-and-upgrades)
+to configure resources and upgrade an existing instance safely.
 
 ## Setup
 
@@ -105,11 +86,9 @@ instead of a copied secret.
 Settings generates one copyable command for Codex and one for Claude Code. Each
 command runs `mcp add` followed by `mcp login`, so installation immediately opens
 the browser authorization flow. If the runtime browser session has expired, the
-personal Worker sends the browser through the existing Cloudflare/control-plane
-owner login and resumes the pending MCP approval automatically. No developer
+personal Worker shows its own password sign-in and resumes the pending MCP approval automatically. No developer
 mode or copied secret is required. The stable MCP URL and all private MCP calls
-remain on the personal Worker; the control plane participates only in owner
-authentication. Settings lists each active grant with last-used activity and an
+remain on the personal Worker. Settings lists each active grant with last-used activity and an
 independent Disconnect action.
 
 The generated Claude command targets current Claude Code releases that expose
@@ -134,13 +113,12 @@ Use Node.js 22.18+ (or 24.11+) and install dependencies with `npm install`.
 npm run db:init:local
 npm run dev
 npm run check
-npm run check:managed-byoc
 npm run build
 ```
 
-`npm run build` and `npm run check:managed-byoc` perform dry-run bundles and do
-not deploy. Runtime and control-plane deployment commands mutate Cloudflare and
-are deliberate release/acceptance actions.
+Copy `apps/runtime/.dev.vars.example` to `apps/runtime/.dev.vars` and fill in
+the two secrets before local development. `npm run build` validates a production
+bundle without deploying. `npm run deploy` updates your Cloudflare instance.
 
 ## Documentation
 
@@ -155,8 +133,6 @@ competing documents in `docs/`.
 
 ## Uninstall
 
-Export the library first if you want to keep it. Managed uninstall requires a
-separate confirmation before deleting personal Cloudflare resources. Managed
-updates cannot be disabled independently because runtime, UI, AI-provider, and
-schema compatibility must move together. Removing Later Gator does not change
-the original Raindrop account or CSV export.
+Export the library first. Remove the Worker and its resources manually in your
+Cloudflare account only when you intend to delete them. Removing Later Gator
+does not change the original Raindrop account or CSV export.

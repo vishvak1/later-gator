@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "workspaces": [
-    "apps/*",
-    "packages/*"
+    "apps/runtime",
+    "apps/chrome-extension"
   ],
   "engines": {
     "node": "^22.18.0 || >=24.11.0"
@@ -14,7 +14,6 @@
   "scripts": {
     "audit:production": "npm audit --omit=dev --audit-level=high",
     "build": "npm run build --workspace @later-gator/runtime",
-    "build:release": "npm run build --workspace @later-gator/runtime && node scripts/build-runtime-release.mjs",
     "check": "npm run build:extensions && npm run build:web && npm run types:check && npm run typecheck:web && npm run check:function-docs && npm run lint && npm run test && npm run test:web",
     "deploy": "npm run deploy --workspace @later-gator/runtime",
     "dev": "npm run dev --workspace @later-gator/runtime",
@@ -30,8 +29,7 @@
     "build:extensions": "npm run build --workspace @later-gator/chrome-extension",
     "build:web": "npm run build:web --workspace @later-gator/runtime",
     "check:function-docs": "node scripts/check-function-docs.mjs",
-    "typecheck:web": "npm run typecheck:web --workspace @later-gator/runtime && npm run typecheck --workspace @later-gator/chrome-extension",
-    "check:managed-byoc": "npm run check --workspace @later-gator/contracts && npm run check --workspace @later-gator/control-plane"
+    "typecheck:web": "npm run typecheck:web --workspace @later-gator/runtime && npm run typecheck --workspace @later-gator/chrome-extension"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.18.8",

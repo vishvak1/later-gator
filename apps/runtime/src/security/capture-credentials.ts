@@ -25,69 +25,16 @@ export async function issueCaptureCredential(
           "capture:result:self",
           "capture:bookmark-search",
         ];
-  await db
+  const credential = db
     .prepare(
       `INSERT INTO capture_credentials (
         id, name, token_hash, scopes, created_at
       ) VALUES (?, ?, ?, ?, ?)`,
     )
-    .bind(id, name.slice(0, 100), await sha256Base64(token), JSON.stringify(scopes), new Date().toISOString())
-    .run();
-  return { id, token, scopes };
-}
-
-/** Atomically consumes a signed pairing grant and issues one extension credential. */
-export async function issuePairedExtensionCredential(
-  db: D1Database,
-  input: { deviceId: string; deviceName: string; jtiHash: string },
-): Promise<{ id: string; token: string; scopes: string[] }> {
-  const id = crypto.randomUUID();
-  const token = toBase64(randomBytes(32)).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-  const scopes = [
-    "capture:options",
-    "capture:create",
-    "capture:result:self",
-    "capture:bookmark-search",
-  ];
-  const now = new Date().toISOString();
-  const results = await db.batch([
-    db
-      .prepare(
-        `INSERT INTO extension_pairing_jtis (jti_hash, consumed_at)
-         VALUES (?, ?) ON CONFLICT(jti_hash) DO NOTHING`,
-      )
-      .bind(input.jtiHash, now),
-    db
-      .prepare(
-        `INSERT INTO capture_credentials (id, name, token_hash, scopes, created_at)
-         SELECT ?, ?, ?, ?, ?
-          WHERE changes() = 1`,
-      )
-      .bind(
-        id,
-        input.deviceName.slice(0, 100),
-        await sha256Base64(token),
-        JSON.stringify(scopes),
-        now,
-      ),
-    db
-      .prepare(
-        `INSERT INTO extension_devices (
-           id, credential_id, name, connected_at
-         ) SELECT ?, ?, ?, ? WHERE changes() = 1
-         ON CONFLICT(id) DO UPDATE SET
-           credential_id = excluded.credential_id,
-           name = excluded.name,
-           connected_at = excluded.connected_at,
-           last_used_at = NULL,
-           revoked_at = NULL
-         WHERE extension_devices.revoked_at IS NOT NULL`,
-      )
-      .bind(input.deviceId, id, input.deviceName.slice(0, 100), now),
-  ]);
-  if (results[0]?.meta.changes !== 1 || results[1]?.meta.changes !== 1 || results[2]?.meta.changes !== 1) {
-    throw new Error("pairing_grant_replayed");
-  }
+    .bind(id, name.slice(0, 100), await sha256Base64(token), JSON.stringify(scopes), new Date().toISOString());
+  await db.batch(kind === "extension" ? [credential, db.prepare(
+    "INSERT INTO extension_devices (id, credential_id, name, connected_at) VALUES (?, ?, ?, ?)",
+  ).bind(id, id, name.slice(0, 100), new Date().toISOString())] : [credential]);
   return { id, token, scopes };
 }
 

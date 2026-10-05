@@ -25,7 +25,6 @@
     "typecheck:web": "tsc -p web/tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@later-gator/contracts": "0.1.0",
     "@cloudflare/puppeteer": "^1.3.0",
     "@cloudflare/workers-oauth-provider": "^0.10.3",
     "@modelcontextprotocol/sdk": "^1.29.0",

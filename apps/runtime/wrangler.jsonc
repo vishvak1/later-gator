@@ -12,13 +12,10 @@
   },
   "vars": {
     "ENVIRONMENT": "production",
-    "TIMEZONE": "UTC",
-    "PUBLIC_ORIGIN": "https://replace-during-provisioning.invalid",
-    "CONTROL_PLANE_ORIGIN": "https://latergator.app",
-    "INSTALLATION_ID": "replace-during-provisioning"
+    "TIMEZONE": "UTC"
   },
   "secrets": {
-    "required": ["INSTANCE_MASTER_KEY"]
+    "required": ["INSTANCE_MASTER_KEY", "PASSWORD"]
   },
   "d1_databases": [
     {
@@ -31,8 +28,6 @@
       "binding": "THUMBNAILS"
     },
     {
-      // The managed installer provisions this private namespace automatically,
-      // so the owner does not need to create or identify another resource.
       "binding": "OAUTH_KV"
     }
   ],

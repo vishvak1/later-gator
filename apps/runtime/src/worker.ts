@@ -7,6 +7,7 @@ import {
   captureCredentialInputSchema,
   createBookmarkInputSchema,
   createTagInputSchema,
+  loginInputSchema,
   providerActivationInputSchema,
   providerCandidateInputSchema,
   resetApplicationInputSchema,
@@ -42,6 +43,7 @@ import {
 } from "./routes/pages";
 import { apiError, json, readJson, redirect } from "./routes/responses";
 import {
+  createSession,
   csrfCookie,
   expiredCsrfCookie,
   expiredSessionCookie,
@@ -51,11 +53,7 @@ import {
   revokeSession,
   type DashboardSession,
 } from "./security/sessions";
-import {
-  beginOwnerLogin,
-  completeOwnerLogin,
-  OwnerLoginError,
-} from "./security/owner-auth";
+import { authenticateOwnerPassword } from "./security/owner-auth";
 import { organizeBookmarkJob } from "./application/organize-bookmark";
 import { getImportStatus, startRaindropCsvImport } from "./application/imports";
 import {
@@ -80,10 +78,6 @@ import {
   thumbnailStorageSummary,
 } from "./application/thumbnail-storage";
 import {
-  currentPublicCatalogState,
-  refreshPublicCatalogs,
-} from "./application/catalogs";
-import {
   captureBookmark,
   captureBookmarkSearch,
   captureBookmarkStatus,
@@ -96,7 +90,6 @@ import {
   revokeExtensionDevice,
   revokeCaptureCredential,
 } from "./security/capture-credentials";
-import { capturePairingExchange } from "./routes/capture-pairing";
 import {
   deleteProviderCredential,
   saveProviderCredential,
@@ -155,28 +148,70 @@ async function setupComplete(db: D1Database): Promise<boolean> {
   return row?.setup_status === "ready";
 }
 
-/** Completes an installation-bound owner login and returns to the runtime. */
-async function ownerLoginCallback(request: Request, env: Env): Promise<Response> {
+/** Parses form password for Worker request and queue routing. */
+async function parseFormPassword(request: Request): Promise<string | null> {
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > 4096) return null;
+  return new URLSearchParams(new TextDecoder().decode(bytes)).get("password");
+}
+
+/** Authenticates a password, records failures, and creates a dashboard session. */
+async function login(request: Request, env: Env): Promise<Response> {
+  if (!originMatches(request)) return apiError(403, "invalid_origin", "Open this instance to sign in.");
+  let password: string | null;
   try {
-    const session = await completeOwnerLogin(request, env);
-    const headers = new Headers({
-      location: hasPendingMcpAuthorization(request)
-        ? "/authorize/resume"
-        : (await setupComplete(env.DB)) ? "/dashboard" : "/setup",
-      "cache-control": "no-store",
-    });
-    headers.append("set-cookie", session.cookie);
-    headers.append("set-cookie", csrfCookie(session.csrfToken));
-    return new Response(null, { status: 303, headers });
-  } catch (error) {
-    console.error(JSON.stringify({
-      event: "owner_login_failed",
-      safeCode: error instanceof OwnerLoginError
-        ? error.safeCode
-        : "identity_provider_unavailable",
-    }));
+    if (request.headers.get("content-type")?.includes("application/json") === true) {
+      const parsed = loginInputSchema.safeParse(await readJson(request, 4 * 1024));
+      if (!parsed.success) return apiError(400, "invalid_login", "Enter your Later Gator password.");
+      password = parsed.data.password;
+    } else {
+      password = await parseFormPassword(request);
+      if (password === null || password.length === 0 || password.length > 1024) {
+        return loginPage("invalid", themeFromCookie(request));
+      }
+    }
+  } catch {
+    return apiError(400, "invalid_login", "Enter your Later Gator password.");
+  }
+
+  const authentication = await authenticateOwnerPassword(request, env, password);
+  if (authentication.status === "rate_limited") {
+    return apiError(429, "login_rate_limited", "Wait a few minutes and try again.");
+  }
+  if (authentication.status === "unavailable") {
+    if (request.headers.get("content-type")?.includes("application/json") === true) {
+      return apiError(
+        503,
+        "authentication_unavailable",
+        "Secure authentication is temporarily unavailable.",
+      );
+    }
     return loginPage("unavailable", themeFromCookie(request));
   }
+  if (authentication.status === "invalid") {
+    if (request.headers.get("content-type")?.includes("application/json") === true) {
+      return apiError(401, "invalid_password", "That password was not accepted.");
+    }
+    return loginPage("invalid", themeFromCookie(request));
+  }
+
+  const session = await createSession(env.DB);
+  const headers = new Headers({ "cache-control": "no-store" });
+  headers.append("set-cookie", session.cookie);
+  headers.append("set-cookie", csrfCookie(session.csrfToken));
+
+  if (request.headers.get("content-type")?.includes("application/json") === true) {
+    return json(
+      {
+        ok: true,
+        csrfToken: session.csrfToken,
+        redirectTo: hasPendingMcpAuthorization(request) ? "/authorize/resume" : (await setupComplete(env.DB)) ? "/dashboard" : "/setup",
+      },
+      { headers },
+    );
+  }
+  headers.set("location", hasPendingMcpAuthorization(request) ? "/authorize/resume" : (await setupComplete(env.DB)) ? "/dashboard" : "/setup");
+  return new Response(null, { status: 303, headers });
 }
 
 /** Enforces same-origin and CSRF checks for an authenticated mutation. */
@@ -722,23 +757,6 @@ async function handleAuthenticatedApi(context: RouteContext): Promise<Response> 
     return json({ ok: true, storage: await thumbnailStorageSummary(env.DB) });
   }
 
-  if (request.method === "GET" && url.pathname === "/api/catalogs") {
-    return json({
-      ok: true,
-      catalogs: await currentPublicCatalogState(env.DB, env.CONTROL_PLANE_ORIGIN),
-    });
-  }
-
-  if (request.method === "POST" && url.pathname === "/api/catalogs/refresh") {
-    const securityError = await requireMutationSecurity(context);
-    if (securityError !== null) return securityError;
-    await refreshPublicCatalogs(env.DB, env.CONTROL_PLANE_ORIGIN);
-    return json({
-      ok: true,
-      catalogs: await currentPublicCatalogState(env.DB, env.CONTROL_PLANE_ORIGIN),
-    });
-  }
-
   if (request.method === "POST" && url.pathname === "/api/storage/thumbnails/disable") {
     const securityError = await requireMutationSecurity(context);
     if (securityError !== null) return securityError;
@@ -1161,57 +1179,18 @@ async function handleFetch(
 
   if (request.method === "GET" && url.pathname === "/health") {
     try {
-      const release = await env.DB.prepare(
-        `SELECT release, schema_version, health_contract_version
-           FROM runtime_release_state WHERE id = 1`,
-      ).first<{ release: string; schema_version: number; health_contract_version: number }>();
-      if (release === null) {
-        return json({
-          contractVersion: 1,
-          runtimeRelease: "1.0.0",
-          schemaVersion: 0,
-          status: "unavailable",
-          bindingReadiness: "ready",
-          queueReadiness: "ready",
-          safeErrorCodes: ["migration_required"],
-        }, { status: 503 });
-      }
-      return json({
-        contractVersion: release.health_contract_version,
-        runtimeRelease: release.release,
-        schemaVersion: release.schema_version,
-        status: "ready",
-        bindingReadiness: "ready",
-        queueReadiness: "ready",
-        safeErrorCodes: [],
+      const ready = await env.DB.prepare("SELECT 1 AS ready FROM app_state WHERE id = 1")
+        .first<{ ready: number }>();
+      return json({ status: ready === null ? "unavailable" : "ready" }, {
+        status: ready === null ? 503 : 200,
       });
     } catch {
-      return json({
-        contractVersion: 1,
-        runtimeRelease: "1.0.0",
-        schemaVersion: 0,
-        status: "unavailable",
-        bindingReadiness: "unavailable",
-        queueReadiness: "unavailable",
-        safeErrorCodes: ["database_unavailable"],
-      }, { status: 503 });
+      return json({ status: "unavailable" }, { status: 503 });
     }
   }
-  if (request.method === "GET" && url.pathname === "/auth/login") {
-    try {
-      return await beginOwnerLogin(request, env);
-    } catch (error) {
-      console.error(JSON.stringify({
-        event: "owner_login_start_failed",
-        safeCode: error instanceof OwnerLoginError
-          ? error.safeCode
-          : "identity_provider_unavailable",
-      }));
-      return loginPage("unavailable", themeFromCookie(request));
-    }
-  }
-  if (request.method === "GET" && url.pathname === "/auth/callback") {
-    return ownerLoginCallback(request, env);
+  if (url.pathname === "/auth/login") {
+    if (request.method === "GET") return loginPage(null, themeFromCookie(request));
+    if (request.method === "POST") return login(request, env);
   }
   if (request.method === "OPTIONS" && url.pathname.startsWith("/api/capture/")) {
     return capturePreflight();
@@ -1230,9 +1209,6 @@ async function handleFetch(
   }
   if (request.method === "POST" && url.pathname === "/api/capture/ios") {
     return captureBookmark(request, env, "ios");
-  }
-  if (request.method === "POST" && url.pathname === "/api/capture/pair") {
-    return capturePairingExchange(request, env);
   }
   if (
     url.pathname === "/mcp" ||

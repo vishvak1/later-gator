@@ -2,7 +2,7 @@
 
 const browserApi = globalThis.browser ?? globalThis.chrome;
 const { connectionOrigin, setSavedBadge, storedConnection } = globalThis.laterGatorExtension;
-const controlPlaneOrigin = globalThis.laterGatorExtensionConfig?.controlPlaneOrigin || "https://latergator.app";
+const connectionCodePrefix = "later-gator.";
 let connection = null;
 let metadata = {};
 let availableTags = [];
@@ -46,76 +46,39 @@ function showLoading(message = "Connecting to Later Gator…", retry = false) {
 
 /** Shows connection for the extension popup. */
 function showConnection(message = "", canCancel = false) {
-  if (byId("deviceName").value === "") {
-    byId("deviceName").value = `Chrome on ${navigator.platform || "this device"}`;
-  }
+  byId("connectionCode").value = "";
   byId("connectionStatus").textContent = message;
   byId("cancelConnection").hidden = !canCancel;
   showView("connection");
 }
 
-/** Creates one URL-safe state value for the Chrome identity round trip. */
-function oauthState() {
-  const bytes = new Uint8Array(32);
-  crypto.getRandomValues(bytes);
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/u, "");
-}
-
-/** Connects through Cloudflare identity and exchanges a one-time pairing grant. */
-async function connectWithCloudflare() {
-  const storedDevice = await browserApi.storage.local.get("laterGatorDeviceId");
-  const deviceId = typeof storedDevice.laterGatorDeviceId === "string"
-    ? storedDevice.laterGatorDeviceId
-    : crypto.randomUUID();
-  const deviceName = byId("deviceName").value.trim();
-  if (deviceName === "") throw new Error("Name this Chrome device first.");
-  const state = oauthState();
-  const redirectUri = browserApi.identity.getRedirectURL("cloudflare");
-  const authorization = new URL("/extension/connect", controlPlaneOrigin);
-  authorization.search = new URLSearchParams({
-    redirect_uri: redirectUri,
-    state,
-    device_id: deviceId,
-    device_name: deviceName,
-  }).toString();
-  let callback;
+/** Decodes connection code for the extension popup. */
+function decodeConnectionCode(value) {
+  const code = value.trim();
+  if (!code.startsWith(connectionCodePrefix)) {
+    throw new Error("Paste the complete connection code from Later Gator Settings.");
+  }
+  const encoded = code.slice(connectionCodePrefix.length).replaceAll("-", "+").replaceAll("_", "/");
+  const padded = encoded + "=".repeat((4 - encoded.length % 4) % 4);
+  let payload;
   try {
-    callback = await browserApi.identity.launchWebAuthFlow({
-      url: authorization.toString(),
-      interactive: true,
-    });
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, character => character.charCodeAt(0));
+    payload = JSON.parse(new TextDecoder().decode(bytes));
   } catch {
-    throw new Error("Cloudflare sign-in was cancelled or could not finish.");
+    throw new Error("This connection code could not be read. Copy a fresh code from Settings.");
   }
-  if (typeof callback !== "string") throw new Error("Cloudflare sign-in did not return.");
-  const result = new URL(callback);
-  if (result.origin + result.pathname !== new URL(redirectUri).origin + new URL(redirectUri).pathname) {
-    throw new Error("Cloudflare returned to an unexpected address.");
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    typeof payload.deployment !== "string" ||
+    typeof payload.token !== "string" ||
+    payload.token.length < 32 ||
+    payload.token.length > 256
+  ) {
+    throw new Error("This connection code is incomplete. Copy a fresh code from Settings.");
   }
-  if (result.searchParams.get("state") !== state) throw new Error("Cloudflare connection state did not match.");
-  if (result.searchParams.get("device_id") !== deviceId) throw new Error("Cloudflare returned another device.");
-  if (result.searchParams.get("error") === "installation_required") {
-    throw new Error("Open Later Gator control plane and create your first Later Gator library.");
-  }
-  const deployment = connectionOrigin(result.searchParams.get("deployment") || "");
-  const grant = result.searchParams.get("grant");
-  if (grant === null || grant.length < 32 || grant.length > 8192) {
-    throw new Error("The one-time connection grant was incomplete.");
-  }
-  const granted = await browserApi.permissions.request({ origins: [deployment + "/*"] });
-  if (!granted) throw new Error("Access to your personal Later Gator was not granted.");
-  const response = await fetch(deployment + "/api/capture/pair", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ grant, deviceId, deviceName }),
-  });
-  const body = await response.json().catch(() => null);
-  if (!response.ok || typeof body?.credential?.token !== "string") {
-    throw new Error(body?.error?.message || "The one-time connection could not be exchanged.");
-  }
-  return { deployment, token: body.credential.token, deviceId, deviceName };
+  return { deployment: connectionOrigin(payload.deployment), token: payload.token };
 }
 
 /** Shows capture for the extension popup. */
@@ -869,25 +832,25 @@ async function initialize() {
     await presentCaptureState(await loadCaptureState(connection));
   } catch (error) {
     if (isInvalidConnection(error)) {
-      await discardConnection("This connection is no longer valid. Continue with Cloudflare to reconnect.");
+      await discardConnection("This connection is no longer valid. Generate a fresh connection code in Settings.");
       return;
     }
     showLoading("Later Gator is temporarily unavailable. Your connection has not been removed.", true);
   }
 }
 
-byId("connectButton").addEventListener("click", async () => {
+byId("connectionPanel").addEventListener("submit", async event => {
+  event.preventDefault();
   const button = byId("connectButton");
   button.disabled = true;
-  byId("connectionStatus").textContent = "Opening Cloudflare…";
+  byId("connectionStatus").textContent = "Checking connection…";
   try {
-    const candidate = await connectWithCloudflare();
+    const candidate = decodeConnectionCode(byId("connectionCode").value);
+    const granted = await browserApi.permissions.request({ origins: [candidate.deployment + "/*"] });
+    if (!granted) throw new Error("Deployment access was not granted.");
     const state = await loadCaptureState(candidate);
     connection = candidate;
-    await browserApi.storage.local.set({
-      laterGatorConnection: connection,
-      laterGatorDeviceId: candidate.deviceId,
-    });
+    await browserApi.storage.local.set({ laterGatorConnection: connection });
     await presentCaptureState(state);
     byId("status").textContent = "";
   } catch (error) {
@@ -982,7 +945,7 @@ byId("captureForm").addEventListener("submit", async event => {
       return;
     }
     if (isInvalidConnection(error)) {
-      await discardConnection("This connection is no longer valid. Continue with Cloudflare to reconnect.");
+      await discardConnection("This connection is no longer valid. Generate a fresh connection code in Settings.");
     } else {
       byId("status").textContent = "Failed: " + (error instanceof Error ? error.message : "Request failed");
     }
